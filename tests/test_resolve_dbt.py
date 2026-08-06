@@ -120,9 +120,9 @@ def test_ephemeral_model_flagged(resolution):
 
 
 def test_column_nodes_from_catalog(resolution):
-    col = _node(resolution, column_node_id(FCT_ORDERS, "AMOUNT_USD"))
-    assert col.node_id == f"{FCT_ORDERS}::amount_usd"
-    assert col.name == "AMOUNT_USD"
+    col = _node(resolution, column_node_id(FCT_ORDERS, "ORDER_TOTAL"))
+    assert col.node_id == f"{FCT_ORDERS}::order_total"
+    assert col.name == "ORDER_TOTAL"
     assert col.data_type == "FLOAT"
     assert col.description == "Order amount in USD."
     assert col.table == "fct_orders"
@@ -239,7 +239,7 @@ def test_column_meta_fk_promoted_to_validated_by_matching_test(resolution):
     matching = [
         e
         for e in _edges(resolution, EdgeType.RELATES_TO)
-        if e.from_ == column_node_id(FCT_ORDERS, "user_id")
+        if e.from_ == column_node_id(FCT_ORDERS, "customer_id")
         and e.to == column_node_id(DIM_USERS, "user_id")
     ]
     assert len(matching) == 1
@@ -248,7 +248,7 @@ def test_column_meta_fk_promoted_to_validated_by_matching_test(resolution):
     assert edge.evidence["source"] == "column_meta"
     assert edge.evidence["relationship_type"] == "many-to-one"
     assert edge.evidence["validated_by"] == (
-        "test.demo.relationships_fct_orders_user_id__user_id__ref_dim_users_"
+        "test.demo.relationships_fct_orders_customer_id__user_id__ref_dim_users_"
     )
 
 
@@ -290,7 +290,7 @@ def test_contract_constraint_fk(resolution):
         for e in _edges(resolution, EdgeType.RELATES_TO)
         if e.evidence.get("source") == "contract_constraint"
     )
-    assert edge.from_ == column_node_id(FCT_ORDERS, "payment_id")
+    assert edge.from_ == column_node_id(FCT_ORDERS, "order_id")
     assert edge.to == column_node_id(STG_PAYMENTS, "payment_id")
     assert edge.confidence == Confidence.DECLARED
 
@@ -309,8 +309,8 @@ def test_dangling_declaration_recorded_not_emitted(resolution):
 
 
 def test_coverage_numbers(resolution):
-    assert resolution.columns_total == 25
-    assert resolution.columns_traced == 23
+    assert resolution.columns_total == 26
+    assert resolution.columns_traced == 24
     assert resolution.columns_inferred == 5
     assert resolution.untraced_columns == [
         f"{MART_PIVOT}::pivot_a",
@@ -330,7 +330,7 @@ def test_source_columns_excluded_from_coverage(resolution):
         for n in resolution.nodes
         if n.node_type == NodeType.COLUMN and n.node_id.startswith("model.")
     ]
-    assert resolution.columns_total == len(model_columns) == 25
+    assert resolution.columns_total == len(model_columns) == 26
 
 
 def test_output_is_deterministic():

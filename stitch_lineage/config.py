@@ -32,6 +32,21 @@ class MetabaseConfig(BaseModel):
     databases: list[MetabaseDatabaseMapping]
     include_schemas: list[str] = Field(default_factory=list)
     exclude_collections: list[str] = Field(default_factory=list)
+    missing_env: list[str] = Field(default_factory=list, exclude=True, repr=False)
+
+    def require_env(self) -> None:
+        """Raise unless every ${ENV_VAR} in the metabase section resolved at load time.
+
+        Commands that call the Metabase API must call this before using url/api_key;
+        commands that never touch the API (build --no-metabase, impact, search, export,
+        doctor --unbound/--untraced) work without the env vars set.
+        """
+        if self.missing_env:
+            names = ", ".join(dict.fromkeys(self.missing_env))
+            raise StitchConfigError(
+                f"environment variable(s) {names} referenced in stitch.yml but not set -- "
+                "required for commands that call the Metabase API"
+            )
 
 
 class RelationshipsConfig(BaseModel):
@@ -60,6 +75,11 @@ def load_config(path: Path) -> StitchConfig:
 
     Hard rule: metabase.api_key must be a whole-value env reference in the file --
     a literal key in stitch.yml is a startup error, not a warning.
+
+    Env interpolation of the metabase section is lazy/tolerant: a referenced-but-unset
+    env var is not a load error; the raw reference is kept, the name recorded on
+    cfg.metabase.missing_env, and MetabaseConfig.require_env() raises when a command
+    that actually calls the API runs. All other sections interpolate strictly.
     """
     if not path.is_file():
         raise StitchConfigError(f"config file not found: {path} -- run 'stitch init' to create one")
@@ -92,27 +112,41 @@ def load_config(path: Path) -> StitchConfig:
             "metabase.databases is required -- run 'stitch doctor --list-databases'"
         )
 
-    interpolated = _interpolate_env(raw)
+    missing: list[str] = []
+    interpolated = {
+        key: _interpolate_env(value, missing if key == "metabase" else None)
+        for key, value in raw.items()
+    }
     try:
-        return StitchConfig.model_validate(interpolated)
+        cfg = StitchConfig.model_validate(interpolated)
     except ValidationError as exc:
         raise StitchConfigError(f"invalid stitch.yml: {exc}") from exc
+    cfg.metabase.missing_env = missing
+    return cfg
 
 
-def _interpolate_env(value: Any) -> Any:
+def _interpolate_env(value: Any, missing: list[str] | None = None) -> Any:
+    """Substitute ${ENV_VAR} references; strict when missing is None, tolerant otherwise.
+
+    Tolerant mode records unset variable names in `missing` and leaves the raw
+    reference in place instead of raising.
+    """
     if isinstance(value, str):
 
         def _sub(match: re.Match[str]) -> str:
             name = match.group("name")
             if name not in os.environ:
-                raise StitchConfigError(
-                    f"environment variable {name} is referenced in stitch.yml but not set"
-                )
+                if missing is None:
+                    raise StitchConfigError(
+                        f"environment variable {name} is referenced in stitch.yml but not set"
+                    )
+                missing.append(name)
+                return match.group(0)
             return os.environ[name]
 
         return _ENV_REF.sub(_sub, value)
     if isinstance(value, dict):
-        return {key: _interpolate_env(item) for key, item in value.items()}
+        return {key: _interpolate_env(item, missing) for key, item in value.items()}
     if isinstance(value, list):
-        return [_interpolate_env(item) for item in value]
+        return [_interpolate_env(item, missing) for item in value]
     return value

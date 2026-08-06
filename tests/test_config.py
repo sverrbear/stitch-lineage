@@ -63,11 +63,22 @@ def test_partial_env_ref_api_key_is_an_error(tmp_path, monkeypatch):
         load_config(_write(tmp_path, partial))
 
 
-def test_missing_env_var_names_the_variable(tmp_path, monkeypatch):
+def test_missing_metabase_env_var_is_lazy(tmp_path, monkeypatch):
     monkeypatch.setenv("STITCH_METABASE_URL", "https://mb.example.com")
     monkeypatch.delenv("STITCH_METABASE_API_KEY", raising=False)
+    cfg = load_config(_write(tmp_path, VALID_CONFIG))
+    assert cfg.metabase.missing_env == ["STITCH_METABASE_API_KEY"]
+    assert cfg.metabase.api_key == "${STITCH_METABASE_API_KEY}"
     with pytest.raises(StitchConfigError, match="STITCH_METABASE_API_KEY"):
-        load_config(_write(tmp_path, VALID_CONFIG))
+        cfg.metabase.require_env()
+
+
+def test_env_ready_metabase_config_passes_require_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("STITCH_METABASE_URL", "https://mb.example.com")
+    monkeypatch.setenv("STITCH_METABASE_API_KEY", "mb_test_key")
+    cfg = load_config(_write(tmp_path, VALID_CONFIG))
+    assert cfg.metabase.missing_env == []
+    cfg.metabase.require_env()
 
 
 def test_missing_databases_points_at_doctor(tmp_path, monkeypatch):

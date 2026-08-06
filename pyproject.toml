@@ -61,6 +61,9 @@ forbidden_modules = [
 [[tool.importlinter.contracts]]
 name = "only io.metabase_client speaks HTTP"
 type = "forbidden"
+# direct imports only: cli may import metabase_client (which imports requests),
+# but no listed module may import requests itself
+allow_indirect_imports = true
 source_modules = [
     "stitch_lineage.cli",
     "stitch_lineage.config",

@@ -26,10 +26,11 @@
     "model.demo.fct_orders": {
       "metadata": {"type": "BASE TABLE", "schema": "MARTS", "name": "FCT_ORDERS", "database": "ANALYTICS", "comment": null, "owner": "TRANSFORMER"},
       "columns": {
-        "PAYMENT_ID": {"type": "NUMBER", "index": 1, "name": "PAYMENT_ID", "comment": null},
-        "USER_ID": {"type": "NUMBER", "index": 2, "name": "USER_ID", "comment": null},
+        "ORDER_ID": {"type": "NUMBER", "index": 1, "name": "ORDER_ID", "comment": null},
+        "CUSTOMER_ID": {"type": "NUMBER", "index": 2, "name": "CUSTOMER_ID", "comment": null},
         "COUNTRY_CODE": {"type": "TEXT", "index": 3, "name": "COUNTRY_CODE", "comment": null},
-        "AMOUNT_USD": {"type": "FLOAT", "index": 4, "name": "AMOUNT_USD", "comment": null}
+        "ORDER_TOTAL": {"type": "FLOAT", "index": 4, "name": "ORDER_TOTAL", "comment": null},
+        "CREATED_AT": {"type": "TIMESTAMP_NTZ", "index": 5, "name": "CREATED_AT", "comment": null}
       },
       "stats": {}
     },

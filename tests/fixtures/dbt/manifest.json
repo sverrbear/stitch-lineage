@@ -118,18 +118,18 @@
       },
       "original_file_path": "models/marts/fct_orders.sql",
       "depends_on": {"nodes": ["model.demo.stg_payments", "model.demo.dim_users"]},
-      "compiled_code": "select\n    payments.payment_id\n    , payments.user_id\n    , users.country_code\n    , payments.amount_usd\nfrom analytics.staging.stg_payments as payments\nleft join analytics.dims.dim_users as users\n    on payments.user_id = users.user_id",
+      "compiled_code": "select\n    payments.payment_id as order_id\n    , payments.user_id as customer_id\n    , users.country_code\n    , payments.amount_usd as order_total\n    , payments.created_time as created_at\nfrom analytics.staging.stg_payments as payments\nleft join analytics.dims.dim_users as users\n    on payments.user_id = users.user_id",
       "columns": {
-        "payment_id": {
-          "name": "payment_id",
+        "order_id": {
+          "name": "order_id",
           "description": "Primary key.",
           "meta": {},
           "constraints": [
             {"type": "foreign_key", "to": "ref('stg_payments')", "to_columns": ["payment_id"]}
           ]
         },
-        "user_id": {
-          "name": "user_id",
+        "customer_id": {
+          "name": "customer_id",
           "description": "FK to dim_users.",
           "meta": {},
           "config": {
@@ -142,7 +142,8 @@
           "constraints": []
         },
         "country_code": {"name": "country_code", "description": "ISO country code.", "meta": {}, "constraints": []},
-        "amount_usd": {"name": "amount_usd", "description": "Order amount in USD.", "meta": {}, "constraints": []}
+        "order_total": {"name": "order_total", "description": "Order amount in USD.", "meta": {}, "constraints": []},
+        "created_at": {"name": "created_at", "description": "Order creation time.", "meta": {}, "constraints": []}
       }
     },
     "model.demo.mart_payments": {
@@ -202,19 +203,19 @@
       "depends_on": {"nodes": []},
       "columns": {}
     },
-    "test.demo.relationships_fct_orders_user_id__user_id__ref_dim_users_": {
-      "unique_id": "test.demo.relationships_fct_orders_user_id__user_id__ref_dim_users_",
+    "test.demo.relationships_fct_orders_customer_id__user_id__ref_dim_users_": {
+      "unique_id": "test.demo.relationships_fct_orders_customer_id__user_id__ref_dim_users_",
       "resource_type": "test",
-      "name": "relationships_fct_orders_user_id__user_id__ref_dim_users_",
+      "name": "relationships_fct_orders_customer_id__user_id__ref_dim_users_",
       "attached_node": "model.demo.fct_orders",
-      "column_name": "user_id",
+      "column_name": "customer_id",
       "test_metadata": {
         "name": "relationships",
         "namespace": null,
         "kwargs": {
           "to": "ref('dim_users')",
           "field": "user_id",
-          "column_name": "user_id",
+          "column_name": "customer_id",
           "model": "{{ get_where_subquery(ref('fct_orders')) }}"
         }
       },
