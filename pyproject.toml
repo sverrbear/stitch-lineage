@@ -1,0 +1,82 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stitch-lineage"
+version = "0.1.0.dev0"
+description = "dbt <-> Metabase column lineage and interactive ERD"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12",
+    "pydantic>=2",
+    "requests>=2.31",
+    "ruamel.yaml>=0.18",
+    "sqlglot>=25",
+    "rich>=13",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "import-linter>=2",
+    "ruff>=0.5",
+    "responses>=0.25",
+]
+
+[project.scripts]
+stitch = "stitch_lineage.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["stitch_lineage"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "C4", "UP", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.importlinter]
+root_packages = ["stitch_lineage"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "resolve is pure: no HTTP, no stitch I/O, no filesystem"
+type = "forbidden"
+source_modules = ["stitch_lineage.resolve"]
+forbidden_modules = [
+    "requests",
+    "stitch_lineage.io",
+    "os",
+    "io",
+    "pathlib",
+]
+
+[[tool.importlinter.contracts]]
+name = "only io.metabase_client speaks HTTP"
+type = "forbidden"
+source_modules = [
+    "stitch_lineage.cli",
+    "stitch_lineage.config",
+    "stitch_lineage.payloads",
+    "stitch_lineage.graph",
+    "stitch_lineage.export",
+    "stitch_lineage.io.artifacts",
+    "stitch_lineage.io.graph_store",
+]
+forbidden_modules = ["requests"]
+
+[[tool.importlinter.contracts]]
+name = "graph depends only on schema, never on resolve or io"
+type = "forbidden"
+source_modules = ["stitch_lineage.graph"]
+forbidden_modules = [
+    "stitch_lineage.resolve",
+    "stitch_lineage.io",
+]

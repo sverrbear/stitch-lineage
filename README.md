@@ -15,3 +15,14 @@ pip install stitch-lineage   # not yet published
 - `stitch impact` — CI PR comments: "this rename breaks 4 cards on 2 dashboards"
 - `stitch serve` — local app: catalog, column lineage, ERD editor with YAML write-back
 - MIT licensed
+
+## Development
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+pytest          # unit tests
+ruff check .    # lint
+lint-imports    # architecture seams (SPEC.md §4)
+```
