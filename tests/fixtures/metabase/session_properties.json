@@ -1,0 +1,11 @@
+{
+  "version": {
+    "tag": "v0.53.2",
+    "date": "2026-05-14",
+    "src_hash": "0f5cbb7e5c3f4f9c8f1e2a3b4c5d6e7f8a9b0c1d"
+  },
+  "site-name": "Smitten Analytics",
+  "engines": {
+    "snowflake": {"driver-name": "Snowflake"}
+  }
+}

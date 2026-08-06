@@ -1,0 +1,209 @@
+[
+  {
+    "id": 201,
+    "name": "Orders overview",
+    "description": "Monthly order totals over 100 USD",
+    "collection_id": 7,
+    "archived": false,
+    "display": "line",
+    "query_type": "query",
+    "creator_id": 5,
+    "creator": {"id": 5, "common_name": "Sverrir", "email": "sverrir@smitten.fun"},
+    "dataset_query": {
+      "type": "query",
+      "database": 2,
+      "query": {
+        "source-table": 10,
+        "fields": [
+          ["field", 100, null],
+          ["field", 102, null]
+        ],
+        "filter": [">", ["field", 102, null], 100],
+        "aggregation": [["sum", ["field", 102, null]]],
+        "breakout": [["field", 103, {"temporal-unit": "month"}]],
+        "order-by": [["asc", ["field", 103, {"temporal-unit": "month"}]]],
+        "expressions": {"total_with_vat": ["*", ["field", 102, null], 1.24]}
+      }
+    }
+  },
+  {
+    "id": 202,
+    "name": "Orders with customer",
+    "description": null,
+    "collection_id": 7,
+    "archived": false,
+    "display": "table",
+    "query_type": "query",
+    "creator_id": 5,
+    "creator": {"id": 5, "common_name": "Sverrir", "email": "sverrir@smitten.fun"},
+    "dataset_query": {
+      "type": "query",
+      "database": 2,
+      "query": {
+        "source-table": 10,
+        "joins": [
+          {
+            "alias": "Dim Customers",
+            "source-table": 11,
+            "strategy": "left-join",
+            "condition": [
+              "=",
+              ["field", 101, null],
+              ["field", 104, {"join-alias": "Dim Customers"}]
+            ],
+            "fields": [["field", 105, {"join-alias": "Dim Customers"}]]
+          }
+        ],
+        "breakout": [["field", 106, {"source-field": 101}]]
+      }
+    },
+    "result_metadata": [
+      {"name": "customer_name", "display_name": "Customer Name", "field_ref": ["field", 105, {"join-alias": "Dim Customers"}]},
+      {"name": "country_code", "display_name": "Country Code", "field_ref": ["field", 106, {"source-field": 101}]}
+    ]
+  },
+  {
+    "id": 203,
+    "name": "Top customers",
+    "description": "Model on top of Orders with customer",
+    "collection_id": 7,
+    "archived": false,
+    "display": "row",
+    "query_type": "query",
+    "dataset": true,
+    "creator_id": 6,
+    "creator": {"id": 6, "common_name": "Magnus", "email": "magnus@smitten.fun"},
+    "dataset_query": {
+      "type": "query",
+      "database": 2,
+      "query": {
+        "source-table": "card__202",
+        "aggregation": [["count"]],
+        "breakout": [["field", "customer_name", {"base-type": "type/Text"}]]
+      }
+    }
+  },
+  {
+    "id": 204,
+    "name": "Revenue per customer",
+    "description": null,
+    "collection_id": null,
+    "archived": false,
+    "display": "bar",
+    "query_type": "query",
+    "creator_id": 5,
+    "creator": {"id": 5, "common_name": "Sverrir", "email": "sverrir@smitten.fun"},
+    "dataset_query": {
+      "type": "query",
+      "database": 2,
+      "query": {
+        "source-query": {
+          "source-table": 10,
+          "aggregation": [["sum", ["field", 102, null]]],
+          "breakout": [["field", 101, null]]
+        },
+        "filter": ["!=", ["field", "customer_id", {"base-type": "type/BigInteger"}], 0]
+      }
+    }
+  },
+  {
+    "id": 205,
+    "name": "Raw orders SQL",
+    "description": "Hand-written export query",
+    "collection_id": 7,
+    "archived": false,
+    "display": "table",
+    "query_type": "native",
+    "creator_id": 6,
+    "creator": {"id": 6, "common_name": "Magnus", "email": "magnus@smitten.fun"},
+    "dataset_query": {
+      "type": "native",
+      "database": 2,
+      "native": {
+        "query": "select order_id, order_total from marts.fct_orders where created_at >= {{start_date}}",
+        "template-tags": {
+          "start_date": {"name": "start_date", "display-name": "Start date", "type": "date"}
+        }
+      }
+    }
+  },
+  {
+    "id": 206,
+    "name": "Old orders count",
+    "description": null,
+    "collection_id": 7,
+    "archived": true,
+    "display": "scalar",
+    "query_type": "query",
+    "creator_id": 5,
+    "creator": {"id": 5, "common_name": "Sverrir", "email": "sverrir@smitten.fun"},
+    "dataset_query": {
+      "type": "query",
+      "database": 2,
+      "query": {
+        "source-table": 10,
+        "aggregation": [["distinct", ["field", 100, null]]]
+      }
+    }
+  },
+  {
+    "id": 207,
+    "name": "Scratch pad",
+    "description": null,
+    "collection_id": 9,
+    "archived": false,
+    "display": "table",
+    "query_type": "query",
+    "creator_id": 5,
+    "creator": {"id": 5, "common_name": "Sverrir", "email": "sverrir@smitten.fun"},
+    "dataset_query": {
+      "type": "query",
+      "database": 2,
+      "query": {
+        "source-table": 10,
+        "fields": [["field", 100, null]]
+      }
+    }
+  },
+  {
+    "id": 208,
+    "name": "Broken name ref",
+    "description": null,
+    "collection_id": 7,
+    "archived": false,
+    "display": "table",
+    "query_type": "query",
+    "creator_id": 6,
+    "creator": {"id": 6, "common_name": "Magnus", "email": "magnus@smitten.fun"},
+    "dataset_query": {
+      "type": "query",
+      "database": 2,
+      "query": {
+        "source-table": 10,
+        "fields": [
+          ["field", "order_id", {"base-type": "type/BigInteger"}],
+          ["field", "ghost_column", {"base-type": "type/Text"}]
+        ]
+      }
+    }
+  },
+  {
+    "id": 209,
+    "name": "Legacy KPIs",
+    "description": null,
+    "collection_id": 12,
+    "archived": false,
+    "display": "table",
+    "query_type": "query",
+    "creator_id": 5,
+    "creator": {"id": 5, "common_name": "Sverrir", "email": "sverrir@smitten.fun"},
+    "dataset_query": {
+      "type": "query",
+      "database": 2,
+      "query": {
+        "source-table": 10,
+        "fields": [["field", 102, null]]
+      }
+    }
+  }
+]

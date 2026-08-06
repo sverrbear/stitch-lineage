@@ -1,0 +1,42 @@
+{
+  "id": 301,
+  "name": "Orders Board",
+  "description": "Core order KPIs",
+  "collection_id": 7,
+  "archived": false,
+  "dashcards": [
+    {
+      "id": 401,
+      "card_id": 201,
+      "dashboard_id": 301,
+      "row": 0,
+      "col": 0,
+      "size_x": 12,
+      "size_y": 6,
+      "card": {"id": 201, "name": "Orders overview"}
+    },
+    {
+      "id": 402,
+      "card_id": 202,
+      "dashboard_id": 301,
+      "row": 6,
+      "col": 0,
+      "size_x": 12,
+      "size_y": 6,
+      "card": {"id": 202, "name": "Orders with customer"}
+    },
+    {
+      "id": 403,
+      "card_id": null,
+      "dashboard_id": 301,
+      "row": 0,
+      "col": 12,
+      "size_x": 6,
+      "size_y": 2,
+      "visualization_settings": {
+        "virtual_card": {"display": "text"},
+        "text": "Owned by the data team"
+      }
+    }
+  ]
+}

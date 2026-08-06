@@ -1,0 +1,37 @@
+[
+  {
+    "id": "root",
+    "name": "Our analytics",
+    "location": null,
+    "personal_owner_id": null,
+    "archived": false
+  },
+  {
+    "id": 7,
+    "name": "Marts",
+    "location": "/",
+    "personal_owner_id": null,
+    "archived": false
+  },
+  {
+    "id": 8,
+    "name": "Archive 2020",
+    "location": "/",
+    "personal_owner_id": null,
+    "archived": false
+  },
+  {
+    "id": 9,
+    "name": "Sverrir Sverrisson's Personal Collection",
+    "location": "/",
+    "personal_owner_id": 5,
+    "archived": false
+  },
+  {
+    "id": 12,
+    "name": "Old dashboards",
+    "location": "/8/",
+    "personal_owner_id": null,
+    "archived": false
+  }
+]
