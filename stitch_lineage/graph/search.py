@@ -90,9 +90,10 @@ def search(graph: Graph, query: str, limit: int = 20) -> list[SearchResult]:
     Searches every node type by name, node_id tail, description and properties
     (tags, title, collection name). Ranking tiers: exact name > name prefix >
     word-boundary in name > substring in any field > fuzzy (difflib ratio >= 0.6
-    against the name). Within a tier results sort by name then node_id for
-    determinism. Case-insensitive. Returns at most `limit` results, best first,
-    with matched_field naming which attribute matched.
+    against the name). Within a tier results sort by score descending (which orders
+    fuzzy hits by ratio), then name and node_id for determinism. Case-insensitive.
+    Returns at most `limit` results, best first, with matched_field naming which
+    attribute matched.
     """
     needle = query.strip().casefold()
     if not needle:
@@ -103,7 +104,7 @@ def search(graph: Graph, query: str, limit: int = 20) -> list[SearchResult]:
         match = _match(node, needle)
         if match is not None:
             hits.append((match[0], node, match[1], match[2]))
-    hits.sort(key=lambda hit: (-hit[0], hit[1].name.casefold(), hit[1].node_id))
+    hits.sort(key=lambda hit: (-hit[0], -hit[3], hit[1].name.casefold(), hit[1].node_id))
     return [
         SearchResult(
             node_id=node.node_id,

@@ -41,6 +41,18 @@ def test_tier_ordering():
     assert "swipes" not in names  # below the fuzzy floor
 
 
+def test_fuzzy_tier_ordered_by_ratio_not_name():
+    graph = Graph(
+        nodes=[
+            node("model.s.pay_events", "pay_events"),  # ratio ~0.78, alphabetically first
+            node("model.s.payment_z", "payment_z"),  # ratio ~0.82
+        ]
+    )
+    results = search(graph, "payments")
+    assert [r.name for r in results] == ["payment_z", "pay_events"]
+    assert results[0].score > results[1].score
+
+
 def test_matched_field_reported():
     results = search(tier_graph(), "revenue")
     by_name = {r.name: r for r in results}

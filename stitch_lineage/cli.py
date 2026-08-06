@@ -35,7 +35,9 @@ app = typer.Typer(
 )
 console = Console()
 
-ConfigOpt = Annotated[Path, typer.Option("--config", help="Path to stitch.yml.")]
+ConfigOpt = Annotated[
+    Path | None, typer.Option("--config", help="Path to stitch.yml (default: ./stitch.yml).")
+]
 
 _MB_NODE_TYPES = (NodeType.MB_FIELD, NodeType.MB_CARD, NodeType.MB_DASHBOARD)
 _MB_EDGE_TYPES = (EdgeType.CONSUMED_BY, EdgeType.APPEARS_ON)
@@ -51,6 +53,16 @@ def _load_config_or_fail(path: Path) -> StitchConfig:
         return load_config(path)
     except StitchConfigError as exc:
         _fail(str(exc))
+
+
+def _resolve_config(config: Path | None) -> Path:
+    """Default config lookup tolerates a missing ./stitch.yml (commands that only read
+    graph.json fall back to .stitch/); an explicitly passed --config must exist."""
+    if config is None:
+        return Path("stitch.yml")
+    if not config.is_file():
+        _fail(f"config file not found: {config}")
+    return config
 
 
 def _target_path(config: Path, cfg: StitchConfig) -> Path:
@@ -145,7 +157,7 @@ def _print_coverage(coverage: Coverage, metabase_side: bool, case_mismatch_count
 
 @app.command()
 def build(
-    config: ConfigOpt = Path("stitch.yml"),
+    config: ConfigOpt = None,
     no_metabase: Annotated[
         bool,
         typer.Option("--no-metabase", help="Resolve the dbt side only (CI impact runs)."),
@@ -156,6 +168,7 @@ def build(
     ] = False,
 ) -> None:
     """Resolve dbt artifacts and the Metabase API into .stitch/graph.json."""
+    config = _resolve_config(config)
     cfg = _load_config_or_fail(config)
     target_path = _target_path(config, cfg)
     out_dir = _output_dir(config, cfg)
@@ -167,7 +180,12 @@ def build(
         catalog = load_catalog(target_path)
     except StitchArtifactError as exc:
         _fail(str(exc))
-    dbt_res = resolve_dbt(manifest, catalog)
+    dbt_res = resolve_dbt(
+        manifest,
+        catalog,
+        fk_meta_keys=cfg.relationships.fk_meta_keys,
+        cardinality_meta_key=cfg.relationships.cardinality_meta_key,
+    )
 
     nodes = list(dbt_res.nodes)
     edges = list(dbt_res.edges)
@@ -186,19 +204,24 @@ def build(
         # SPEC section 10: reuse the committed baseline's Metabase side; the dbt side
         # changed, so binding must re-run against the reused mb_field nodes.
         baseline = read_graph(graph_path) if graph_path.is_file() else None
-        if baseline is None:
+        mb_nodes = (
+            [n for n in baseline.nodes if n.node_type in _MB_NODE_TYPES] if baseline else []
+        )
+        mb_field_nodes = [n for n in mb_nodes if n.node_type is NodeType.MB_FIELD]
+        if not mb_field_nodes:
+            # a dbt-only baseline is as useless for reuse as no baseline at all
             metabase_side = False
+            missing = (
+                "no existing graph.json"
+                if baseline is None
+                else f"existing {graph_path} has no Metabase side"
+            )
             console.print(
-                "note: no existing graph.json -- building a dbt-only graph "
+                f"note: {missing} -- building a dbt-only graph "
                 "(run a full 'stitch build' to add the Metabase side)"
             )
         else:
-            mb_nodes = [n for n in baseline.nodes if n.node_type in _MB_NODE_TYPES]
-            bind_res = bind(
-                nodes,
-                [n for n in mb_nodes if n.node_type is NodeType.MB_FIELD],
-                database_map,
-            )
+            bind_res = bind(nodes, mb_field_nodes, database_map)
             nodes.extend(mb_nodes)
             edges.extend(e for e in baseline.edges if e.edge_type in _MB_EDGE_TYPES)
             edges.extend(bind_res.edges)
@@ -215,6 +238,7 @@ def build(
                 dashboards=baseline.coverage.dashboards,
                 dashboards_total=baseline.coverage.dashboards_total,
                 unresolved_cards=baseline.coverage.unresolved_cards,
+                unresolved_field_refs=baseline.coverage.unresolved_field_refs,
             )
     else:
         client = _metabase_client(cfg, cache_dir=out_dir / "cache")
@@ -222,7 +246,9 @@ def build(
             payload = client.fetch_all([db.metabase_name for db in cfg.metabase.databases])
         except MetabaseAPIError as exc:
             _fail(str(exc))
-        mb_res = resolve_metabase(payload, cfg.metabase.exclude_collections)
+        mb_res = resolve_metabase(
+            payload, cfg.metabase.exclude_collections, cfg.metabase.include_schemas
+        )
         bind_res = bind(
             nodes,
             [n for n in mb_res.nodes if n.node_type is NodeType.MB_FIELD],
@@ -244,6 +270,7 @@ def build(
             dashboards=mb_res.dashboards,
             dashboards_total=mb_res.dashboards_total,
             unresolved_cards=mb_res.unresolved_cards,
+            unresolved_field_refs=mb_res.unresolved_field_refs,
         )
 
     graph = Graph(
@@ -325,9 +352,10 @@ def impact(
             help="Exit 1 when any column was removed or type-changed.",
         ),
     ] = False,
-    config: ConfigOpt = Path("stitch.yml"),
+    config: ConfigOpt = None,
 ) -> None:
     """Diff the candidate graph against the baseline and walk the downstream blast radius."""
+    config = _resolve_config(config)
     if output_format not in ("text", "github-comment", "slack"):
         _fail(f"unsupported --format '{output_format}' (expected: text, github-comment, slack)")
     graph_path = _graph_path(config)
@@ -365,10 +393,10 @@ def search(
         bool, typer.Option("--json", help="Emit results as JSON lines for piping.")
     ] = False,
     limit: Annotated[int, typer.Option("--limit", help="Maximum results.")] = 20,
-    config: ConfigOpt = Path("stitch.yml"),
+    config: ConfigOpt = None,
 ) -> None:
     """Search everything in graph.json from the terminal."""
-    graph = _read_graph_or_fail(_graph_path(config))
+    graph = _read_graph_or_fail(_graph_path(_resolve_config(config)))
     results = search_graph(graph, query, limit=limit)
     if json_output:
         for result in results:
@@ -400,9 +428,16 @@ def doctor(
     untraced: Annotated[
         bool, typer.Option("--untraced", help="List columns sqlglot could not trace.")
     ] = False,
-    config: ConfigOpt = Path("stitch.yml"),
+    unresolved_cards: Annotated[
+        bool,
+        typer.Option(
+            "--unresolved-cards", help="List unresolved cards with per-field-ref reasons."
+        ),
+    ] = False,
+    config: ConfigOpt = None,
 ) -> None:
     """Diagnose configuration, connectivity, and coverage gaps."""
+    config = _resolve_config(config)
     cfg = _load_config_or_fail(config)
     graph_path = _output_dir(config, cfg) / "graph.json"
 
@@ -415,12 +450,14 @@ def doctor(
             console.print(str(database.get("name", "?")))
         return
 
-    if unbound or untraced:
+    if unbound or untraced or unresolved_cards:
         graph = _read_graph_or_fail(graph_path)
         if unbound:
             _print_list("unbound models", graph.coverage.unbound_models)
         if untraced:
             _print_list("untraced columns", graph.coverage.untraced_columns)
+        if unresolved_cards:
+            _print_unresolved_cards(graph)
         return
 
     failed = False
@@ -479,18 +516,44 @@ def _print_list(label: str, items: list[str]) -> None:
         console.print(f"  {item}", soft_wrap=True)
 
 
+def _print_unresolved_cards(graph: Graph) -> None:
+    console.print(f"unresolved cards ({len(graph.coverage.unresolved_cards)}):")
+    refs_by_card: dict[Any, list[dict[str, Any]]] = {}
+    for problem in graph.coverage.unresolved_field_refs:
+        refs_by_card.setdefault(problem.get("card_id"), []).append(problem)
+    for card_id in graph.coverage.unresolved_cards:
+        problems = refs_by_card.get(card_id)
+        if not problems:
+            console.print(f"  card {card_id}: native SQL (unsupported in v0)", soft_wrap=True)
+            continue
+        for problem in problems:
+            console.print(
+                f"  card {card_id}: {problem.get('reason')} -- ref {problem.get('ref')}",
+                soft_wrap=True,
+            )
+
+
 @app.command()
 def export(
     output_format: Annotated[
         str, typer.Option("--format", help="Export format (jsonl).")
     ] = "jsonl",
-    out: Annotated[Path, typer.Option("--out", help="Output directory.")] = Path(".stitch/export"),
-    config: ConfigOpt = Path("stitch.yml"),
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Output directory (default: <output.dir>/export)."),
+    ] = None,
+    config: ConfigOpt = None,
 ) -> None:
     """Export graph.json as flat agent-friendly records."""
     if output_format != "jsonl":
         _fail(f"unsupported --format '{output_format}' (expected: jsonl)")
+    config = _resolve_config(config)
     graph = _read_graph_or_fail(_graph_path(config))
+    if out is None:
+        if config.is_file():
+            out = _output_dir(config, _load_config_or_fail(config)) / "export"
+        else:
+            out = Path(".stitch/export")
     nodes_path, edges_path = export_jsonl(graph, out)
     console.print(f"wrote {nodes_path} and {edges_path}")
 
@@ -510,7 +573,3 @@ def serve() -> None:
     """Run the local lineage + ERD app."""
     console.print("stitch serve is not implemented until Phase 1.")
     raise typer.Exit(code=2)
-
-
-def main() -> None:
-    app()

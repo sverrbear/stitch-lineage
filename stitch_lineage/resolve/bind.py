@@ -8,7 +8,6 @@ from stitch_lineage.graph.schema import (
     EdgeType,
     Node,
     NodeType,
-    column_node_id,
 )
 
 
@@ -17,6 +16,8 @@ class BindResult(BaseModel):
 
     Coverage fields map 1:1 onto graph.schema.Coverage; the CLI copies them over.
     case_mismatch_count backs the case-only-mismatch warning line.
+    unverified_field_count counts mb fields whose table bound to a dbt relation that
+    supplied no column inventory -- those bindings are skipped, never fabricated.
     """
 
     edges: list[Edge] = Field(default_factory=list)
@@ -24,6 +25,7 @@ class BindResult(BaseModel):
     models_total: int = 0
     unbound_models: list[str] = Field(default_factory=list)
     case_mismatch_count: int = 0
+    unverified_field_count: int = 0
 
 
 def _fold(value: str | None) -> str:
@@ -41,22 +43,23 @@ def bind(
 ) -> BindResult:
     """Produce `binds_to` edges (dbt column -> mb_field).
 
-    dbt_nodes are the source/model Nodes from resolve_dbt; column Nodes may be
-    included for column-existence checks (without them column node ids are derived
-    via schema.column_node_id). mb_field_nodes are the mb_field Nodes from
-    resolve_metabase (database = Metabase display name, schema/table/column physical
-    names); database_map is [(metabase_display_name, dbt_database), ...] from config
-    metabase.databases.
+    dbt_nodes are the source/model Nodes from resolve_dbt plus their column Nodes,
+    which gate every binding: an edge is only emitted for a column that exists on the
+    dbt side. A bound relation with no column Nodes at all (absent from catalog AND
+    no manifest columns) binds nothing -- its fields are skipped and counted in
+    unverified_field_count instead of fabricating exact edges to unverified columns.
+    mb_field_nodes are the mb_field Nodes from resolve_metabase (database = Metabase
+    display name, schema/table/column physical names); database_map is
+    [(metabase_display_name, dbt_database), ...] from config metabase.databases.
 
     Match (database, schema, table, column) case-insensitively, honouring the model's
     physical table (Node.table, set from alias). Exact match -> confidence exact; a
     case-only difference stays exact with evidence {"case_mismatch": true} and counts
-    toward case_mismatch_count. When column Nodes are supplied and the mb column
-    differs from a dbt column only by underscores/case -> confidence fuzzy with
-    evidence; ambiguous or missing columns bind nothing. Never binds across tables.
-    Traps handled explicitly: Snowflake uppercase unquoted identifiers, Metabase
-    display name != dbt database name (the map), multiple Metabase connections to one
-    warehouse (multiple map entries).
+    toward case_mismatch_count. When the mb column differs from a dbt column only by
+    underscores/case -> confidence fuzzy with evidence; ambiguous or missing columns
+    bind nothing. Never binds across tables. Traps handled explicitly: Snowflake
+    uppercase unquoted identifiers, Metabase display name != dbt database name (the
+    map), multiple Metabase connections to one warehouse (multiple map entries).
 
     models_total counts dbt model nodes (sources bind but are not counted);
     models_bound those whose (db, schema, table) appears on the Metabase side;
@@ -83,6 +86,7 @@ def bind(
     edges: list[Edge] = []
     bound: set[str] = set()
     case_mismatches = 0
+    unverified = 0
 
     for field in mb_field_nodes:
         dbt_database = display_to_dbt.get(_fold(field.database))
@@ -104,26 +108,27 @@ def bind(
         model_columns = columns_by_model.get(rel.node_id)
 
         if model_columns is None:
-            from_id = column_node_id(rel.node_id, field.column)
+            # no column inventory to verify against -- never fabricate an exact edge
+            unverified += 1
+            continue
+        exact_col = model_columns.get(_fold(field.column))
+        if exact_col is not None:
+            from_id = exact_col.node_id
+            if (exact_col.column or exact_col.name) != field.column:
+                case_mismatch = True
         else:
-            exact_col = model_columns.get(_fold(field.column))
-            if exact_col is not None:
-                from_id = exact_col.node_id
-                if (exact_col.column or exact_col.name) != field.column:
-                    case_mismatch = True
-            else:
-                squashed = _squash(field.column)
-                candidates = [c for k, c in model_columns.items() if _squash(k) == squashed]
-                if len(candidates) != 1:
-                    continue
-                fuzzy_col = candidates[0]
-                from_id = fuzzy_col.node_id
-                confidence = Confidence.FUZZY
-                evidence = {
-                    "dbt_column": fuzzy_col.column or fuzzy_col.name,
-                    "mb_column": field.column,
-                    "match": "underscore_case_fold",
-                }
+            squashed = _squash(field.column)
+            candidates = [c for k, c in model_columns.items() if _squash(k) == squashed]
+            if len(candidates) != 1:
+                continue
+            fuzzy_col = candidates[0]
+            from_id = fuzzy_col.node_id
+            confidence = Confidence.FUZZY
+            evidence = {
+                "dbt_column": fuzzy_col.column or fuzzy_col.name,
+                "mb_column": field.column,
+                "match": "underscore_case_fold",
+            }
 
         if confidence is Confidence.EXACT and case_mismatch:
             evidence = {"case_mismatch": True}
@@ -145,4 +150,5 @@ def bind(
         models_total=len(model_ids),
         unbound_models=sorted(uid for uid in model_ids if uid not in bound),
         case_mismatch_count=case_mismatches,
+        unverified_field_count=unverified,
     )

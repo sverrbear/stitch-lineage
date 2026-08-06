@@ -53,8 +53,9 @@ def _as_list(payload: Any, endpoint: str) -> list[dict[str, Any]]:
 def load_cached(cache_dir: Path) -> MetabasePayload | None:
     """Load the newest cached fetch_all run, or None if no usable run exists.
 
-    Powers `stitch build --no-metabase`-style flows and offline debugging: the raw
-    per-endpoint snapshots sit next to payload.json for repro, this reads the bundle.
+    Offline-debugging helper: the raw per-endpoint snapshots sit next to payload.json
+    for repro, this reads the bundle. Not used by `stitch build --no-metabase`, which
+    reuses the committed baseline graph.json rather than the payload cache.
     """
     if not cache_dir.is_dir():
         return None

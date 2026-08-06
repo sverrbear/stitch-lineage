@@ -115,6 +115,14 @@ def test_impact_without_candidate_graph_fails(tmp_path, monkeypatch):
     assert "stitch build" in result.output
 
 
+def test_explicitly_passed_missing_config_is_a_hard_error(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    for command in (["search", "x"], ["impact"], ["export"], ["doctor"], ["build"]):
+        result = runner.invoke(app, [*command, "--config", "nope.yml"])
+        assert result.exit_code == 1, command
+        assert "config file not found" in result.output
+
+
 def test_impact_rejects_unknown_format(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["impact", "--format", "sms"])

@@ -419,6 +419,31 @@ def test_model_without_compiled_code_is_untraced():
     assert result.untraced_columns == [column_node_id("model.demo.fct_a", "user_id")]
 
 
+def test_custom_fk_meta_keys_and_cardinality_key():
+    meta = {"fk_table": "dim_b", "fk_col": "user_id", "cardinality": "many-to-one"}
+    manifest = {
+        "metadata": {},
+        "nodes": {
+            "model.demo.fct_a": _model("fct_a", columns={"user_id": _column("user_id", meta=meta)}),
+            "model.demo.dim_b": _model(
+                "dim_b", schema="dims", columns={"user_id": _column("user_id")}
+            ),
+        },
+        "sources": {},
+    }
+    assert _edges(resolve_dbt(manifest, {}), EdgeType.RELATES_TO) == []  # custom keys need config
+    result = resolve_dbt(
+        manifest, {}, fk_meta_keys=["fk_table", "fk_col"], cardinality_meta_key="cardinality"
+    )
+    relates = _edges(result, EdgeType.RELATES_TO)
+    assert len(relates) == 1
+    edge = relates[0]
+    assert edge.from_ == column_node_id("model.demo.fct_a", "user_id")
+    assert edge.to == column_node_id("model.demo.dim_b", "user_id")
+    assert edge.evidence["keys"] == ["fk_table", "fk_col"]
+    assert edge.evidence["relationship_type"] == "many-to-one"
+
+
 def test_dangling_target_column_recorded():
     meta = {"metabase.fk_target_table": "dim_b", "metabase.fk_target_field": "missing_col"}
     manifest = {

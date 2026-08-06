@@ -48,6 +48,16 @@ def consumed_by(resolution, card_id: int) -> dict[str, dict]:
     }
 
 
+def consumed_edge(resolution, card_id: int, field_id: int):
+    return next(
+        edge
+        for edge in resolution.edges
+        if edge.edge_type == EdgeType.CONSUMED_BY
+        and edge.to == mb_card_node_id(card_id)
+        and edge.from_ == mb_field_node_id(field_id)
+    )
+
+
 def test_node_inventory(resolution):
     by_type = {}
     for node in resolution.nodes:
@@ -231,7 +241,7 @@ def test_card_on_card_cycle_guard(payload):
     assert consumed_by(resolution, 211)[mb_field_node_id(100)] == {"via": "card__210"}
 
 
-def test_by_name_falls_back_to_upstream_consumed_fields(payload):
+def test_by_name_falls_back_to_upstream_consumed_fields_as_parsed(payload):
     cards = [
         _minimal_card(220, {"source-table": 11, "fields": [["field", 105, None]]}),
         _minimal_card(
@@ -252,7 +262,99 @@ def test_by_name_falls_back_to_upstream_consumed_fields(payload):
     )
     edges = consumed_by(resolution, 221)
     assert edges[mb_field_node_id(105)]["by_name"] is True
+    # heuristic name match against the upstream card's consumed fields, not a fact
+    assert consumed_edge(resolution, 221, 105).confidence == Confidence.PARSED
     assert resolution.mbql_cards_resolved == 2
+
+
+def test_by_name_via_result_metadata_stays_exact(resolution):
+    assert consumed_edge(resolution, 203, 105).confidence == Confidence.EXACT
+    assert consumed_by(resolution, 203)[mb_field_node_id(105)]["by_name"] is True
+
+
+def test_join_alias_maps_string_ref_to_joined_table(payload):
+    condition = ["=", ["field", 101, None], ["field", 104, {"join-alias": "Cust"}]]
+    card = _minimal_card(
+        240,
+        {
+            "source-table": 10,
+            "joins": [{"alias": "Cust", "source-table": 11, "condition": condition}],
+            "breakout": [
+                ["field", "customer_name", {"base-type": "type/Text", "join-alias": "Cust"}]
+            ],
+        },
+    )
+    resolution = resolve_metabase(
+        MetabasePayload(
+            databases=payload.databases,
+            database_metadata=payload.database_metadata,
+            cards=[card],
+        ),
+        [],
+    )
+    edge = consumed_edge(resolution, 240, 105)
+    assert edge.confidence == Confidence.EXACT
+    assert edge.evidence["by_name"] is True
+    assert resolution.mbql_cards_resolved == 1
+
+
+def test_unmappable_join_alias_downgrades_to_parsed(payload):
+    condition = ["=", ["field", 101, None], ["field", 104, {"join-alias": "Up"}]]
+    cards = [
+        _minimal_card(250, {"source-table": 11, "fields": [["field", 104, None]]}),
+        _minimal_card(
+            251,
+            {
+                "source-table": 10,
+                "joins": [{"alias": "Up", "source-table": "card__250", "condition": condition}],
+                "breakout": [
+                    ["field", "order_id", {"base-type": "type/BigInteger", "join-alias": "Up"}]
+                ],
+            },
+        ),
+    ]
+    resolution = resolve_metabase(
+        MetabasePayload(
+            databases=payload.databases,
+            database_metadata=payload.database_metadata,
+            cards=cards,
+        ),
+        [],
+    )
+    assert consumed_edge(resolution, 251, 100).confidence == Confidence.PARSED
+
+
+def test_include_schemas_scopes_fields(payload):
+    scoped = resolve_metabase(payload, EXCLUDE, include_schemas=["MARTS"])
+    fields = {n.node_id for n in scoped.nodes if n.node_type == NodeType.MB_FIELD}
+    assert fields == {mb_field_node_id(i) for i in range(100, 107)}  # case-insensitive match
+
+    none_match = resolve_metabase(payload, EXCLUDE, include_schemas=["elsewhere"])
+    assert not any(n.node_type == NodeType.MB_FIELD for n in none_match.nodes)
+    assert none_match.mbql_cards_resolved == 0  # every field ref now out of scope
+
+
+def test_dashboard_with_unknown_card_not_counted_resolved(payload):
+    dashboard = {
+        "id": 310,
+        "name": "Half broken",
+        "collection_id": None,
+        "archived": False,
+        "dashcards": [
+            {"id": 1, "card_id": 999},
+            {"id": 2, "card_id": None, "visualization_settings": {"text": "virtual"}},
+        ],
+    }
+    resolution = resolve_metabase(
+        MetabasePayload(
+            databases=payload.databases,
+            database_metadata=payload.database_metadata,
+            dashboards=[dashboard],
+        ),
+        [],
+    )
+    assert resolution.dashboards_total == 1
+    assert resolution.dashboards == 0
 
 
 def test_reference_to_missing_card_is_a_problem_not_a_crash(payload):

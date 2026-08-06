@@ -128,6 +128,7 @@ class Coverage(BaseModel):
     columns_inferred: int = 0
     unbound_models: list[str] = Field(default_factory=list)
     unresolved_cards: list[int] = Field(default_factory=list)
+    unresolved_field_refs: list[dict[str, Any]] = Field(default_factory=list)
     untraced_columns: list[str] = Field(default_factory=list)
     dangling_relationships: list[str] = Field(default_factory=list)
 

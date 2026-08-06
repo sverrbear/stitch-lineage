@@ -113,6 +113,7 @@ def _walk_query(
     prefix: str,
     refs: list[tuple[Any, str, bool]],
     upstream_cards: list[int],
+    join_aliases: dict[str, Any],
 ) -> None:
     upstream = _card_source_id(query.get("source-table"))
     if upstream is not None:
@@ -124,6 +125,8 @@ def _walk_query(
     for join in joins if isinstance(joins, list) else []:
         if not isinstance(join, dict):
             continue
+        if isinstance(join.get("alias"), str):
+            join_aliases.setdefault(join["alias"], join.get("source-table"))
         join_upstream = _card_source_id(join.get("source-table"))
         if join_upstream is not None:
             upstream_cards.append(join_upstream)
@@ -132,9 +135,17 @@ def _walk_query(
         if isinstance(join.get("fields"), list):
             _collect_refs(join["fields"], f"{prefix}joins.fields", refs)
         if isinstance(join.get("source-query"), dict):
-            _walk_query(join["source-query"], f"{prefix}joins.source-query.", refs, upstream_cards)
+            _walk_query(
+                join["source-query"],
+                f"{prefix}joins.source-query.",
+                refs,
+                upstream_cards,
+                join_aliases,
+            )
     if isinstance(query.get("source-query"), dict):
-        _walk_query(query["source-query"], f"{prefix}source-query.", refs, upstream_cards)
+        _walk_query(
+            query["source-query"], f"{prefix}source-query.", refs, upstream_cards, join_aliases
+        )
 
 
 def _source_context(query: dict[str, Any]) -> tuple[str, Any] | None:
@@ -151,24 +162,44 @@ def _source_context(query: dict[str, Any]) -> tuple[str, Any] | None:
 
 
 class _CardWalk(BaseModel):
-    """Per-card walk result: direct field consumption, upstream card refs, failures."""
+    """Per-card walk result: direct field consumption, upstream card refs, join
+    aliases (alias -> source-table), failures."""
 
     consumed: dict[int, dict[str, Any]] = Field(default_factory=dict)
     upstream_cards: list[int] = Field(default_factory=list)
+    join_aliases: dict[str, Any] = Field(default_factory=dict)
     problems: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def _resolve_by_name(
     name: str,
+    opts: Any,
     context: tuple[str, Any] | None,
     field_ids: set[int],
     table_columns: dict[int, dict[str, int]],
     cards_by_id: dict[int, dict[str, Any]],
     walks: dict[int, _CardWalk],
     fields_by_id: dict[int, dict[str, Any]],
-) -> int | None:
+    join_aliases: dict[str, Any],
+) -> tuple[int | None, bool]:
+    """Resolve a by-name field ref; returns (field_id, exact).
+
+    exact is True only for deterministic lookups: the ref's join-alias mapped to a
+    joined table's metadata, the source table's metadata map, or the upstream card's
+    result_metadata. The upstream-card consumed-fields name match is a heuristic ->
+    exact=False (rendered as confidence `parsed`); an unmappable join-alias downgrades
+    whatever fallback resolves the name, for the same reason.
+    """
+    exact = True
+    join_alias = opts.get("join-alias") if isinstance(opts, dict) else None
+    if join_alias is not None:
+        source = join_aliases.get(join_alias)
+        if isinstance(source, int):
+            field_id = table_columns.get(source, {}).get(name.lower())
+            return (field_id if field_id in field_ids else None), True
+        exact = False
     if context is None:
-        return None
+        return None, exact
     kind, source_id = context
     candidates: list[int] = []
     if kind == "table":
@@ -186,6 +217,7 @@ def _resolve_by_name(
                 if isinstance(ref, list) and len(ref) >= 2 and isinstance(ref[1], int):
                     candidates.append(ref[1])
         if not candidates and source_id in walks:
+            exact = False
             candidates = sorted(
                 {
                     field_id
@@ -194,8 +226,8 @@ def _resolve_by_name(
                 }
             )
     if len(candidates) == 1 and candidates[0] in field_ids:
-        return candidates[0]
-    return None
+        return candidates[0], exact
+    return None, exact
 
 
 def _record(consumed: dict[int, dict[str, Any]], field_id: int, clause: str, **flags: bool) -> None:
@@ -207,7 +239,9 @@ def _record(consumed: dict[int, dict[str, Any]], field_id: int, clause: str, **f
 
 
 def resolve_metabase(
-    payload: MetabasePayload, exclude_collections: list[str]
+    payload: MetabasePayload,
+    exclude_collections: list[str],
+    include_schemas: list[str] | None = None,
 ) -> MetabaseResolution:
     """Build the Metabase side of the graph from raw API payloads.
 
@@ -219,21 +253,31 @@ def resolve_metabase(
       * `consumed_by` edges (mb_field -> mb_card): walk MBQL dataset_query.query over
         fields, breakout, aggregation, filter, expressions, joins[].condition,
         joins[].fields and order-by; every ["field", <id>, opts] resolves through the
-        metadata map, confidence exact. Card-on-card (source-table "card__123",
-        Metabase models/metrics) resolves transitively, cycle-guarded with a visited
-        set. Native SQL cards are Phase 3: count them in native_cards_total, resolve
+        metadata map, confidence exact. By-name string refs resolve exactly through a
+        mapped join-alias, the source table's metadata or the upstream card's
+        result_metadata; the upstream-card consumed-fields name match (and any ref
+        whose join-alias cannot be mapped to its joined table) is a heuristic and
+        ships confidence `parsed`. Card-on-card (source-table "card__123", Metabase
+        models/metrics) resolves transitively, cycle-guarded with a visited set.
+        Native SQL cards are Phase 3: count them in native_cards_total, resolve
         none, add their ids to unresolved_cards -- never drop a card silently.
       * `appears_on` edges (mb_card -> mb_dashboard) from dashcards, confidence exact.
+        A dashboard counts as resolved in coverage only when every non-virtual
+        dashcard points at a known in-scope card.
 
     exclude_collections are glob patterns (e.g. "Personal*") matched against collection
     names and full paths (personal collections also match "Personal*" via
     personal_owner_id); cards/dashboards in excluded collections are skipped entirely
     and count in no total.
 
+    include_schemas (config metabase.include_schemas) limits mb_field/table scope to
+    the named schemas, compared case-insensitively; empty/None includes every schema.
+
     Pure: payload in, nodes/edges out. No filesystem or network access.
     """
     result = MetabaseResolution()
     excluded = _excluded_collection_ids(payload.collections, exclude_collections)
+    included_schemas = {schema.casefold() for schema in include_schemas or []}
 
     db_names = {
         db.get("id"): str(db.get("name", "")) for db in payload.databases if isinstance(db, dict)
@@ -245,6 +289,8 @@ def resolve_metabase(
         tables = metadata.get("tables")
         for table in tables if isinstance(tables, list) else []:
             if not isinstance(table, dict):
+                continue
+            if included_schemas and str(table.get("schema", "")).casefold() not in included_schemas:
                 continue
             columns: dict[str, int] = {}
             fields = table.get("fields")
@@ -302,7 +348,7 @@ def resolve_metabase(
             continue
         walk = _CardWalk()
         refs: list[tuple[Any, str, bool]] = []
-        _walk_query(query, "", refs, walk.upstream_cards)
+        _walk_query(query, "", refs, walk.upstream_cards, walk.join_aliases)
         context = _source_context(query)
         for ref, clause, is_source_field in refs:
             target = ref[1]
@@ -322,12 +368,28 @@ def resolve_metabase(
     # by-name refs resolve after every card is walked, so card-context lookups do not
     # depend on card ordering in /api/card
     for card_id, ref, clause, is_source_field, context in deferred:
-        resolved = _resolve_by_name(
-            ref[1], context, field_ids, table_columns, cards_by_id, walks, fields_by_id
+        opts = ref[2] if len(ref) > 2 else None
+        resolved, exact = _resolve_by_name(
+            ref[1],
+            opts,
+            context,
+            field_ids,
+            table_columns,
+            cards_by_id,
+            walks,
+            fields_by_id,
+            walks[card_id].join_aliases,
         )
         if resolved is not None:
             walk = walks[card_id]
-            _record(walk.consumed, resolved, clause, implicit_join=is_source_field, by_name=True)
+            _record(
+                walk.consumed,
+                resolved,
+                clause,
+                implicit_join=is_source_field,
+                by_name=True,
+                parsed=not exact,
+            )
         else:
             walks[card_id].problems.append(
                 {"card_id": card_id, "ref": ref, "reason": "unresolvable field name"}
@@ -401,7 +463,7 @@ def resolve_metabase(
                     from_=mb_field_node_id(field_id),
                     to=card_node_id,
                     edge_type=EdgeType.CONSUMED_BY,
-                    confidence=Confidence.EXACT,
+                    confidence=Confidence.PARSED if entry.get("parsed") else Confidence.EXACT,
                     evidence=evidence,
                 )
             )
@@ -461,14 +523,19 @@ def resolve_metabase(
         if not isinstance(dashcards, list):
             dashcards = dashboard.get("ordered_cards")
         seen: set[int] = set()
+        all_cards_known = True
         for dashcard in dashcards if isinstance(dashcards, list) else []:
             if not isinstance(dashcard, dict):
                 continue
             card_id = dashcard.get("card_id")
+            if card_id is None:
+                continue  # virtual dashcard (text/heading)
             if not isinstance(card_id, int) or card_id in seen:
+                all_cards_known = all_cards_known and isinstance(card_id, int)
                 continue
             seen.add(card_id)
             if mb_card_node_id(card_id) not in card_node_ids:
+                all_cards_known = False
                 continue
             result.edges.append(
                 Edge(
@@ -479,6 +546,7 @@ def resolve_metabase(
                     evidence={"dashcard_id": dashcard.get("id")},
                 )
             )
-        result.dashboards += 1
+        if all_cards_known:
+            result.dashboards += 1
 
     return result

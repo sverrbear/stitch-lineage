@@ -39,8 +39,23 @@ class DbtResolution(BaseModel):
     dangling_relationships: list[str] = Field(default_factory=list)
 
 
-def resolve_dbt(manifest: dict[str, Any], catalog: dict[str, Any]) -> DbtResolution:
+_DEFAULT_FK_META_KEYS = ("metabase.fk_target_table", "metabase.fk_target_field")
+_DEFAULT_CARDINALITY_META_KEY = "relationship_type"
+
+
+def resolve_dbt(
+    manifest: dict[str, Any],
+    catalog: dict[str, Any],
+    fk_meta_keys: tuple[str, str] | list[str] = _DEFAULT_FK_META_KEYS,
+    cardinality_meta_key: str = _DEFAULT_CARDINALITY_META_KEY,
+) -> DbtResolution:
     """Build the dbt side of the graph from parsed manifest.json and catalog.json.
+
+    fk_meta_keys is the (target_table_key, target_field_key) pair read from column
+    meta for simple FK declarations, and cardinality_meta_key the key carrying the
+    relationship cardinality -- both default to the dbt-metabase/dbterd interop keys
+    and are configurable via relationships.fk_meta_keys / cardinality_meta_key in
+    stitch.yml (additive; passing nothing keeps the historical behavior).
 
     Produces:
       * source/model Nodes (node_id = dbt unique_id) from manifest nodes/sources.
@@ -80,7 +95,9 @@ def resolve_dbt(manifest: dict[str, Any], catalog: dict[str, Any]) -> DbtResolut
     column_nodes = _column_nodes(models, sources, column_specs)
     references = _references_edges(models, sources)
     feeds = _feeds_edges(models, sources, column_specs, catalog)
-    relates, dangling = _relates_to_edges(manifest_nodes, models, column_specs)
+    relates, dangling = _relates_to_edges(
+        manifest_nodes, models, column_specs, tuple(fk_meta_keys), cardinality_meta_key
+    )
 
     model_column_ids = {
         column_node_id(uid, spec["name"])
@@ -463,6 +480,8 @@ def _relates_to_edges(
     manifest_nodes: dict[str, Any],
     models: dict[str, Any],
     column_specs: dict[str, dict[str, dict[str, Any]]],
+    fk_meta_keys: tuple[str, str] = _DEFAULT_FK_META_KEYS,
+    cardinality_meta_key: str = _DEFAULT_CARDINALITY_META_KEY,
 ) -> tuple[list[Edge], list[str]]:
     resolve_target = _make_target_resolver(models)
     tests = _relationship_tests(manifest_nodes, models)
@@ -520,9 +539,9 @@ def _relates_to_edges(
         model_name = model.get("name") or uid
         for column_name, column in (model.get("columns") or {}).items():
             column_meta = _merged_meta(column)
-            fk_table = column_meta.get("metabase.fk_target_table")
+            fk_table = column_meta.get(fk_meta_keys[0])
             if fk_table:
-                fk_field = column_meta.get("metabase.fk_target_field") or column_name
+                fk_field = column_meta.get(fk_meta_keys[1]) or column_name
                 declare(
                     uid,
                     str(column_name),
@@ -530,8 +549,8 @@ def _relates_to_edges(
                     str(fk_field),
                     {
                         "source": "column_meta",
-                        "keys": ["metabase.fk_target_table", "metabase.fk_target_field"],
-                        "relationship_type": column_meta.get("relationship_type"),
+                        "keys": list(fk_meta_keys),
+                        "relationship_type": column_meta.get(cardinality_meta_key),
                     },
                 )
             for constraint in column.get("constraints") or []:

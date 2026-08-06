@@ -132,6 +132,8 @@ def test_full_build_produces_unbroken_end_to_end_chain(project):
     assert (cov.dashboards, cov.dashboards_total) == (2, 2)
     assert (cov.columns_traced, cov.columns_total) == (24, 26)
     assert set(cov.unresolved_cards) == {205, 208}
+    ghost = [r for r in cov.unresolved_field_refs if r.get("card_id") == 208]
+    assert ghost and ghost[0]["reason"] == "unresolvable field name"
     assert graph.metabase_version == "v0.53.2"
     assert graph.dbt_invocation_id == "11111111-2222-3333-4444-555555555555"
 
@@ -251,6 +253,12 @@ def test_build_no_metabase_without_baseline_is_dbt_only(project, monkeypatch):
     assert graph.coverage.models_bound == 0
     assert graph.coverage.columns_traced == 24
 
+    # a second run over the dbt-only baseline must not pretend a Metabase side exists
+    rerun = runner.invoke(app, ["build", "--no-metabase"])
+    assert rerun.exit_code == 0, rerun.output
+    assert "no Metabase side" in rerun.output
+    assert "models bound" not in rerun.output
+
 
 # --- impact -----------------------------------------------------------------
 
@@ -352,6 +360,31 @@ def test_export_writes_deterministic_jsonl(project, monkeypatch):
     assert runner.invoke(app, ["export"]).exit_code == 0
     assert nodes_path.read_text() == first_nodes
     assert edges_path.read_text() == first_edges
+
+
+def test_export_default_out_follows_config_parent(project, monkeypatch):
+    _full_build()
+    monkeypatch.delenv("STITCH_METABASE_URL")
+    monkeypatch.delenv("STITCH_METABASE_API_KEY")
+    elsewhere = project / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    result = runner.invoke(app, ["export", "--config", str(project / "stitch.yml")])
+    assert result.exit_code == 0, result.output
+    assert (project / ".stitch" / "export" / "nodes.jsonl").is_file()
+    assert not (elsewhere / ".stitch").exists()
+
+
+def test_doctor_unresolved_cards_without_env(project, monkeypatch):
+    _full_build()
+    monkeypatch.delenv("STITCH_METABASE_URL")
+    monkeypatch.delenv("STITCH_METABASE_API_KEY")
+    result = runner.invoke(app, ["doctor", "--unresolved-cards"])
+    assert result.exit_code == 0, result.output
+    assert "unresolved cards (2)" in result.output
+    assert "card 205: native SQL" in result.output
+    assert "card 208: unresolvable field name" in result.output
+    assert "ghost_column" in result.output
 
 
 def test_doctor_happy_path(project):

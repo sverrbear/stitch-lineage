@@ -45,7 +45,8 @@ def make_column(uid, name, column=None):
 
 
 def test_exact_bind():
-    result = bind([make_model()], [make_field(101, "MATCH_INTENSITY", "FCT_MATCHES")], MAP)
+    dbt_nodes = [make_model(), make_column(FCT, "match_intensity")]
+    result = bind(dbt_nodes, [make_field(101, "MATCH_INTENSITY", "FCT_MATCHES")], MAP)
     assert len(result.edges) == 1
     edge = result.edges[0]
     assert edge.from_ == column_node_id(FCT, "match_intensity")
@@ -57,11 +58,13 @@ def test_exact_bind():
     assert result.models_total == 1
     assert result.unbound_models == []
     assert result.case_mismatch_count == 0
+    assert result.unverified_field_count == 0
 
 
 def test_case_only_mismatch_stays_exact_with_evidence():
     model = make_model(table="fct_matches")
-    result = bind([model], [make_field(101, "MATCH_INTENSITY", "FCT_MATCHES")], MAP)
+    dbt_nodes = [model, make_column(FCT, "match_intensity")]
+    result = bind(dbt_nodes, [make_field(101, "MATCH_INTENSITY", "FCT_MATCHES")], MAP)
     assert len(result.edges) == 1
     edge = result.edges[0]
     assert edge.confidence == Confidence.EXACT
@@ -75,8 +78,16 @@ def test_database_display_name_mapping():
         make_field(101, "MATCH_ID", "FCT_MATCHES", database="Analytics Warehouse"),
         make_field(102, "MATCH_ID", "FCT_MATCHES", database="Unmapped BI"),
     ]
-    result = bind([make_model()], fields, mapping)
+    result = bind([make_model(), make_column(FCT, "match_id")], fields, mapping)
     assert [edge.to for edge in result.edges] == [mb_field_node_id(101)]
+
+
+def test_unverified_columns_skipped_and_counted():
+    # bound table but no column inventory: no fabricated edges, honest counter
+    result = bind([make_model()], [make_field(101, "MATCH_INTENSITY", "FCT_MATCHES")], MAP)
+    assert result.edges == []
+    assert result.models_bound == 1
+    assert result.unverified_field_count == 1
 
 
 def test_no_cross_table_guessing():
@@ -99,6 +110,8 @@ def test_unbound_model_coverage_excludes_sources():
         make_model(),
         make_model(uid="model.smitten.fct_swipes", name="fct_swipes"),
         source,
+        make_column(FCT, "match_id"),
+        make_column("source.smitten.amplitude.events", "event_id"),
     ]
     fields = [
         make_field(101, "MATCH_ID", "FCT_MATCHES"),

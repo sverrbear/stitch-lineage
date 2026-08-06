@@ -51,8 +51,11 @@ class MetabaseConfig(BaseModel):
 
 class RelationshipsConfig(BaseModel):
     write_to: Literal["meta", "relationships_test", "contract_constraint"] = "meta"
+    # exactly [target_table_key, target_field_key]; consumed by resolve_dbt
     fk_meta_keys: list[str] = Field(
-        default_factory=lambda: ["metabase.fk_target_table", "metabase.fk_target_field"]
+        default_factory=lambda: ["metabase.fk_target_table", "metabase.fk_target_field"],
+        min_length=2,
+        max_length=2,
     )
     cardinality_meta_key: str = "relationship_type"
     validated_test_severity: str = "warn"
