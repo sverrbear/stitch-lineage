@@ -1,0 +1,265 @@
+{
+  "metadata": {
+    "dbt_schema_version": "https://schemas.getdbt.com/dbt/manifest/v12.json",
+    "project_name": "demo",
+    "adapter_type": "snowflake",
+    "invocation_id": "11111111-2222-3333-4444-555555555555"
+  },
+  "nodes": {
+    "model.demo.stg_users": {
+      "unique_id": "model.demo.stg_users",
+      "resource_type": "model",
+      "name": "stg_users",
+      "alias": "stg_users",
+      "database": "analytics",
+      "schema": "staging",
+      "description": "One row per app user.",
+      "tags": ["core"],
+      "meta": {},
+      "config": {"materialized": "view", "meta": {}},
+      "original_file_path": "models/staging/stg_users.sql",
+      "depends_on": {"nodes": ["source.demo.app.raw_users"]},
+      "compiled_code": "select\n    id as user_id\n    , full_name as user_name\n    , country_code\nfrom analytics.raw.raw_users",
+      "columns": {
+        "user_id": {"name": "user_id", "description": "Primary key.", "meta": {}, "constraints": []},
+        "user_name": {"name": "user_name", "description": "Display name.", "meta": {}, "constraints": []},
+        "country_code": {"name": "country_code", "description": "ISO country code.", "meta": {}, "constraints": []}
+      }
+    },
+    "model.demo.stg_payments": {
+      "unique_id": "model.demo.stg_payments",
+      "resource_type": "model",
+      "name": "stg_payments",
+      "alias": "stg_payments",
+      "database": "analytics",
+      "schema": "staging",
+      "description": "One row per payment.",
+      "tags": ["core"],
+      "meta": {},
+      "config": {"materialized": "view", "meta": {}},
+      "original_file_path": "models/staging/stg_payments.sql",
+      "depends_on": {"nodes": ["source.demo.app.raw_payments"]},
+      "compiled_code": "select\n    id as payment_id\n    , user_id\n    , amount * fx_rate as amount_usd\n    , country_code\n    , created_at as created_time\nfrom analytics.raw.raw_payments",
+      "columns": {
+        "payment_id": {"name": "payment_id", "description": "Primary key.", "meta": {}, "constraints": []},
+        "user_id": {
+          "name": "user_id",
+          "description": "Paying user.",
+          "meta": {
+            "metabase.fk_target_table": "dim_missing",
+            "metabase.fk_target_field": "user_id",
+            "relationship_type": "many-to-one"
+          },
+          "constraints": []
+        },
+        "amount_usd": {"name": "amount_usd", "description": "Amount in USD.", "meta": {}, "constraints": [], "data_type": "float"},
+        "country_code": {"name": "country_code", "description": "ISO country code.", "meta": {}, "constraints": []},
+        "created_time": {"name": "created_time", "description": "Payment time.", "meta": {}, "constraints": []}
+      }
+    },
+    "model.demo.int_user_flags": {
+      "unique_id": "model.demo.int_user_flags",
+      "resource_type": "model",
+      "name": "int_user_flags",
+      "alias": "int_user_flags",
+      "database": "analytics",
+      "schema": "staging",
+      "description": "User flags, ephemeral.",
+      "tags": ["core"],
+      "meta": {},
+      "config": {"materialized": "ephemeral", "meta": {}},
+      "original_file_path": "models/intermediate/int_user_flags.sql",
+      "depends_on": {"nodes": ["model.demo.stg_users"]},
+      "compiled_code": "select\n    user_id\n    , country_code\n    , case when country_code = 'IS' then 1 else 0 end as is_iceland\nfrom analytics.staging.stg_users",
+      "columns": {
+        "user_id": {"name": "user_id", "description": "Primary key.", "meta": {}, "constraints": []},
+        "country_code": {"name": "country_code", "description": "ISO country code.", "meta": {}, "constraints": []},
+        "is_iceland": {"name": "is_iceland", "description": "1 when the user is in Iceland.", "meta": {}, "constraints": []}
+      }
+    },
+    "model.demo.dim_users": {
+      "unique_id": "model.demo.dim_users",
+      "resource_type": "model",
+      "name": "dim_users",
+      "alias": "dim_users",
+      "database": "analytics",
+      "schema": "dims",
+      "description": "User dimension.",
+      "tags": ["core"],
+      "meta": {},
+      "config": {"materialized": "table", "meta": {}},
+      "original_file_path": "models/dims/dim_users.sql",
+      "depends_on": {"nodes": ["model.demo.int_user_flags"]},
+      "compiled_code": "with __dbt__cte__int_user_flags as (\n    select\n        user_id\n        , country_code\n        , case when country_code = 'IS' then 1 else 0 end as is_iceland\n    from analytics.staging.stg_users\n)\nselect\n    user_id\n    , country_code\n    , is_iceland\nfrom __dbt__cte__int_user_flags",
+      "columns": {
+        "user_id": {"name": "user_id", "description": "Primary key.", "meta": {}, "constraints": []},
+        "country_code": {"name": "country_code", "description": "ISO country code.", "meta": {}, "constraints": []},
+        "is_iceland": {"name": "is_iceland", "description": "1 when the user is in Iceland.", "meta": {}, "constraints": []}
+      }
+    },
+    "model.demo.fct_orders": {
+      "unique_id": "model.demo.fct_orders",
+      "resource_type": "model",
+      "name": "fct_orders",
+      "alias": "fct_orders",
+      "database": "analytics",
+      "schema": "marts",
+      "description": "One row per paid order.",
+      "tags": ["core", "revenue"],
+      "meta": {},
+      "config": {
+        "materialized": "table",
+        "meta": {
+          "owner": "sverrir",
+          "stitch.relationships": [
+            {"to": "mart_payments", "type": "related", "note": "Both describe the payments grain."}
+          ]
+        }
+      },
+      "original_file_path": "models/marts/fct_orders.sql",
+      "depends_on": {"nodes": ["model.demo.stg_payments", "model.demo.dim_users"]},
+      "compiled_code": "select\n    payments.payment_id\n    , payments.user_id\n    , users.country_code\n    , payments.amount_usd\nfrom analytics.staging.stg_payments as payments\nleft join analytics.dims.dim_users as users\n    on payments.user_id = users.user_id",
+      "columns": {
+        "payment_id": {
+          "name": "payment_id",
+          "description": "Primary key.",
+          "meta": {},
+          "constraints": [
+            {"type": "foreign_key", "to": "ref('stg_payments')", "to_columns": ["payment_id"]}
+          ]
+        },
+        "user_id": {
+          "name": "user_id",
+          "description": "FK to dim_users.",
+          "meta": {},
+          "config": {
+            "meta": {
+              "metabase.fk_target_table": "dims.dim_users",
+              "metabase.fk_target_field": "user_id",
+              "relationship_type": "many-to-one"
+            }
+          },
+          "constraints": []
+        },
+        "country_code": {"name": "country_code", "description": "ISO country code.", "meta": {}, "constraints": []},
+        "amount_usd": {"name": "amount_usd", "description": "Order amount in USD.", "meta": {}, "constraints": []}
+      }
+    },
+    "model.demo.mart_payments": {
+      "unique_id": "model.demo.mart_payments",
+      "resource_type": "model",
+      "name": "mart_payments",
+      "alias": "mart_payments",
+      "database": "analytics",
+      "schema": "marts",
+      "description": "Payments passthrough mart.",
+      "tags": ["revenue"],
+      "meta": {
+        "stitch.relationships": [
+          {
+            "to": "dim_users",
+            "type": "many-to-one",
+            "columns": [["user_id", "user_id"], ["country_code", "country_code"]]
+          }
+        ]
+      },
+      "config": {"materialized": "table", "meta": {}},
+      "original_file_path": "models/marts/mart_payments.sql",
+      "depends_on": {"nodes": ["model.demo.stg_payments"]},
+      "compiled_code": "select *\nfrom analytics.staging.stg_payments",
+      "columns": {
+        "user_id": {"name": "user_id", "description": "Paying user.", "meta": {}, "constraints": []}
+      }
+    },
+    "model.demo.mart_pivot": {
+      "unique_id": "model.demo.mart_pivot",
+      "resource_type": "model",
+      "name": "mart_pivot",
+      "alias": "mart_pivot",
+      "database": "analytics",
+      "schema": "marts",
+      "description": "Exotic pivot the parser cannot handle.",
+      "tags": ["revenue"],
+      "meta": {},
+      "config": {"materialized": "table", "meta": {}},
+      "original_file_path": "models/marts/mart_pivot.sql",
+      "depends_on": {"nodes": ["model.demo.fct_orders"]},
+      "compiled_code": "select payment_id sum(amount_usd) pivot for in (,,) from",
+      "columns": {}
+    },
+    "seed.demo.country_codes": {
+      "unique_id": "seed.demo.country_codes",
+      "resource_type": "seed",
+      "name": "country_codes",
+      "alias": "country_codes",
+      "database": "analytics",
+      "schema": "staging",
+      "description": "Country code seed.",
+      "tags": [],
+      "meta": {},
+      "config": {"materialized": "seed", "meta": {}},
+      "original_file_path": "seeds/country_codes.csv",
+      "depends_on": {"nodes": []},
+      "columns": {}
+    },
+    "test.demo.relationships_fct_orders_user_id__user_id__ref_dim_users_": {
+      "unique_id": "test.demo.relationships_fct_orders_user_id__user_id__ref_dim_users_",
+      "resource_type": "test",
+      "name": "relationships_fct_orders_user_id__user_id__ref_dim_users_",
+      "attached_node": "model.demo.fct_orders",
+      "column_name": "user_id",
+      "test_metadata": {
+        "name": "relationships",
+        "namespace": null,
+        "kwargs": {
+          "to": "ref('dim_users')",
+          "field": "user_id",
+          "column_name": "user_id",
+          "model": "{{ get_where_subquery(ref('fct_orders')) }}"
+        }
+      },
+      "depends_on": {"nodes": ["model.demo.dim_users", "model.demo.fct_orders"]}
+    }
+  },
+  "sources": {
+    "source.demo.app.raw_users": {
+      "unique_id": "source.demo.app.raw_users",
+      "resource_type": "source",
+      "source_name": "app",
+      "name": "raw_users",
+      "identifier": "raw_users",
+      "database": "analytics",
+      "schema": "raw",
+      "description": "Raw app users.",
+      "tags": [],
+      "meta": {},
+      "original_file_path": "sources/app_source.yml",
+      "columns": {
+        "id": {"name": "id", "description": "App user id.", "meta": {}},
+        "full_name": {"name": "full_name", "description": "Full name.", "meta": {}},
+        "country_code": {"name": "country_code", "description": "ISO country code.", "meta": {}}
+      }
+    },
+    "source.demo.app.raw_payments": {
+      "unique_id": "source.demo.app.raw_payments",
+      "resource_type": "source",
+      "source_name": "app",
+      "name": "raw_payments",
+      "identifier": "raw_payments",
+      "database": "analytics",
+      "schema": "raw",
+      "description": "Raw payments.",
+      "tags": [],
+      "meta": {},
+      "original_file_path": "sources/app_source.yml",
+      "columns": {
+        "id": {"name": "id", "description": "Payment id.", "meta": {}},
+        "user_id": {"name": "user_id", "description": "Paying user.", "meta": {}},
+        "amount": {"name": "amount", "description": "Amount in local currency.", "meta": {}},
+        "fx_rate": {"name": "fx_rate", "description": "FX rate to USD.", "meta": {}},
+        "country_code": {"name": "country_code", "description": "ISO country code.", "meta": {}},
+        "created_at": {"name": "created_at", "description": "Payment time.", "meta": {}}
+      }
+    }
+  }
+}
