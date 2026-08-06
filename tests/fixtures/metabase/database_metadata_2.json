@@ -1,0 +1,113 @@
+{
+  "id": 2,
+  "name": "Analytics",
+  "engine": "snowflake",
+  "tables": [
+    {
+      "id": 10,
+      "name": "fct_orders",
+      "display_name": "Fct Orders",
+      "schema": "marts",
+      "db_id": 2,
+      "entity_type": "entity/TransactionTable",
+      "visibility_type": null,
+      "fields": [
+        {
+          "id": 100,
+          "table_id": 10,
+          "name": "order_id",
+          "display_name": "Order ID",
+          "base_type": "type/BigInteger",
+          "effective_type": "type/BigInteger",
+          "semantic_type": "type/PK",
+          "fk_target_field_id": null,
+          "visibility_type": "normal",
+          "description": "Primary key of the order"
+        },
+        {
+          "id": 101,
+          "table_id": 10,
+          "name": "customer_id",
+          "display_name": "Customer ID",
+          "base_type": "type/BigInteger",
+          "effective_type": "type/BigInteger",
+          "semantic_type": "type/FK",
+          "fk_target_field_id": 104,
+          "visibility_type": "normal",
+          "description": "Customer who placed the order"
+        },
+        {
+          "id": 102,
+          "table_id": 10,
+          "name": "order_total",
+          "display_name": "Order Total",
+          "base_type": "type/Float",
+          "effective_type": "type/Float",
+          "semantic_type": null,
+          "fk_target_field_id": null,
+          "visibility_type": "normal",
+          "description": "Order value in USD"
+        },
+        {
+          "id": 103,
+          "table_id": 10,
+          "name": "created_at",
+          "display_name": "Created At",
+          "base_type": "type/DateTimeWithLocalTZ",
+          "effective_type": "type/DateTimeWithLocalTZ",
+          "semantic_type": "type/CreationTimestamp",
+          "fk_target_field_id": null,
+          "visibility_type": "normal",
+          "description": null
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "name": "dim_customers",
+      "display_name": "Dim Customers",
+      "schema": "marts",
+      "db_id": 2,
+      "entity_type": "entity/GenericTable",
+      "visibility_type": null,
+      "fields": [
+        {
+          "id": 104,
+          "table_id": 11,
+          "name": "customer_id",
+          "display_name": "Customer ID",
+          "base_type": "type/BigInteger",
+          "effective_type": "type/BigInteger",
+          "semantic_type": "type/PK",
+          "fk_target_field_id": null,
+          "visibility_type": "normal",
+          "description": "Primary key of the customer"
+        },
+        {
+          "id": 105,
+          "table_id": 11,
+          "name": "customer_name",
+          "display_name": "Customer Name",
+          "base_type": "type/Text",
+          "effective_type": "type/Text",
+          "semantic_type": "type/Name",
+          "fk_target_field_id": null,
+          "visibility_type": "normal",
+          "description": null
+        },
+        {
+          "id": 106,
+          "table_id": 11,
+          "name": "country_code",
+          "display_name": "Country Code",
+          "base_type": "type/Text",
+          "effective_type": "type/Text",
+          "semantic_type": "type/Country",
+          "fk_target_field_id": null,
+          "visibility_type": "normal",
+          "description": "ISO 3166-1 alpha-2"
+        }
+      ]
+    }
+  ]
+}

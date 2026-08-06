@@ -1,0 +1,20 @@
+{
+  "data": [
+    {
+      "id": 1,
+      "name": "Sample Database",
+      "engine": "h2",
+      "is_sample": true,
+      "timezone": "UTC"
+    },
+    {
+      "id": 2,
+      "name": "Analytics",
+      "engine": "snowflake",
+      "is_sample": false,
+      "timezone": "UTC",
+      "details": {"db": "ANALYTICS"}
+    }
+  ],
+  "total": 2
+}

@@ -1,0 +1,29 @@
+{
+  "id": 302,
+  "name": "Customer Insights",
+  "description": null,
+  "collection_id": null,
+  "archived": false,
+  "ordered_cards": [
+    {
+      "id": 404,
+      "card_id": 203,
+      "dashboard_id": 302,
+      "row": 0,
+      "col": 0,
+      "size_x": 12,
+      "size_y": 6,
+      "card": {"id": 203, "name": "Top customers"}
+    },
+    {
+      "id": 405,
+      "card_id": 206,
+      "dashboard_id": 302,
+      "row": 6,
+      "col": 0,
+      "size_x": 6,
+      "size_y": 4,
+      "card": {"id": 206, "name": "Old orders count", "archived": true}
+    }
+  ]
+}

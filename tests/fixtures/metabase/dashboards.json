@@ -1,0 +1,19 @@
+{
+  "data": [
+    {
+      "id": 301,
+      "name": "Orders Board",
+      "description": "Core order KPIs",
+      "collection_id": 7,
+      "archived": false
+    },
+    {
+      "id": 302,
+      "name": "Customer Insights",
+      "description": null,
+      "collection_id": null,
+      "archived": false
+    }
+  ],
+  "total": 2
+}

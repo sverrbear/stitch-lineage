@@ -1,0 +1,90 @@
+# stitch impact -- PR comment workflow TEMPLATE for YOUR dbt repo (SPEC.md section 10).
+#
+# This file is shipped as a template, not run in the stitch repo itself.
+# To use it: copy to .github/workflows/stitch-impact.yml in your dbt project,
+# fill in the adapter + warehouse credentials, and uncomment the comment step.
+#
+# What it does on every PR:
+#   1. compiles the branch so target/manifest.json + catalog.json exist
+#   2. `stitch build --no-metabase` re-resolves the dbt side only -- the Metabase
+#      nodes/edges are reused from the committed baseline graph.json, and binding
+#      is recomputed against them, so this job needs NO Metabase credentials
+#   3. `stitch impact` diffs against the graph.json committed on the base branch
+#      (`git show <base>:.stitch/graph.json`) and renders the downstream blast
+#      radius as a GitHub comment
+#
+# Prerequisites:
+#   - .stitch/graph.json is committed on your default branch (run `stitch build`
+#     once locally, or via the nightly refresh job described in SPEC.md section 10)
+#   - stitch.yml is committed at the repo root
+
+name: stitch impact
+
+on:
+  pull_request:
+    paths:
+      - "models/**"
+      - "stitch.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  impact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # full history so origin/<base> is available for the baseline graph.json
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Replace dbt-snowflake with your adapter.
+      - name: Install
+        run: pip install stitch-lineage dbt-snowflake
+
+      # Compile the branch. `dbt docs generate` produces both manifest.json and
+      # catalog.json; supply whatever env vars your profiles.yml needs.
+      - name: Generate dbt artifacts
+        run: dbt deps && dbt docs generate
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+
+      # No Metabase credentials needed: reuses the committed baseline's Metabase side.
+      - name: Build candidate graph (dbt side only)
+        run: stitch build --no-metabase
+
+      # Add --fail-on-impact to turn removed/type-changed columns into a red check.
+      - name: Impact report
+        run: |
+          stitch impact --base origin/${{ github.base_ref }} --format github-comment > impact.md
+          cat impact.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Uncomment ONE of the following to post impact.md as a PR comment.
+      #
+      # Option A -- gh api (no extra actions):
+      # - name: Comment on PR
+      #   run: |
+      #     gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+      #       -f body="$(cat impact.md)"
+      #   env:
+      #     GH_TOKEN: ${{ github.token }}
+      #     PR_NUMBER: ${{ github.event.pull_request.number }}
+      #
+      # Option B -- actions/github-script:
+      # - name: Comment on PR
+      #   uses: actions/github-script@v7
+      #   with:
+      #     script: |
+      #       const fs = require('fs');
+      #       await github.rest.issues.createComment({
+      #         ...context.repo,
+      #         issue_number: context.issue.number,
+      #         body: fs.readFileSync('impact.md', 'utf8'),
+      #       });
