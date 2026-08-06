@@ -356,6 +356,8 @@ Implementation is deliberately boring: a Smitten-sized graph is a few thousand n
 
 **Column lineage view.** Reached from search or by clicking any node: upstream chain to sources, downstream through models into fields, cards, dashboards. Card nodes deep-link into Metabase and show creator + archived status.
 
+**System badges.** Every node in the lineage view and ERD carries the logo of the system it lives in — the Snowflake mark on dbt sources/models/columns (the warehouse side), the Metabase mark on fields, cards and dashboards — so a glance up a chain shows exactly where the warehouse ends and the BI layer begins. Search results and detail panels reuse the same badges. Assets live in `assets/logos/` (SVGs in brand colors; nominative use — the marks belong to their owners).
+
 **Static export.** `stitch export --site` builds the same SPA read-only with `graph.json` inlined — deployable to any static host for people who will never run a CLI. Editing requires `serve`; viewing doesn't.
 
 ## 10. `stitch impact` — the CI feature
