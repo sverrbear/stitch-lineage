@@ -31,11 +31,10 @@ The same report can go to Slack when a change actually ships. On push to main (o
 
 ## Quickstart
 
-Install from source for now (PyPI release pending):
-
 ```bash
-git clone https://github.com/<you>/stitch-lineage && cd stitch-lineage
-pip install .
+pip install stitch-lineage
+# or straight from GitHub:
+pip install git+https://github.com/sverrbear/stitch-lineage.git
 ```
 
 Drop a `stitch.yml` at your dbt project root:
