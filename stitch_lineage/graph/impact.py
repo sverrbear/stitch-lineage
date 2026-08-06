@@ -146,19 +146,20 @@ def impact_from_graphs(
     return diff, downstream(base, start_ids, max_depth=max_depth)
 
 
-def format_github_comment(diff: ColumnDiff, report: ImpactReport, graph: Graph) -> str:
-    """Render the PR comment per SPEC.md section 10.
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
-    Markdown: a headline count of removed/renamed and type-changed columns, then per
-    changed column a tree of downstream models (derived from the impacted columns'
-    parent models), Metabase cards ("#412 Card title  (Dashboard name, owner)") and
-    any impacted dashboards not already implied by a listed card. Renames stated as
-    remove+add. Empty diff -> a short "no downstream impact" line. Output is fully
-    sorted for determinism.
+
+def _gather_impact(
+    diff: ColumnDiff, report: ImpactReport, graph: Graph
+) -> tuple[list[str], list[dict]]:
+    """Shared data-gathering behind the comment renderers.
+
+    Returns (headline_parts, blocks). Each block describes one changed column:
+    {label, suffix, models, cards: [{ref, name, attribution}], dashboards} --
+    dashboards holds only impacted dashboards not already implied by a listed card.
+    Fully sorted for determinism; renderers only do string layout on top of this.
     """
-    if not diff.removed and not diff.type_changed:
-        return "✅ no downstream-impacting column changes"
-
     nodes_by_id = {node.node_id: node for node in graph.nodes}
     dashboards_by_card: dict[str, list[str]] = {}
     for edge in graph.edges:
@@ -182,14 +183,8 @@ def format_github_comment(diff: ColumnDiff, report: ImpactReport, graph: Graph) 
         tail = node_id.rpartition("::")[2]
         return (int(tail), tail) if tail.isdigit() else (1 << 31, tail)
 
-    def plural(count: int, noun: str) -> str:
-        return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
-
-    def render_block(start_id: str, suffix: str) -> list[str]:
+    def build_block(start_id: str, suffix: str) -> dict:
         impacted = report.impacted.get(start_id, [])
-        lines = [f"{column_label(start_id)} {suffix}"]
-        sections: list[list[str]] = []
-
         model_names = sorted(
             {
                 owner_model_name(item.node_id)
@@ -202,67 +197,149 @@ def format_github_comment(diff: ColumnDiff, report: ImpactReport, graph: Graph) 
                 if item.node_type is NodeType.MODEL
             }
         )
-        if model_names:
-            sections.append(
-                [f"{plural(len(model_names), 'downstream model')}: {', '.join(model_names)}"]
-            )
 
-        cards = sorted(
+        cards = []
+        implied_dashboards: set[str] = set()
+        card_items = sorted(
             (item for item in impacted if item.node_type is NodeType.MB_CARD),
             key=lambda item: card_ref(item.node_id),
         )
-        implied_dashboards: set[str] = set()
-        if cards:
-            card_lines = []
-            for item in cards:
-                node = nodes_by_id[item.node_id]
-                dash_ids = sorted(dashboards_by_card.get(item.node_id, ()))
-                dash_names = sorted(nodes_by_id[d].name for d in dash_ids if d in nodes_by_id)
-                implied_dashboards.update(dash_ids)
-                owner = node.properties.get("creator") or node.owner
-                attribution = ", ".join([*dash_names, owner] if owner else dash_names)
-                line = f"#{card_ref(item.node_id)[1]} {node.name}"
-                if attribution:
-                    line = f"{line}  ({attribution})"
-                card_lines.append(line)
-            sections.append([f"{plural(len(cards), 'Metabase card')}:", *card_lines])
+        for item in card_items:
+            node = nodes_by_id[item.node_id]
+            dash_ids = sorted(dashboards_by_card.get(item.node_id, ()))
+            dash_names = sorted(nodes_by_id[d].name for d in dash_ids if d in nodes_by_id)
+            implied_dashboards.update(dash_ids)
+            owner = node.properties.get("creator") or node.owner
+            attribution = ", ".join([*dash_names, owner] if owner else dash_names)
+            cards.append(
+                {"ref": card_ref(item.node_id)[1], "name": node.name, "attribution": attribution}
+            )
 
         extra_dashboards = sorted(
             nodes_by_id[item.node_id].name
             for item in impacted
             if item.node_type is NodeType.MB_DASHBOARD and item.node_id not in implied_dashboards
         )
-        if extra_dashboards:
-            sections.append(
-                [f"{plural(len(extra_dashboards), 'dashboard')}: {', '.join(extra_dashboards)}"]
-            )
+        return {
+            "label": column_label(start_id),
+            "suffix": suffix,
+            "models": model_names,
+            "cards": cards,
+            "dashboards": extra_dashboards,
+        }
 
+    removed = sorted(diff.removed)
+    changed = sorted(diff.type_changed, key=lambda tc: tc.node_id)
+    headline = []
+    if removed:
+        headline.append(f"{_plural(len(removed), 'column')} removed or renamed")
+    if changed:
+        headline.append(f"{_plural(len(changed), 'column type')} changed")
+
+    blocks = [build_block(start, "→ removed") for start in removed]
+    blocks.extend(
+        build_block(tc.node_id, f"→ type changed: {tc.old_type or '?'} → {tc.new_type or '?'}")
+        for tc in changed
+    )
+    return headline, blocks
+
+
+_RENAME_NOTE = "Renames appear as remove+add: a renamed column shows up here as removed."
+_NO_IMPACT = "✅ no downstream-impacting column changes"
+
+
+def format_github_comment(diff: ColumnDiff, report: ImpactReport, graph: Graph) -> str:
+    """Render the PR comment per SPEC.md section 10.
+
+    Markdown: a headline count of removed/renamed and type-changed columns, then per
+    changed column a tree of downstream models (derived from the impacted columns'
+    parent models), Metabase cards ("#412 Card title  (Dashboard name, owner)") and
+    any impacted dashboards not already implied by a listed card. Renames stated as
+    remove+add. Empty diff -> a short "no downstream impact" line. Output is fully
+    sorted for determinism.
+    """
+    headline, blocks = _gather_impact(diff, report, graph)
+    if not blocks:
+        return _NO_IMPACT
+
+    def render_block(block: dict) -> list[str]:
+        lines = [f"{block['label']} {block['suffix']}"]
+        sections: list[list[str]] = []
+        if block["models"]:
+            sections.append(
+                [
+                    f"{_plural(len(block['models']), 'downstream model')}: "
+                    f"{', '.join(block['models'])}"
+                ]
+            )
+        if block["cards"]:
+            card_lines = []
+            for card in block["cards"]:
+                line = f"#{card['ref']} {card['name']}"
+                if card["attribution"]:
+                    line = f"{line}  ({card['attribution']})"
+                card_lines.append(line)
+            sections.append([f"{_plural(len(block['cards']), 'Metabase card')}:", *card_lines])
+        if block["dashboards"]:
+            sections.append(
+                [
+                    f"{_plural(len(block['dashboards']), 'dashboard')}: "
+                    f"{', '.join(block['dashboards'])}"
+                ]
+            )
         if not sections:
             sections.append(["no downstream impact found"])
-
         for index, section in enumerate(sections):
             glyph = "└" if index == len(sections) - 1 else "├"
             lines.append(f"  {glyph} {section[0]}")
             lines.extend(f"      {sub}" for sub in section[1:])
         return lines
 
-    removed = sorted(diff.removed)
-    changed = sorted(diff.type_changed, key=lambda tc: tc.node_id)
-    headline = []
-    if removed:
-        headline.append(f"{plural(len(removed), 'column')} removed or renamed")
-    if changed:
-        headline.append(f"{plural(len(changed), 'column type')} changed")
-
     lines = [f"⚠ {', '.join(headline)}", ""]
-    for start in removed:
-        lines.extend(render_block(start, "→ removed"))
+    for block in blocks:
+        lines.extend(render_block(block))
         lines.append("")
-    for tc in changed:
-        suffix = f"→ type changed: {tc.old_type or '?'} → {tc.new_type or '?'}"
-        lines.extend(render_block(tc.node_id, suffix))
+    lines.append(f"_{_RENAME_NOTE}_")
+    if report.truncated:
+        lines.append(f"_Downstream walk truncated at depth {report.max_depth}._")
+    return "\n".join(lines)
+
+
+def format_slack_comment(diff: ColumnDiff, report: ImpactReport, graph: Graph) -> str:
+    """Render the impact report as Slack mrkdwn (same content as the GitHub comment).
+
+    Slack conventions: *bold* headline and column labels, bullet lists instead of
+    tree glyphs, card lines "#412 Card title (Dashboard name, owner)". Empty diff
+    -> the same short "no downstream impact" line.
+    """
+    headline, blocks = _gather_impact(diff, report, graph)
+    if not blocks:
+        return _NO_IMPACT
+
+    lines = [f"*⚠ {', '.join(headline)}*", ""]
+    for block in blocks:
+        lines.append(f"*{block['label']}* {block['suffix']}")
+        if block["models"]:
+            lines.append(
+                f"• {_plural(len(block['models']), 'downstream model')}: "
+                f"{', '.join(block['models'])}"
+            )
+        if block["cards"]:
+            lines.append(f"• {_plural(len(block['cards']), 'Metabase card')}:")
+            for card in block["cards"]:
+                line = f"    • #{card['ref']} {card['name']}"
+                if card["attribution"]:
+                    line = f"{line} ({card['attribution']})"
+                lines.append(line)
+        if block["dashboards"]:
+            lines.append(
+                f"• {_plural(len(block['dashboards']), 'dashboard')}: "
+                f"{', '.join(block['dashboards'])}"
+            )
+        if not (block["models"] or block["cards"] or block["dashboards"]):
+            lines.append("• no downstream impact found")
         lines.append("")
-    lines.append("_Renames appear as remove+add: a renamed column shows up here as removed._")
+    lines.append(f"_{_RENAME_NOTE}_")
     if report.truncated:
         lines.append(f"_Downstream walk truncated at depth {report.max_depth}._")
     return "\n".join(lines)

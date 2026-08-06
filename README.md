@@ -25,6 +25,10 @@ _Renames appear as remove+add: a renamed column shows up here as removed._
 
 A ready-to-copy workflow template lives in [`action/stitch-impact.yml`](action/stitch-impact.yml). The impact job needs no Metabase credentials — it reuses the Metabase side of the committed baseline graph.
 
+### Deploy-time alerts
+
+The same report can go to Slack when a change actually ships. On push to main (or after your dbt prod run), run `stitch build` followed by `stitch impact --base <previous baseline> --format slack` and pipe the output to a Slack incoming webhook — the message is Slack mrkdwn, posted by whatever bot owns the webhook. A ready-to-copy template lives in [`action/stitch-deploy-alert.yml`](action/stitch-deploy-alert.yml).
+
 ## Quickstart
 
 Install from source for now (PyPI release pending):
@@ -62,6 +66,7 @@ stitch build --check             # CI: exit 1 if the committed graph.json is sta
 stitch build --no-metabase       # dbt side only; reuses the committed Metabase side
 
 stitch impact --base origin/main --format github-comment
+stitch impact --base origin/main --format slack     # Slack mrkdwn for webhooks
 stitch impact --base origin/main --fail-on-impact   # red check on removed columns
 
 stitch search order_total        # find models, columns, fields, cards, dashboards
@@ -99,6 +104,15 @@ Native SQL cards are counted but not resolved in Phase 0 (they are Phase 3); MBQ
 | 1 | `serve`: search + detail panels, lineage view, catalog, read-only ERD; `export --site` | planned |
 | 2 | Editable ERD canvas: YAML write-back with diff preview, suggestion layer | planned |
 | 3 | Native SQL cards via sqlglot, rename heuristics, `--verify-lineage` | planned |
+
+## Built on
+
+stitch deliberately reuses the conventions of the tools next to it rather than reinventing them (SPEC §2): relationship metadata is written in `dbt-metabase`'s and `dbterd`'s meta keys, so those tools keep working unchanged on a stitch-annotated repo.
+
+- [sqlglot](https://github.com/tobymao/sqlglot) — SQL parsing and column-level lineage over dbt compiled SQL
+- [dbt-metabase](https://github.com/gouline/dbt-metabase) — FK/semantic-type/description sync into Metabase; stitch's `metabase.fk_target_*` relationship meta keys are interop-compatible with it by design
+- [dbterd](https://github.com/datnguye/dbterd) — ERD conventions; stitch matches its `relationship_type` meta key
+- [typer](https://github.com/fastapi/typer) + [pydantic](https://github.com/pydantic/pydantic) + [ruamel.yaml](https://sourceforge.net/projects/ruamel-yaml/) + [requests](https://github.com/psf/requests) + [rich](https://github.com/Textualize/rich) — CLI, data contracts/validation, round-trip YAML write-back (Phase 2), Metabase API access, terminal output
 
 ## Development
 

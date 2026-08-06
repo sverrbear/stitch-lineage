@@ -4,6 +4,7 @@ from stitch_lineage.graph.impact import (
     diff_columns,
     downstream,
     format_github_comment,
+    format_slack_comment,
     impact_from_graphs,
 )
 from stitch_lineage.graph.schema import (
@@ -209,3 +210,37 @@ def test_github_comment_no_downstream_impact_block():
     assert "fct_matches.orphan → removed" in comment
     assert "└ no downstream impact found" in comment
     _ = candidate
+
+
+def test_slack_comment_golden():
+    base, candidate = chain_graphs()
+    diff, report = impact_from_graphs(base, candidate)
+    comment = format_slack_comment(diff, report, base)
+    expected = (
+        "*⚠ 1 column removed or renamed*\n"
+        "\n"
+        "*fct_matches.match_intensity* → removed\n"
+        "• 1 downstream model: mart_engagement\n"
+        "• 1 Metabase card:\n"
+        "    • #412 Match intensity by country (Board dashboard, sverrir)\n"
+        "\n"
+        "_Renames appear as remove+add: a renamed column shows up here as removed._"
+    )
+    assert comment == expected
+
+
+def test_slack_comment_empty_diff():
+    base, _ = chain_graphs()
+    diff, report = impact_from_graphs(base, base)
+    assert format_slack_comment(diff, report, base) == (
+        "✅ no downstream-impacting column changes"
+    )
+
+
+def test_slack_comment_no_downstream_impact_block():
+    base, _ = chain_graphs()
+    diff = ColumnDiff(removed=[column_node_id(FCT, "orphan")])
+    report = ImpactReport(impacted={column_node_id(FCT, "orphan"): []})
+    comment = format_slack_comment(diff, report, base)
+    assert "*fct_matches.orphan* → removed" in comment
+    assert "• no downstream impact found" in comment

@@ -1,0 +1,80 @@
+# stitch deploy alert -- Slack notification workflow TEMPLATE for YOUR dbt repo.
+#
+# This file is shipped as a template, not run in the stitch repo itself.
+# To use it: copy to .github/workflows/stitch-deploy-alert.yml in your dbt project,
+# fill in the adapter + warehouse + Metabase credentials, add a SLACK_WEBHOOK_URL
+# secret, and uncomment the posting step.
+#
+# What it does on every push to main (adjust the trigger to fire after your dbt
+# prod run instead if you orchestrate deploys elsewhere):
+#   1. compiles main so target/manifest.json + catalog.json exist
+#   2. full `stitch build` (dbt + Metabase) -- unlike the PR job this refreshes
+#      the Metabase side too, so it needs the STITCH_METABASE_* secrets
+#   3. `stitch impact --base <previous baseline> --format slack` diffs the fresh
+#      graph against the graph.json committed before this push and renders the
+#      blast radius as Slack mrkdwn
+#   4. posts the message to a Slack incoming webhook via curl
+#
+# Note on sender identity: the message is posted by whatever bot owns the
+# webhook -- name, avatar and channel are configured on the Slack app that
+# issued SLACK_WEBHOOK_URL, not here.
+
+name: stitch deploy alert
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "models/**"
+      - "stitch.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # full history so the pre-push commit is available for the baseline
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Replace dbt-snowflake with your adapter.
+      - name: Install
+        run: pip install stitch-lineage dbt-snowflake
+
+      - name: Generate dbt artifacts
+        run: dbt deps && dbt docs generate
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+
+      # Full build: refreshes the Metabase side and the committed baseline's drift.
+      - name: Build graph
+        run: stitch build
+        env:
+          STITCH_METABASE_URL: ${{ secrets.STITCH_METABASE_URL }}
+          STITCH_METABASE_API_KEY: ${{ secrets.STITCH_METABASE_API_KEY }}
+
+      # github.event.before is the commit main pointed at before this push --
+      # its committed graph.json is the previous baseline.
+      - name: Impact report (Slack mrkdwn)
+        run: |
+          stitch impact --base ${{ github.event.before }} --format slack > impact.txt
+          cat impact.txt >> "$GITHUB_STEP_SUMMARY"
+
+      # Uncomment to post impact.txt to Slack. The webhook decides the sender
+      # (bot name/avatar) and target channel.
+      # - name: Post to Slack
+      #   run: |
+      #     jq -n --rawfile text impact.txt '{text: $text}' \
+      #       | curl -sS -X POST -H 'Content-type: application/json' \
+      #           --data @- "$SLACK_WEBHOOK_URL"
+      #   env:
+      #     SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

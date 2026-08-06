@@ -14,7 +14,11 @@ from rich.table import Table
 from stitch_lineage import __version__
 from stitch_lineage.config import StitchConfig, StitchConfigError, load_config
 from stitch_lineage.export.jsonl import export_jsonl
-from stitch_lineage.graph.impact import format_github_comment, impact_from_graphs
+from stitch_lineage.graph.impact import (
+    format_github_comment,
+    format_slack_comment,
+    impact_from_graphs,
+)
 from stitch_lineage.graph.schema import Coverage, EdgeType, Graph, NodeType
 from stitch_lineage.graph.search import search as search_graph
 from stitch_lineage.io.artifacts import StitchArtifactError, load_catalog, load_manifest
@@ -312,7 +316,7 @@ def impact(
     ] = "origin/main",
     output_format: Annotated[
         str,
-        typer.Option("--format", help="Output format: text or github-comment."),
+        typer.Option("--format", help="Output format: text, github-comment or slack."),
     ] = "text",
     fail_on_impact: Annotated[
         bool,
@@ -324,14 +328,17 @@ def impact(
     config: ConfigOpt = Path("stitch.yml"),
 ) -> None:
     """Diff the candidate graph against the baseline and walk the downstream blast radius."""
-    if output_format not in ("text", "github-comment"):
-        _fail(f"unsupported --format '{output_format}' (expected: text, github-comment)")
+    if output_format not in ("text", "github-comment", "slack"):
+        _fail(f"unsupported --format '{output_format}' (expected: text, github-comment, slack)")
     graph_path = _graph_path(config)
     candidate = _read_graph_or_fail(graph_path)
     baseline = _baseline_graph(base, graph_path)
     diff, report = impact_from_graphs(baseline, candidate)
-    comment = format_github_comment(diff, report, baseline)
-    typer.echo(comment if output_format == "github-comment" else _plain_text(comment))
+    if output_format == "slack":
+        typer.echo(format_slack_comment(diff, report, baseline))
+    else:
+        comment = format_github_comment(diff, report, baseline)
+        typer.echo(comment if output_format == "github-comment" else _plain_text(comment))
     if fail_on_impact and (diff.removed or diff.type_changed):
         raise typer.Exit(code=1)
 

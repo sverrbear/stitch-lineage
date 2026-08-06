@@ -289,6 +289,14 @@ def test_impact_reports_downstream_blast_radius(project, monkeypatch):
     assert text.exit_code == 0, text.output
     assert "stg_payments.amount_usd" in text.output
 
+    slack = runner.invoke(app, ["impact", "--base", "main", "--format", "slack"])
+    assert slack.exit_code == 0, slack.output
+    assert "*⚠ 1 column removed or renamed*" in slack.output
+    assert "*stg_payments.amount_usd* → removed" in slack.output
+    assert "    • #201 Orders overview (Orders Board, Sverrir)" in slack.output
+    assert "Orders Board" in slack.output
+    assert "├" not in slack.output and "└" not in slack.output
+
 
 def test_impact_no_change_is_quiet_and_passes_fail_on_impact(project):
     _full_build()
