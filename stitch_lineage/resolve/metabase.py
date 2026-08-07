@@ -89,52 +89,59 @@ def _card_source_id(value: Any) -> int | None:
     return None
 
 
-def _collect_refs(node: Any, clause: str, refs: list[tuple[Any, str, bool]]) -> None:
-    """Recursively collect ["field", id_or_name, opts] refs with the clause they sit in.
+def _collect_refs(
+    node: Any, clause: str, stage: str, refs: list[tuple[Any, str, bool, str]]
+) -> None:
+    """Recursively collect ["field", id_or_name, opts] refs with the clause they sit in
+    and the query stage (the prefix) that owns them.
+
+    stage travels with the ref because join aliases are scoped to their query stage:
+    the same alias may name a different table in a nested source-query.
 
     opts["source-field"] (implicit join through an FK) is emitted as an extra ref
     flagged is_source_field=True -- suggestion-layer input per SPEC.md section 7.4.
     """
     if isinstance(node, list):
         if len(node) >= 2 and node[0] == "field":
-            refs.append((node, clause, False))
+            refs.append((node, clause, False, stage))
             opts = node[2] if len(node) > 2 else None
             if isinstance(opts, dict) and opts.get("source-field") is not None:
-                refs.append((["field", opts["source-field"], None], clause, True))
+                refs.append((["field", opts["source-field"], None], clause, True, stage))
             return
         for item in node:
-            _collect_refs(item, clause, refs)
+            _collect_refs(item, clause, stage, refs)
     elif isinstance(node, dict):
         for value in node.values():
-            _collect_refs(value, clause, refs)
+            _collect_refs(value, clause, stage, refs)
 
 
 def _walk_query(
     query: dict[str, Any],
     prefix: str,
-    refs: list[tuple[Any, str, bool]],
+    refs: list[tuple[Any, str, bool, str]],
     upstream_cards: list[int],
-    join_aliases: dict[str, Any],
+    join_aliases: dict[str, dict[str, Any]],
 ) -> None:
+    aliases = join_aliases.setdefault(prefix, {})
     upstream = _card_source_id(query.get("source-table"))
     if upstream is not None:
         upstream_cards.append(upstream)
     for key in _CLAUSE_KEYS:
         if key in query:
-            _collect_refs(query[key], f"{prefix}{key}", refs)
+            _collect_refs(query[key], f"{prefix}{key}", prefix, refs)
     joins = query.get("joins")
     for join in joins if isinstance(joins, list) else []:
         if not isinstance(join, dict):
             continue
         if isinstance(join.get("alias"), str):
-            join_aliases.setdefault(join["alias"], join.get("source-table"))
+            aliases.setdefault(join["alias"], join.get("source-table"))
         join_upstream = _card_source_id(join.get("source-table"))
         if join_upstream is not None:
             upstream_cards.append(join_upstream)
         if "condition" in join:
-            _collect_refs(join["condition"], f"{prefix}joins.condition", refs)
+            _collect_refs(join["condition"], f"{prefix}joins.condition", prefix, refs)
         if isinstance(join.get("fields"), list):
-            _collect_refs(join["fields"], f"{prefix}joins.fields", refs)
+            _collect_refs(join["fields"], f"{prefix}joins.fields", prefix, refs)
         if isinstance(join.get("source-query"), dict):
             _walk_query(
                 join["source-query"],
@@ -164,11 +171,11 @@ def _source_context(query: dict[str, Any]) -> tuple[str, Any] | None:
 
 class _CardWalk(BaseModel):
     """Per-card walk result: direct field consumption, upstream card refs, join
-    aliases (alias -> source-table), failures."""
+    aliases (query stage -> {alias: source-table}), failures."""
 
     consumed: dict[int, dict[str, Any]] = Field(default_factory=dict)
     upstream_cards: list[int] = Field(default_factory=list)
-    join_aliases: dict[str, Any] = Field(default_factory=dict)
+    join_aliases: dict[str, dict[str, Any]] = Field(default_factory=dict)
     problems: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -184,6 +191,9 @@ def _resolve_by_name(
     join_aliases: dict[str, Any],
 ) -> tuple[int | None, bool]:
     """Resolve a by-name field ref; returns (field_id, exact).
+
+    join_aliases is the alias map of the ref's own query stage, not the whole card:
+    a nested source-query may reuse an outer alias for a different table.
 
     exact is True only for deterministic lookups: the ref's join-alias mapped to a
     joined table's metadata, the source table's metadata map, or the upstream card's
@@ -344,7 +354,7 @@ def resolve_metabase(
         cards_by_id[card["id"]] = card
 
     walks: dict[int, _CardWalk] = {}
-    deferred: list[tuple[int, Any, str, bool, tuple[str, Any] | None]] = []
+    deferred: list[tuple[int, Any, str, bool, tuple[str, Any] | None, str]] = []
     for card in cards_in_scope:
         card_id = card["id"]
         dataset_query = card.get("dataset_query")
@@ -352,10 +362,10 @@ def resolve_metabase(
         if not isinstance(query, dict):
             continue
         walk = _CardWalk()
-        refs: list[tuple[Any, str, bool]] = []
+        refs: list[tuple[Any, str, bool, str]] = []
         _walk_query(query, "", refs, walk.upstream_cards, walk.join_aliases)
         context = _source_context(query)
-        for ref, clause, is_source_field in refs:
+        for ref, clause, is_source_field, stage in refs:
             target = ref[1]
             if isinstance(target, int):
                 if target in field_ids:
@@ -365,14 +375,14 @@ def resolve_metabase(
                         {"card_id": card_id, "ref": ref, "reason": "unknown field id"}
                     )
             elif isinstance(target, str):
-                deferred.append((card_id, ref, clause, is_source_field, context))
+                deferred.append((card_id, ref, clause, is_source_field, context, stage))
             else:
                 walk.problems.append({"card_id": card_id, "ref": ref, "reason": "malformed ref"})
         walks[card_id] = walk
 
     # by-name refs resolve after every card is walked, so card-context lookups do not
     # depend on card ordering in /api/card
-    for card_id, ref, clause, is_source_field, context in deferred:
+    for card_id, ref, clause, is_source_field, context, stage in deferred:
         opts = ref[2] if len(ref) > 2 else None
         resolved, exact = _resolve_by_name(
             ref[1],
@@ -383,7 +393,7 @@ def resolve_metabase(
             cards_by_id,
             walks,
             fields_by_id,
-            walks[card_id].join_aliases,
+            walks[card_id].join_aliases.get(stage, {}),
         )
         if resolved is not None:
             walk = walks[card_id]
@@ -402,19 +412,30 @@ def resolve_metabase(
 
     transitive: dict[int, set[int]] = {}
 
-    def _transitive_fields(card_id: int, visiting: set[int]) -> set[int]:
+    def _transitive_fields(card_id: int, visiting: set[int]) -> tuple[set[int], bool]:
+        """Fields consumed by a card and everything upstream of it, plus whether the
+        walk was cut short by a cycle.
+
+        A cycled result is only complete relative to the walk that produced it (the
+        back-edge contributes nothing), so it is never memoized: a third card sourcing
+        a card inside an A<->B cycle would otherwise inherit the truncated set.
+        """
         if card_id in transitive:
-            return transitive[card_id]
+            return transitive[card_id], False
         if card_id in visiting:
-            return set()
+            return set(), True
         visiting.add(card_id)
         walk = walks.get(card_id)
         consumed = set(walk.consumed) if walk else set()
+        cycled = False
         for upstream_id in walk.upstream_cards if walk else []:
-            consumed |= _transitive_fields(upstream_id, visiting)
+            upstream_fields, upstream_cycled = _transitive_fields(upstream_id, visiting)
+            consumed |= upstream_fields
+            cycled = cycled or upstream_cycled
         visiting.discard(card_id)
-        transitive[card_id] = consumed
-        return consumed
+        if not cycled:
+            transitive[card_id] = consumed
+        return consumed, cycled
 
     def _resolve_card(card: dict[str, Any]) -> None:
         card_id = card["id"]
@@ -486,7 +507,8 @@ def resolve_metabase(
                     {"card_id": card_id, "ref": f"card__{upstream_id}", "reason": reason}
                 )
                 continue
-            for field_id in sorted(_transitive_fields(upstream_id, set()) - emitted):
+            upstream_fields, _ = _transitive_fields(upstream_id, set())
+            for field_id in sorted(upstream_fields - emitted):
                 emitted.add(field_id)
                 result.edges.append(
                     Edge(
