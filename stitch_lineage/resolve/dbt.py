@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 from sqlglot.lineage import lineage as _sqlglot_lineage
+from sqlglot.optimizer.qualify import qualify as _sqlglot_qualify
 from sqlglot.schema import MappingSchema
 
 from stitch_lineage.graph.schema import (
@@ -23,6 +24,8 @@ from stitch_lineage.graph.schema import (
 _DIALECT = "snowflake"
 _REF_RE = re.compile(r"ref\(\s*(?:['\"][^'\"]+['\"]\s*,\s*)?['\"]([^'\"]+)['\"]")
 _FK_EXPRESSION_RE = re.compile(r"^\s*(?P<target>[^()]+?)\s*\(\s*(?P<column>[^()]+?)\s*\)\s*$")
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
+_GENERATED_ALIAS_RE = re.compile(r"^_col_\d+$", re.IGNORECASE)
 
 
 class DbtResolution(BaseModel):
@@ -70,8 +73,19 @@ def resolve_dbt(
 
     Produces:
       * source/model Nodes (node_id = dbt unique_id) from manifest nodes/sources.
-      * column Nodes (node_id via schema.column_node_id) -- types from the catalog,
-        manifest columns as fallback for views/ephemerals absent from the catalog.
+      * column Nodes (node_id via schema.column_node_id). A model's column *set* is
+        the outermost projection of its compiled_code (sqlglot, stars expanded against
+        the schema map) unioned with its schema.yml columns; the catalog contributes
+        data types for matching names only, never set membership. The SQL is what a PR
+        changes, so a column dropped from a model but still standing in the warehouse
+        disappears from the graph at parse time -- which is what makes a pre-deploy
+        graph diff see breaking changes before deployment. Fall back to the catalog
+        set (manifest columns when the relation is absent from the catalog) whenever
+        the projection cannot be pinned down: unparseable SQL, no compiled_code, an
+        unexpandable star over an unknown upstream, or an output whose name sqlglot
+        cannot give (an unaliased literal/expression). Never an empty set from a model
+        that has columns elsewhere. Sources keep catalog-then-manifest behavior: they
+        have no SQL to derive from.
       * `references` edges (upstream model -> downstream model) from manifest
         depends_on, confidence exact. Seeds and snapshots are not node types in the
         graph, so those dependencies carry no edge and are counted in
@@ -96,9 +110,11 @@ def resolve_dbt(
         dangling_relationships (formatted "model.column -> target"), not the edge list.
 
     Coverage counts model columns only: source columns are lineage roots, so they are
-    excluded from columns_total, columns_traced and untraced_columns. A model column is
-    traced when at least one feeds edge points into it, and inferred when any of those
-    edges came from the star-expansion name-matching fallback.
+    excluded from columns_total, columns_traced and untraced_columns. columns_total
+    therefore counts the SQL-derived sets above, not the warehouse's: an undeployed
+    column counts and is traced, a column only the warehouse still has does not exist.
+    A model column is traced when at least one feeds edge points into it, and inferred
+    when any of those edges came from the star-expansion name-matching fallback.
 
     Pure: dicts in, nodes/edges out. No filesystem or network access.
     """
@@ -108,11 +124,18 @@ def resolve_dbt(
     }
     sources = dict(manifest.get("sources") or {})
 
-    column_specs = _column_specs(models, sources, catalog)
+    catalog_specs = _catalog_column_specs(models, sources, catalog)
+    mapping, manifest_sourced = _sqlglot_schema(models, sources, catalog_specs, catalog)
+    # built once and then updated in place as model column sets resolve: sqlglot would
+    # otherwise re-normalize every relation on every lineage call
+    schema_mapping = MappingSchema(mapping, dialect=_DIALECT)
+    column_specs = _column_specs(models, sources, catalog, catalog_specs, schema_mapping)
     entity_nodes = _entity_nodes(models, sources)
     column_nodes = _column_nodes(models, sources, column_specs)
     references, seed_snapshot_deps = _references_edges(models, sources, manifest_nodes)
-    feeds = _feeds_edges(models, sources, column_specs, catalog, on_progress)
+    feeds = _feeds_edges(
+        models, sources, column_specs, schema_mapping, manifest_sourced, on_progress
+    )
     relates, dangling = _relates_to_edges(
         manifest_nodes, models, column_specs, tuple(fk_meta_keys), cardinality_meta_key
     )
@@ -196,13 +219,183 @@ def _entity_nodes(models: dict[str, Any], sources: dict[str, Any]) -> list[Node]
     return nodes
 
 
+def _catalog_columns(catalog: dict[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
+    """Per entity uid: {lowercased column name: catalog column dict}."""
+    catalog_entries = {**(catalog.get("nodes") or {}), **(catalog.get("sources") or {})}
+    return {
+        uid: {
+            str(column.get("name") or key).lower(): column
+            for key, column in (entry.get("columns") or {}).items()
+        }
+        for uid, entry in catalog_entries.items()
+    }
+
+
+def _model_order(models: dict[str, Any]) -> list[str]:
+    """Model uids upstream-first, so a model's column set resolves after its parents'.
+
+    Ties broken by uid and any dependency cycle appended sorted: order must not depend
+    on dict iteration order, and dbt already rejects cycles.
+    """
+    pending = {
+        uid: {
+            dep
+            for dep in (model.get("depends_on") or {}).get("nodes") or []
+            if dep in models and dep != uid
+        }
+        for uid, model in models.items()
+    }
+    order: list[str] = []
+    while pending:
+        ready = sorted(uid for uid, deps in pending.items() if not deps & pending.keys())
+        if not ready:
+            order.extend(sorted(pending))
+            break
+        order.extend(ready)
+        for uid in ready:
+            del pending[uid]
+    return order
+
+
+def _projected_columns(compiled: str, schema_mapping: MappingSchema) -> list[str] | None:
+    """Output column names of the compiled SQL's outermost projection, or None.
+
+    None means "could not be pinned down" and the caller must fall back to the catalog
+    set -- never to an empty one. sqlglot's qualify does the work stars need (expanding
+    against the schema map, honouring `exclude`/`rename`, taking a set operation's names
+    from its first branch); a star it could not expand survives as a literal "*" output.
+    Outputs sqlglot can only name `_col_0` or `1` (an unaliased expression or literal)
+    have no name to match a catalog column or a schema.yml entry against, so they force
+    the fallback rather than inventing one.
+    """
+    if not compiled.strip():
+        return None
+    try:
+        parsed = sqlglot.parse_one(compiled, dialect=_DIALECT)
+        if not isinstance(parsed, exp.Query):
+            return None
+        names = _sqlglot_qualify(
+            parsed,
+            schema=schema_mapping,
+            dialect=_DIALECT,
+            validate_qualify_columns=False,
+            identify=False,
+        ).named_selects
+    except SqlglotError:
+        return None
+    if not names or not all(_is_usable_output_name(name) for name in names):
+        return None
+    deduped: dict[str, str] = {}
+    for name in names:
+        deduped.setdefault(name.lower(), name)
+    return list(deduped.values())
+
+
+def _is_usable_output_name(name: str) -> bool:
+    return bool(
+        name and _IDENTIFIER_RE.match(name) is not None and not _GENERATED_ALIAS_RE.match(name)
+    )
+
+
+def _merge_column_specs(
+    projected: list[str],
+    manifest_columns: dict[str, dict[str, Any]],
+    catalog_columns: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Projection order first, then schema.yml columns the projection does not name.
+
+    A documented column missing from the projection is kept: schema.yml is a claim about
+    this model that a build would surface as an error, and silently dropping it would
+    read as a deliberate removal in a graph diff.
+    """
+    specs: dict[str, dict[str, Any]] = {}
+    for name in [
+        *projected,
+        *(column.get("name") or key for key, column in manifest_columns.items()),
+    ]:
+        lower = str(name).lower()
+        if lower in specs:
+            continue
+        catalog_column = catalog_columns.get(lower) or {}
+        manifest_column = manifest_columns.get(lower) or {}
+        specs[lower] = {
+            # display casing: the warehouse's, else the project's, else the parser's
+            "name": catalog_column.get("name") or manifest_column.get("name") or name,
+            "data_type": catalog_column.get("type") or manifest_column.get("data_type"),
+            "description": manifest_column.get("description") or None,
+        }
+    return specs
+
+
 def _column_specs(
+    models: dict[str, Any],
+    sources: dict[str, Any],
+    catalog: dict[str, Any],
+    catalog_specs: dict[str, dict[str, dict[str, Any]]],
+    schema_mapping: MappingSchema,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Per entity: {lowercased column name: {name, data_type, description}}.
+
+    A model's set comes from its compiled SQL (see resolve_dbt) with the catalog
+    supplying types; sources, and models whose projection did not resolve, keep the
+    catalog-then-manifest specs. Resolved model sets are written back into
+    schema_mapping so a downstream `select *` expands to the columns that will exist
+    rather than the ones the warehouse still has -- otherwise a removal one hop up
+    would reappear downstream and feed an edge from a column node that is gone.
+    """
+    catalog_columns = _catalog_columns(catalog)
+    specs = {uid: catalog_specs.get(uid, {}) for uid in sources}
+    for uid in _model_order(models):
+        model = models[uid]
+        compiled = model.get("compiled_code") or model.get("compiled_sql") or ""
+        projected = _projected_columns(compiled, schema_mapping)
+        if projected is None:
+            specs[uid] = catalog_specs.get(uid, {})
+            continue
+        manifest_columns = {
+            str(name).lower(): column for name, column in (model.get("columns") or {}).items()
+        }
+        specs[uid] = _merge_column_specs(projected, manifest_columns, catalog_columns.get(uid, {}))
+        _update_relation(schema_mapping, model, specs[uid])
+    return specs
+
+
+def _update_relation(
+    schema_mapping: MappingSchema, model: dict[str, Any], specs: dict[str, dict[str, Any]]
+) -> None:
+    """Point the model's relation in the schema map at its resolved column set."""
+    # ephemerals compile inline as CTEs -- they are never a relation to look up
+    if _is_ephemeral(model) or not specs:
+        return
+    schema = model.get("schema")
+    table = _physical_table(model)
+    if not schema or not table:
+        return
+    parts = [part for part in (model.get("database"), schema, table) if part]
+    columns = {
+        spec["name"]: spec["data_type"] or "UNKNOWN"
+        for spec in specs.values()
+        if _is_real_column(spec["name"])
+    }
+    if not columns:
+        return
+    try:
+        schema_mapping.add_table(
+            ".".join(str(part) for part in parts), columns, dialect=_DIALECT, match_depth=False
+        )
+    except SqlglotError:
+        return
+
+
+def _catalog_column_specs(
     models: dict[str, Any], sources: dict[str, Any], catalog: dict[str, Any]
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """Per entity: {lowercased column name: {name, data_type, description}}.
 
     Catalog is authoritative (column set + data_type) when the entity is present;
-    manifest columns fill descriptions and act as full fallback otherwise.
+    manifest columns fill descriptions and act as full fallback otherwise. This is the
+    warehouse's view of a relation: the seed for the sqlglot schema map, the specs for
+    sources, and the fallback for models whose SQL does not resolve.
     """
     catalog_entries = {**(catalog.get("nodes") or {}), **(catalog.get("sources") or {})}
     specs: dict[str, dict[str, dict[str, Any]]] = {}
@@ -299,10 +492,14 @@ def _add_relation(
 def _sqlglot_schema(
     models: dict[str, Any],
     sources: dict[str, Any],
-    column_specs: dict[str, dict[str, dict[str, Any]]],
+    catalog_specs: dict[str, dict[str, dict[str, Any]]],
     catalog: dict[str, Any],
 ) -> tuple[dict[str, Any], set[str]]:
-    """sqlglot schema mapping, plus the uids whose entry came from manifest columns.
+    """Seed sqlglot schema mapping, plus the uids whose entry came from manifest columns.
+
+    Seed because _column_specs then replaces each model relation with the column set its
+    compiled SQL projects; this is the warehouse-shaped starting point that the first
+    models in dependency order expand their stars against.
 
     The catalog is authoritative, but a dev catalog only holds the relations that
     developer happens to have built -- every other relation would fail schema-qualified
@@ -348,7 +545,7 @@ def _sqlglot_schema(
         table = _physical_table(entity)
         columns = {
             spec["name"]: spec["data_type"] or "UNKNOWN"
-            for spec in column_specs.get(uid, {}).values()
+            for spec in catalog_specs.get(uid, {}).values()
             if _is_real_column(spec["name"])
         }
         if not schema or not table or not columns:
@@ -435,12 +632,10 @@ def _feeds_edges(
     models: dict[str, Any],
     sources: dict[str, Any],
     column_specs: dict[str, dict[str, dict[str, Any]]],
-    catalog: dict[str, Any],
+    schema_mapping: MappingSchema,
+    manifest_sourced: set[str],
     on_progress: Callable[[int, int], None] | None = None,
 ) -> list[Edge]:
-    mapping, manifest_sourced = _sqlglot_schema(models, sources, column_specs, catalog)
-    # built once: sqlglot would otherwise re-normalize every relation on every lineage call
-    schema_mapping = MappingSchema(mapping, dialect=_DIALECT)
     relation_map = _relation_map(models, sources)
     edges: list[Edge] = []
 

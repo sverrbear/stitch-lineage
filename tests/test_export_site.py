@@ -41,7 +41,14 @@ def test_marker_is_replaced_by_parseable_globals(tmp_path, graph_path, sample_gr
         "metabase_url": "https://mb.example.com",
         "generated_at": sample_graph.generated_at,
         "schema_version": sample_graph.schema_version,
+        "erd_default_scope": None,
     }
+
+
+def test_configured_erd_scope_is_inlined(tmp_path, graph_path):
+    out = export_site(graph_path, tmp_path / "site", None, "schema:MARTS")
+    meta = _inlined((out / "index.html").read_text())["META"]
+    assert meta["erd_default_scope"] == "schema:MARTS"
 
 
 def test_inlined_graph_matches_graph_json_exactly(tmp_path, graph_path):

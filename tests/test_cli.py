@@ -22,9 +22,16 @@ metabase:
 """
 
 
+SCOPED_CONFIG = VALID_CONFIG + 'serve:\n  erd_default_scope: "schema:MARTS"\n'
+
+
 def _write_graph(tmp_path, nodes=()):
     graph = Graph(generated_at="2026-08-06T00:00:00+00:00", nodes=list(nodes))
     write_graph(graph, tmp_path / ".stitch" / "graph.json")
+
+
+def _marts_model():
+    return Node(node_id="model.demo.fct", node_type=NodeType.MODEL, name="fct", schema_="MARTS")
 
 
 def test_help_lists_commands():
@@ -94,6 +101,32 @@ def test_serve_defaults_to_localhost_8787_and_opens_a_browser(tmp_path, monkeypa
     assert result.exit_code == 0, result.output
     assert calls[0][1] == {"host": "127.0.0.1", "port": 8787, "log_level": "warning"}
     assert opened == ["http://127.0.0.1:8787"]
+
+
+def test_serve_warns_once_about_an_erd_scope_the_graph_does_not_have(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(SCOPED_CONFIG.replace("schema:MARTS", "schema:nope"))
+    _write_graph(tmp_path, [_marts_model()])
+    calls = _stub_uvicorn(monkeypatch)
+    result = runner.invoke(app, ["serve", "--no-open"])
+    assert result.exit_code == 0, result.output
+    assert "schema:nope" in result.output
+    assert "schema:MARTS" in result.output
+    assert len(calls) == 1  # it is a warning, not a failure
+
+
+def test_serve_hands_the_configured_erd_scope_to_the_app(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(SCOPED_CONFIG)
+    _write_graph(tmp_path, [_marts_model()])
+    calls = _stub_uvicorn(monkeypatch)
+    result = runner.invoke(app, ["serve", "--no-open"])
+    assert result.exit_code == 0, result.output
+    assert "warning" not in result.output
+    meta = TestClient(calls[0][0]).get("/api/meta").json()
+    assert meta["erd_default_scope"] == "schema:MARTS"
 
 
 def test_serve_no_open_does_not_open_a_browser(tmp_path, monkeypatch):
@@ -290,6 +323,32 @@ def test_export_site_without_graph_points_at_build(tmp_path, monkeypatch):
     assert "stitch build" in result.output
 
 
+def test_export_site_inlines_the_configured_erd_scope(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(SCOPED_CONFIG)
+    _write_graph(tmp_path, [_marts_model()])
+    result = runner.invoke(app, ["export", "--format", "site"])
+    assert result.exit_code == 0, result.output
+    assert '"erd_default_scope":"schema:MARTS"' in (
+        tmp_path / ".stitch" / "site" / "index.html"
+    ).read_text()
+    assert "warning" not in result.output
+
+
+def test_export_site_warns_about_an_erd_scope_the_graph_does_not_have(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(SCOPED_CONFIG.replace("schema:MARTS", "tag:nope"))
+    _write_graph(tmp_path, [_marts_model()])
+    result = runner.invoke(app, ["export", "--format", "site"])
+    assert result.exit_code == 0, result.output
+    assert "tag:nope" in result.output
+    assert "schema:MARTS" in result.output  # names what is available
+    # still exported, and the app is told what was configured so it can say so too
+    assert '"erd_default_scope":"tag:nope"' in (
+        tmp_path / ".stitch" / "site" / "index.html"
+    ).read_text()
+
+
 def test_export_site_skips_an_unresolved_metabase_url(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("STITCH_METABASE_URL", raising=False)
@@ -305,9 +364,16 @@ def test_export_site_skips_an_unresolved_metabase_url(tmp_path, monkeypatch):
 # --- coverage report ---------------------------------------------------------
 
 
-def _coverage_output(coverage: Coverage, case_mismatch_count: int = 0) -> str:
+def _coverage_output(
+    coverage: Coverage, case_mismatch_count: int = 0, bindings_total: int = 0
+) -> str:
     with console.capture() as capture:
-        _print_coverage(coverage, metabase_side=True, case_mismatch_count=case_mismatch_count)
+        _print_coverage(
+            coverage,
+            metabase_side=True,
+            case_mismatch_count=case_mismatch_count,
+            bindings_total=bindings_total,
+        )
     return capture.get()
 
 
@@ -324,6 +390,18 @@ def test_coverage_report_stays_quiet_when_counters_are_zero():
     output = _coverage_output(Coverage())
     assert "left unbound" not in output
     assert "seed/snapshot" not in output
+
+
+def test_some_case_mismatches_stay_a_warning():
+    output = _coverage_output(Coverage(), case_mismatch_count=3, bindings_total=100)
+    assert "warning: 3 column bindings matched on a case-only mismatch" in output
+
+
+def test_case_mismatch_everywhere_is_informational_not_alarming():
+    # a Snowflake warehouse upper-cases every identifier: nothing here is actionable
+    output = _coverage_output(Coverage(), case_mismatch_count=1210, bindings_total=1210)
+    assert "note: 1210/1210 column bindings matched on a case-only mismatch" in output
+    assert "warning" not in output
 
 
 # --- build --docs / dbt.auto_docs -------------------------------------------

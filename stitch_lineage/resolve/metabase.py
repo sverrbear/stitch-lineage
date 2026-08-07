@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from fnmatch import fnmatch
-from typing import Any
+from typing import Any, NamedTuple
 
 from pydantic import BaseModel, Field
 
@@ -18,7 +18,28 @@ from stitch_lineage.graph.schema import (
 )
 from stitch_lineage.payloads import MetabasePayload
 
+# Metabase ships two dataset_query shapes and both are live in the wild:
+#   legacy  {"type": "query", "query": {...}}      -- nested one level per source-query
+#   MBQL 5  {"lib/type": "mbql/query", "stages": [...]} -- a flat chain of stages
+# Everything below walks them through shared helpers so the evidence vocabulary,
+# confidence rules and coverage counters are identical on both.
 _CLAUSE_KEYS = ("fields", "breakout", "aggregation", "filter", "expressions", "order-by")
+
+# MBQL 5 renamed `filter` to `filters`; the clause LABEL stays `filter` so a Metabase
+# upgrade does not rewrite every edge's evidence in graph.json.
+_STAGE_CLAUSE_LABELS = {
+    "fields": "fields",
+    "breakout": "breakout",
+    "aggregation": "aggregation",
+    "filters": "filter",
+    "expressions": "expressions",
+    "order-by": "order-by",
+}
+
+_LEGACY_QUERY = "legacy"
+_STAGE_QUERY = "stages"
+_NATIVE_QUERY = "native"
+_QUERY_TYPES = {_LEGACY_QUERY: "query", _STAGE_QUERY: "query", _NATIVE_QUERY: "native"}
 
 
 class MetabaseResolution(BaseModel):
@@ -87,93 +108,241 @@ def _card_source_id(value: Any) -> int | None:
     return None
 
 
-def _collect_refs(
-    node: Any, clause: str, stage: str, refs: list[tuple[Any, str, bool, str]]
-) -> None:
-    """Recursively collect ["field", id_or_name, opts] refs with the clause they sit in
-    and the query stage (the prefix) that owns them.
+def _source_card_id(container: dict[str, Any]) -> int | None:
+    """Card a query/stage reads from: MBQL 5 "source-card": N, legacy "card__N"."""
+    source_card = container.get("source-card")
+    if isinstance(source_card, int):
+        return source_card
+    return _card_source_id(container.get("source-table"))
 
-    stage travels with the ref because join aliases are scoped to their query stage:
-    the same alias may name a different table in a nested source-query.
+
+def _ref_parts(ref: list[Any]) -> tuple[Any, dict[str, Any] | None]:
+    """(target, opts) of a clause ref, for either argument order.
+
+    Legacy puts the id/name first: ["field", <id-or-name>, opts]. MBQL 5 moved the
+    options map into the middle: ["field", opts, <id-or-name>]. The dict is the
+    discriminator -- a legacy ref never carries one in position 1.
+    """
+    if len(ref) > 2 and isinstance(ref[1], dict):
+        return ref[2], ref[1]
+    target = ref[1] if len(ref) > 1 else None
+    opts = ref[2] if len(ref) > 2 and isinstance(ref[2], dict) else None
+    return target, opts
+
+
+class _Ref(NamedTuple):
+    """One collected field ref: the raw clause (verbatim, for `stitch doctor`), its
+    shape-normalized target (field id or column name) and opts, the clause label it
+    sits under, whether it came from opts["source-field"], and the join aliases of the
+    query level that owns it -- a live dict, fully populated once the walk ends. Aliases
+    are per-level on purpose: a nested source-query (or another stage) may reuse an
+    outer alias for a different table."""
+
+    raw: Any
+    target: Any
+    opts: dict[str, Any] | None
+    clause: str
+    is_source_field: bool
+    join_aliases: dict[str, Any]
+
+
+def _collect_refs(
+    node: Any,
+    clause: str,
+    refs: list[_Ref],
+    join_aliases: dict[str, Any],
+    upstream_cards: list[int],
+) -> None:
+    """Recursively collect field refs of either shape with the clause they sit in.
 
     opts["source-field"] (implicit join through an FK) is emitted as an extra ref
     flagged is_source_field=True -- suggestion-layer input per SPEC.md section 7.4.
+    A ["metric", ...] ref points at a saved metric card, so it is recorded as an
+    upstream card and its fields propagate through the card-on-card machinery.
     """
     if isinstance(node, list):
-        if len(node) >= 2 and node[0] == "field":
-            refs.append((node, clause, False, stage))
-            opts = node[2] if len(node) > 2 else None
-            if isinstance(opts, dict) and opts.get("source-field") is not None:
-                refs.append((["field", opts["source-field"], None], clause, True, stage))
+        head = node[0] if node else None
+        if head == "field" and len(node) >= 2:
+            target, opts = _ref_parts(node)
+            refs.append(_Ref(node, target, opts, clause, False, join_aliases))
+            source_field = opts.get("source-field") if isinstance(opts, dict) else None
+            if source_field is not None:
+                refs.append(
+                    _Ref(
+                        ["field", source_field, None],
+                        source_field,
+                        None,
+                        clause,
+                        True,
+                        join_aliases,
+                    )
+                )
+            return
+        if head == "metric" and len(node) >= 2:
+            metric_card, _ = _ref_parts(node)
+            if isinstance(metric_card, int):
+                upstream_cards.append(metric_card)
             return
         for item in node:
-            _collect_refs(item, clause, stage, refs)
+            _collect_refs(item, clause, refs, join_aliases, upstream_cards)
     elif isinstance(node, dict):
         for value in node.values():
-            _collect_refs(value, clause, stage, refs)
+            _collect_refs(value, clause, refs, join_aliases, upstream_cards)
 
 
 def _walk_query(
     query: dict[str, Any],
     prefix: str,
-    refs: list[tuple[Any, str, bool, str]],
+    refs: list[_Ref],
     upstream_cards: list[int],
-    join_aliases: dict[str, dict[str, Any]],
 ) -> None:
-    aliases = join_aliases.setdefault(prefix, {})
-    upstream = _card_source_id(query.get("source-table"))
+    """Walk a legacy MBQL query, descending into source-query and joins.
+
+    Each nesting level owns its join-alias scope, so a nested source-query reusing an
+    outer alias for a different table resolves against its own join.
+    """
+    aliases: dict[str, Any] = {}
+    upstream = _source_card_id(query)
     if upstream is not None:
         upstream_cards.append(upstream)
     for key in _CLAUSE_KEYS:
         if key in query:
-            _collect_refs(query[key], f"{prefix}{key}", prefix, refs)
+            _collect_refs(query[key], f"{prefix}{key}", refs, aliases, upstream_cards)
     joins = query.get("joins")
     for join in joins if isinstance(joins, list) else []:
         if not isinstance(join, dict):
             continue
         if isinstance(join.get("alias"), str):
             aliases.setdefault(join["alias"], join.get("source-table"))
-        join_upstream = _card_source_id(join.get("source-table"))
+        join_upstream = _source_card_id(join)
         if join_upstream is not None:
             upstream_cards.append(join_upstream)
         if "condition" in join:
-            _collect_refs(join["condition"], f"{prefix}joins.condition", prefix, refs)
+            _collect_refs(
+                join["condition"], f"{prefix}joins.condition", refs, aliases, upstream_cards
+            )
         if isinstance(join.get("fields"), list):
-            _collect_refs(join["fields"], f"{prefix}joins.fields", prefix, refs)
+            _collect_refs(join["fields"], f"{prefix}joins.fields", refs, aliases, upstream_cards)
         if isinstance(join.get("source-query"), dict):
             _walk_query(
-                join["source-query"],
-                f"{prefix}joins.source-query.",
-                refs,
-                upstream_cards,
-                join_aliases,
+                join["source-query"], f"{prefix}joins.source-query.", refs, upstream_cards
             )
     if isinstance(query.get("source-query"), dict):
-        _walk_query(
-            query["source-query"], f"{prefix}source-query.", refs, upstream_cards, join_aliases
-        )
+        _walk_query(query["source-query"], f"{prefix}source-query.", refs, upstream_cards)
+
+
+def _is_native_stage(stage: Any) -> bool:
+    """True for an MBQL 5 native stage: {"lib/type": "mbql.stage/native", "native": <sql>}.
+
+    Both the lib/type tag and the native payload are accepted -- instances in the wild
+    also emit the "mbql/stage/native" spelling.
+    """
+    if not isinstance(stage, dict):
+        return False
+    return "native" in str(stage.get("lib/type", "")) or stage.get("native") is not None
+
+
+def _join_source(join_stages: list[Any]) -> Any:
+    """What an MBQL 5 join reads from, in the legacy "source-table" vocabulary: a table
+    id (int) maps a join alias exactly, a "card__N" marker cannot and so downgrades
+    by-name resolution through that alias to `parsed`."""
+    first = join_stages[0] if join_stages and isinstance(join_stages[0], dict) else {}
+    card_id = _source_card_id(first)
+    return f"card__{card_id}" if card_id is not None else first.get("source-table")
+
+
+def _walk_stages(
+    stages: list[Any],
+    prefix: str,
+    refs: list[_Ref],
+    upstream_cards: list[int],
+) -> None:
+    """Walk an MBQL 5 stage chain -- the flat equivalent of nested source-query.
+
+    Stage 0 is the innermost source and keeps bare clause labels, so a single-stage
+    MBQL 5 query yields exactly the evidence its legacy twin would; each later stage
+    consumes the previous stage's output and is labelled stage1./stage2./... .
+
+    Each stage (and each join subquery) owns its join-alias scope, exactly as a legacy
+    nesting level does: a ref's join-alias names a join of its own stage.
+    """
+    for index, stage in enumerate(stages):
+        if not isinstance(stage, dict):
+            continue
+        scope: dict[str, Any] = {}
+        stage_prefix = prefix if index == 0 else f"{prefix}stage{index}."
+        upstream = _source_card_id(stage)
+        if upstream is not None:
+            upstream_cards.append(upstream)
+        if _is_native_stage(stage):
+            continue
+        for key, label in _STAGE_CLAUSE_LABELS.items():
+            if key in stage:
+                _collect_refs(stage[key], f"{stage_prefix}{label}", refs, scope, upstream_cards)
+        joins = stage.get("joins")
+        for join in joins if isinstance(joins, list) else []:
+            if not isinstance(join, dict):
+                continue
+            join_stages = join.get("stages") if isinstance(join.get("stages"), list) else []
+            if isinstance(join.get("alias"), str):
+                scope.setdefault(join["alias"], _join_source(join_stages))
+            # MBQL 5 pluralized `condition` -> `conditions`; the label stays singular
+            for key, label in (("conditions", "joins.condition"), ("fields", "joins.fields")):
+                if key in join:
+                    _collect_refs(join[key], f"{stage_prefix}{label}", refs, scope, upstream_cards)
+            if join_stages:
+                _walk_stages(
+                    join_stages, f"{stage_prefix}joins.source-query.", refs, upstream_cards
+                )
 
 
 def _source_context(query: dict[str, Any]) -> tuple[str, Any] | None:
-    """Innermost source of a query: ("table", table_id) or ("card", card_id)."""
+    """Innermost source of a legacy query: ("table", table_id) or ("card", card_id)."""
     while isinstance(query.get("source-query"), dict):
         query = query["source-query"]
-    source = query.get("source-table")
-    card_id = _card_source_id(source)
+    card_id = _source_card_id(query)
     if card_id is not None:
         return ("card", card_id)
-    if isinstance(source, int):
-        return ("table", source)
-    return None
+    source = query.get("source-table")
+    return ("table", source) if isinstance(source, int) else None
+
+
+def _stage_context(stages: list[Any]) -> tuple[str, Any] | None:
+    """Innermost source of an MBQL 5 chain -- stage 0, the _source_context twin."""
+    first = next((stage for stage in stages if isinstance(stage, dict)), None)
+    if first is None:
+        return None
+    card_id = _source_card_id(first)
+    if card_id is not None:
+        return ("card", card_id)
+    source = first.get("source-table")
+    return ("table", source) if isinstance(source, int) else None
+
+
+def _query_kind(dataset_query: Any) -> str | None:
+    """Classify a card's dataset_query, or None when there is no query to walk.
+
+    MBQL 5 wraps native SQL too ({"lib/type": "mbql/query", "stages": [{"lib/type":
+    "mbql.stage/native", ...}]}), so nativeness is decided by the first stage. That
+    keeps the native-vs-MBQL split -- and therefore coverage -- identical on both shapes.
+    """
+    if not isinstance(dataset_query, dict):
+        return None
+    stages = dataset_query.get("stages")
+    if dataset_query.get("lib/type") == "mbql/query" or isinstance(stages, list):
+        if not isinstance(stages, list) or not stages:
+            return None
+        return _NATIVE_QUERY if _is_native_stage(stages[0]) else _STAGE_QUERY
+    if dataset_query.get("type") == "native":
+        return _NATIVE_QUERY
+    return _LEGACY_QUERY if isinstance(dataset_query.get("query"), dict) else None
 
 
 class _CardWalk(BaseModel):
-    """Per-card walk result: direct field consumption, upstream card refs, join
-    aliases (query stage -> {alias: source-table}), failures."""
+    """Per-card walk result: direct field consumption, upstream card refs, failures."""
 
     consumed: dict[int, dict[str, Any]] = Field(default_factory=dict)
     upstream_cards: list[int] = Field(default_factory=list)
-    join_aliases: dict[str, dict[str, Any]] = Field(default_factory=dict)
     problems: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -190,8 +359,9 @@ def _resolve_by_name(
 ) -> tuple[int | None, bool]:
     """Resolve a by-name field ref; returns (field_id, exact).
 
-    join_aliases is the alias map of the ref's own query stage, not the whole card:
-    a nested source-query may reuse an outer alias for a different table.
+    join_aliases is the alias map of the ref's own query level (legacy nesting level or
+    MBQL 5 stage), not the whole card: another level may reuse an alias for a different
+    table.
 
     exact is True only for deterministic lookups: the ref's join-alias mapped to a
     joined table's metadata, the source table's metadata map, or the upstream card's
@@ -223,8 +393,11 @@ def _resolve_by_name(
                 if not isinstance(column, dict) or column.get("name") != name:
                     continue
                 ref = column.get("field_ref")
-                if isinstance(ref, list) and len(ref) >= 2 and isinstance(ref[1], int):
-                    candidates.append(ref[1])
+                # ["aggregation", 0] / ["expression", "name"] are not field refs
+                if isinstance(ref, list) and len(ref) >= 2 and ref[0] == "field":
+                    target, _ = _ref_parts(ref)
+                    if isinstance(target, int):
+                        candidates.append(target)
         if not candidates and source_id in walks:
             exact = False
             candidates = sorted(
@@ -260,17 +433,25 @@ def resolve_metabase(
         database/schema/table/column so resolve.bind can match them to dbt models.
       * mb_card / mb_dashboard Nodes (mb_card_node_id / mb_dashboard_node_id) with
         collection_id, creator and archived in properties.
-      * `consumed_by` edges (mb_field -> mb_card): walk MBQL dataset_query.query over
-        fields, breakout, aggregation, filter, expressions, joins[].condition,
-        joins[].fields and order-by; every ["field", <id>, opts] resolves through the
-        metadata map, confidence exact. By-name string refs resolve exactly through a
-        mapped join-alias, the source table's metadata or the upstream card's
+      * `consumed_by` edges (mb_field -> mb_card): walk the card's MBQL over fields,
+        breakout, aggregation, filter, expressions, joins[].condition, joins[].fields
+        and order-by; every ["field", <id>, opts] resolves through the metadata map,
+        confidence exact. Both query shapes are walked -- legacy dataset_query.query
+        with nested source-query, and MBQL 5 dataset_query.stages (lib/type
+        "mbql/query"), whose refs put the options map in the middle
+        (["field", opts, <id-or-name>]), chain stages instead of nesting, pluralize
+        `filter`/`condition` and carry join sources in the join's own stages. Clause
+        labels are shape-independent; MBQL 5 stages after the first are prefixed
+        stage1./stage2./... . By-name string refs resolve exactly through a mapped
+        join-alias, the source table's metadata or the upstream card's
         result_metadata; the upstream-card consumed-fields name match (and any ref
         whose join-alias cannot be mapped to its joined table) is a heuristic and
-        ships confidence `parsed`. Card-on-card (source-table "card__123", Metabase
-        models/metrics) resolves transitively, cycle-guarded with a visited set.
-        Native SQL cards are Phase 3: count them in native_cards_total, resolve
-        none, add their ids to unresolved_cards -- never drop a card silently.
+        ships confidence `parsed`. Card-on-card (source-table "card__123", MBQL 5
+        source-card, and ["metric", ...] refs to saved metric cards) resolves
+        transitively, cycle-guarded with a visited set. Native SQL cards are Phase 3
+        -- in either shape (legacy type "native", MBQL 5 first stage
+        mbql.stage/native): count them in native_cards_total, resolve none, add their
+        ids to unresolved_cards -- never drop a card silently.
       * `appears_on` edges (mb_card -> mb_dashboard) from dashcards, confidence exact.
         A dashboard counts as resolved in coverage only when every non-virtual
         dashcard points at a known in-scope card.
@@ -352,60 +533,69 @@ def resolve_metabase(
         cards_by_id[card["id"]] = card
 
     walks: dict[int, _CardWalk] = {}
-    deferred: list[tuple[int, Any, str, bool, tuple[str, Any] | None, str]] = []
+    kinds: dict[int, str | None] = {}
+    deferred: list[tuple[int, _Ref, tuple[str, Any] | None]] = []
     for card in cards_in_scope:
         card_id = card["id"]
         dataset_query = card.get("dataset_query")
-        query = dataset_query.get("query") if isinstance(dataset_query, dict) else None
-        if not isinstance(query, dict):
-            continue
+        kind = _query_kind(dataset_query)
+        kinds[card_id] = kind
         walk = _CardWalk()
-        refs: list[tuple[Any, str, bool, str]] = []
-        _walk_query(query, "", refs, walk.upstream_cards, walk.join_aliases)
-        context = _source_context(query)
-        for ref, clause, is_source_field, stage in refs:
-            target = ref[1]
-            if isinstance(target, int):
-                if target in field_ids:
-                    _record(walk.consumed, target, clause, implicit_join=is_source_field)
+        refs: list[_Ref] = []
+        if kind == _LEGACY_QUERY:
+            query = dataset_query["query"]
+            context = _source_context(query)
+            _walk_query(query, "", refs, walk.upstream_cards)
+        elif kind == _STAGE_QUERY:
+            stages = dataset_query["stages"]
+            context = _stage_context(stages)
+            _walk_stages(stages, "", refs, walk.upstream_cards)
+        else:
+            continue
+        for ref in refs:
+            if isinstance(ref.target, int):
+                if ref.target in field_ids:
+                    _record(
+                        walk.consumed, ref.target, ref.clause, implicit_join=ref.is_source_field
+                    )
                 else:
                     walk.problems.append(
-                        {"card_id": card_id, "ref": ref, "reason": "unknown field id"}
+                        {"card_id": card_id, "ref": ref.raw, "reason": "unknown field id"}
                     )
-            elif isinstance(target, str):
-                deferred.append((card_id, ref, clause, is_source_field, context, stage))
+            elif isinstance(ref.target, str):
+                deferred.append((card_id, ref, context))
             else:
-                walk.problems.append({"card_id": card_id, "ref": ref, "reason": "malformed ref"})
+                walk.problems.append(
+                    {"card_id": card_id, "ref": ref.raw, "reason": "malformed ref"}
+                )
         walks[card_id] = walk
 
     # by-name refs resolve after every card is walked, so card-context lookups do not
     # depend on card ordering in /api/card
-    for card_id, ref, clause, is_source_field, context, stage in deferred:
-        opts = ref[2] if len(ref) > 2 else None
+    for card_id, ref, context in deferred:
         resolved, exact = _resolve_by_name(
-            ref[1],
-            opts,
+            ref.target,
+            ref.opts,
             context,
             field_ids,
             table_columns,
             cards_by_id,
             walks,
             fields_by_id,
-            walks[card_id].join_aliases.get(stage, {}),
+            ref.join_aliases,
         )
         if resolved is not None:
-            walk = walks[card_id]
             _record(
-                walk.consumed,
+                walks[card_id].consumed,
                 resolved,
-                clause,
-                implicit_join=is_source_field,
+                ref.clause,
+                implicit_join=ref.is_source_field,
                 by_name=True,
                 parsed=not exact,
             )
         else:
             walks[card_id].problems.append(
-                {"card_id": card_id, "ref": ref, "reason": "unresolvable field name"}
+                {"card_id": card_id, "ref": ref.raw, "reason": "unresolvable field name"}
             )
 
     transitive: dict[int, set[int]] = {}
@@ -439,7 +629,9 @@ def resolve_metabase(
         card_id = card["id"]
         card_node_id = mb_card_node_id(card_id)
         dataset_query = card.get("dataset_query")
-        query_type = dataset_query.get("type") if isinstance(dataset_query, dict) else None
+        kind = kinds.get(card_id)
+        declared = dataset_query.get("type") if isinstance(dataset_query, dict) else None
+        query_type = _QUERY_TYPES.get(kind, declared)
         creator = card.get("creator")
         creator_name = (
             creator.get("common_name") or creator.get("email")
@@ -462,7 +654,7 @@ def resolve_metabase(
             )
         )
 
-        if query_type == "native":
+        if kind == _NATIVE_QUERY:
             result.native_cards_total += 1
             result.unresolved_cards.append(card_id)
             return
