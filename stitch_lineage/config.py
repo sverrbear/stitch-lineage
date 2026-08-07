@@ -23,6 +23,11 @@ class DbtConfig(BaseModel):
 class MetabaseDatabaseMapping(BaseModel):
     metabase_name: str
     dbt_database: str
+    # prefix present on dbt physical table names but absent in the BI database --
+    # stripped (case-insensitively, anchored at the start) before matching, so
+    # dev-target artifacts (sis_fct_matches) bind to a prod-pointed Metabase
+    # (fct_matches). Env-interpolable, e.g. table_prefix: ${USER_PREFIX}_
+    table_prefix: str = ""
 
 
 class MetabaseConfig(BaseModel):
