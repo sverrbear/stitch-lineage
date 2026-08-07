@@ -1,8 +1,10 @@
 """Read/write .stitch/graph.json with deterministic ordering (SPEC.md section 5).
 
-Determinism contract: nodes sorted by node_id, edges by (from, to, edge_type), all
-keys sorted, indent=2, trailing newline. Regeneration without semantic change must
-produce a byte-identical file so the committed graph diffs cleanly.
+Determinism contract: nodes sorted by node_id, edges by (from, to, edge_type), the
+header keys (schema_version plus the volatile fields, kept at the top of the file per
+SPEC.md section 5) first and every other key sorted, indent=2, trailing newline.
+Regeneration without semantic change must produce a byte-identical file so the
+committed graph diffs cleanly.
 """
 
 import json
@@ -12,6 +14,7 @@ from typing import Any
 from stitch_lineage.graph.schema import Graph
 
 _VOLATILE_FIELDS = ("generated_at", "dbt_invocation_id", "metabase_version")
+_HEADER_FIELDS = ("schema_version", *_VOLATILE_FIELDS)
 
 
 def _canonical_payload(graph: Graph) -> dict[str, Any]:
@@ -27,10 +30,22 @@ def _canonical_payload(graph: Graph) -> dict[str, Any]:
     return payload
 
 
+def _sort_keys(value: Any) -> Any:
+    """Deep key sort, list order untouched -- byte-determinism without json sort_keys,
+    which cannot express 'header first, everything else sorted'."""
+    if isinstance(value, dict):
+        return {key: _sort_keys(item) for key, item in sorted(value.items())}
+    if isinstance(value, list):
+        return [_sort_keys(item) for item in value]
+    return value
+
+
 def write_graph(graph: Graph, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = _canonical_payload(graph)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    payload = _sort_keys(_canonical_payload(graph))
+    ordered = {key: payload.pop(key) for key in _HEADER_FIELDS if key in payload}
+    ordered.update(payload)
+    path.write_text(json.dumps(ordered, indent=2) + "\n", encoding="utf-8")
 
 
 def read_graph(path: Path) -> Graph:

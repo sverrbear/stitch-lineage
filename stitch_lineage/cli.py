@@ -235,6 +235,12 @@ def _print_coverage(coverage: Coverage, metabase_side: bool, case_mismatch_count
         "dbt column lineage",
         f"{coverage.columns_traced}/{coverage.columns_total} columns traced{suffix}",
     )
+    if coverage.seed_snapshot_dependencies:
+        console.print(
+            f"note: {coverage.seed_snapshot_dependencies} seed/snapshot dependencies "
+            "not represented",
+            soft_wrap=True,
+        )
     if coverage.dangling_relationships:
         row("dangling relationships", str(len(coverage.dangling_relationships)))
         for item in coverage.dangling_relationships:
@@ -242,6 +248,12 @@ def _print_coverage(coverage: Coverage, metabase_side: bool, case_mismatch_count
     if case_mismatch_count:
         console.print(
             f"warning: {case_mismatch_count} column bindings matched on a case-only mismatch",
+            soft_wrap=True,
+        )
+    if coverage.unverified_field_count:
+        console.print(
+            f"warning: {coverage.unverified_field_count} Metabase fields left unbound -- "
+            "their dbt model has no column inventory (run 'dbt docs generate')",
             soft_wrap=True,
         )
 
@@ -314,6 +326,7 @@ def build(
             "columns_inferred": dbt_res.columns_inferred,
             "untraced_columns": dbt_res.untraced_columns,
             "dangling_relationships": dbt_res.dangling_relationships,
+            "seed_snapshot_dependencies": dbt_res.seed_snapshot_dependencies,
         }
         metabase_version: str | None = None
         metabase_side = True
@@ -352,6 +365,7 @@ def build(
                     models_bound=bind_res.models_bound,
                     models_total=bind_res.models_total,
                     unbound_models=bind_res.unbound_models,
+                    unverified_field_count=bind_res.unverified_field_count,
                     mbql_cards_resolved=baseline.coverage.mbql_cards_resolved,
                     mbql_cards_total=baseline.coverage.mbql_cards_total,
                     native_cards_resolved=baseline.coverage.native_cards_resolved,
@@ -395,6 +409,7 @@ def build(
                 models_bound=bind_res.models_bound,
                 models_total=bind_res.models_total,
                 unbound_models=bind_res.unbound_models,
+                unverified_field_count=bind_res.unverified_field_count,
                 mbql_cards_resolved=mb_res.mbql_cards_resolved,
                 mbql_cards_total=mb_res.mbql_cards_total,
                 native_cards_resolved=mb_res.native_cards_resolved,

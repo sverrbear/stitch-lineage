@@ -5,8 +5,8 @@ import uvicorn
 from typer.testing import CliRunner
 
 from stitch_lineage import __version__
-from stitch_lineage.cli import app
-from stitch_lineage.graph.schema import Graph, Node, NodeType
+from stitch_lineage.cli import _print_coverage, app, console
+from stitch_lineage.graph.schema import Coverage, Graph, Node, NodeType
 from stitch_lineage.io.dbt_runner import StitchDbtRunnerError
 from stitch_lineage.io.graph_store import write_graph
 
@@ -300,6 +300,30 @@ def test_export_site_skips_an_unresolved_metabase_url(tmp_path, monkeypatch):
     result = runner.invoke(app, ["export", "--format", "site"])
     assert result.exit_code == 0, result.output
     assert '"metabase_url":null' in (tmp_path / ".stitch" / "site" / "index.html").read_text()
+
+
+# --- coverage report ---------------------------------------------------------
+
+
+def _coverage_output(coverage: Coverage, case_mismatch_count: int = 0) -> str:
+    with console.capture() as capture:
+        _print_coverage(coverage, metabase_side=True, case_mismatch_count=case_mismatch_count)
+    return capture.get()
+
+
+def test_coverage_report_surfaces_unverified_fields_and_seed_deps():
+    output = _coverage_output(
+        Coverage(unverified_field_count=3, seed_snapshot_dependencies=2), case_mismatch_count=1
+    )
+    assert "warning: 3 Metabase fields left unbound" in output
+    assert "note: 2 seed/snapshot dependencies not represented" in output
+    assert "case-only mismatch" in output
+
+
+def test_coverage_report_stays_quiet_when_counters_are_zero():
+    output = _coverage_output(Coverage())
+    assert "left unbound" not in output
+    assert "seed/snapshot" not in output
 
 
 # --- build --docs / dbt.auto_docs -------------------------------------------

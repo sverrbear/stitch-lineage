@@ -28,7 +28,10 @@ class DbtResolution(BaseModel):
     """Output of resolve_dbt: the dbt side of the graph plus its coverage counters.
 
     Coverage fields map 1:1 onto graph.schema.Coverage (columns_traced/columns_total/
-    columns_inferred/untraced_columns/dangling_relationships); the CLI copies them over.
+    columns_inferred/untraced_columns/dangling_relationships/seed_snapshot_dependencies);
+    the CLI copies them over.
+
+    nodes/edges come out in resolver order -- io.graph_store canonicalizes on write.
     """
 
     nodes: list[Node] = Field(default_factory=list)
@@ -36,6 +39,7 @@ class DbtResolution(BaseModel):
     columns_traced: int = 0
     columns_total: int = 0
     columns_inferred: int = 0
+    seed_snapshot_dependencies: int = 0
     untraced_columns: list[str] = Field(default_factory=list)
     dangling_relationships: list[str] = Field(default_factory=list)
 
@@ -68,7 +72,9 @@ def resolve_dbt(
       * column Nodes (node_id via schema.column_node_id) -- types from the catalog,
         manifest columns as fallback for views/ephemerals absent from the catalog.
       * `references` edges (upstream model -> downstream model) from manifest
-        depends_on, confidence exact.
+        depends_on, confidence exact. Seeds and snapshots are not node types in the
+        graph, so those dependencies carry no edge and are counted in
+        seed_snapshot_dependencies instead of vanishing silently.
       * `feeds` edges (upstream column -> downstream column) via sqlglot.lineage over
         each model's compiled_code, dialect="snowflake", schema-qualified from the
         catalog. Plain projections/renames -> confidence exact; expressions -> parsed
@@ -101,7 +107,7 @@ def resolve_dbt(
     column_specs = _column_specs(models, sources, catalog)
     entity_nodes = _entity_nodes(models, sources)
     column_nodes = _column_nodes(models, sources, column_specs)
-    references = _references_edges(models, sources)
+    references, seed_snapshot_deps = _references_edges(models, sources, manifest_nodes)
     feeds = _feeds_edges(models, sources, column_specs, catalog, on_progress)
     relates, dangling = _relates_to_edges(
         manifest_nodes, models, column_specs, tuple(fk_meta_keys), cardinality_meta_key
@@ -117,11 +123,12 @@ def resolve_dbt(
     traced = model_column_ids & fed
 
     return DbtResolution(
-        nodes=sorted(entity_nodes + column_nodes, key=lambda n: n.node_id),
-        edges=sorted(references + feeds + relates, key=lambda e: (e.from_, e.to, e.edge_type)),
+        nodes=entity_nodes + column_nodes,
+        edges=references + feeds + relates,
         columns_traced=len(traced),
         columns_total=len(model_column_ids),
         columns_inferred=len(model_column_ids & inferred_targets),
+        seed_snapshot_dependencies=seed_snapshot_deps,
         untraced_columns=sorted(model_column_ids - fed),
         dangling_relationships=dangling,
     )
@@ -247,8 +254,13 @@ def _column_nodes(
     return nodes
 
 
-def _references_edges(models: dict[str, Any], sources: dict[str, Any]) -> list[Edge]:
+def _references_edges(
+    models: dict[str, Any], sources: dict[str, Any], manifest_nodes: dict[str, Any]
+) -> tuple[list[Edge], int]:
+    """Returns (edges, seed/snapshot dependency count) -- the latter are real
+    dependencies with no node type to point at, so they are counted, not dropped."""
     edges = []
+    seed_snapshot_deps = 0
     for uid, model in models.items():
         deps = (model.get("depends_on") or {}).get("nodes") or []
         for dep in dict.fromkeys(deps):
@@ -262,7 +274,9 @@ def _references_edges(models: dict[str, Any], sources: dict[str, Any]) -> list[E
                         evidence={"source": "manifest.depends_on"},
                     )
                 )
-    return edges
+            elif (manifest_nodes.get(dep) or {}).get("resource_type") in ("seed", "snapshot"):
+                seed_snapshot_deps += 1
+    return edges, seed_snapshot_deps
 
 
 def _sqlglot_schema(catalog: dict[str, Any]) -> dict[str, Any]:
