@@ -249,7 +249,9 @@ dbt column lineage   1,842/1,901 columns traced   (37 inferred via star-expansio
 
 **MBQL (exact).** `dataset_query.query` carries structured field refs. Walk `fields`, `breakout`, `aggregation`, `filter`, `expressions`, `joins[].condition`, `joins[].fields`, `order-by`. Each `["field", <id>, opts]` resolves through the metadata map — no parsing, no ambiguity. `opts.source-field` (implicit join via an existing FK) is itself relationship evidence → suggestion layer.
 
-**Card-on-card (exact, recursive).** `source-table: "card__123"`, Metabase models and metrics resolve transitively, cycle-guarded with a visited set.
+**MBQL 5 / "lib" (exact).** Modern Metabase (Cloud v-latest) returns `{"lib/type": "mbql/query", "stages": [...]}` instead of `type`/`query`, and both shapes are live in the wild — older self-hosted instances still emit the legacy one, so the shape is detected per card. Differences: refs put the options map in the middle (`["field", {opts}, <id-or-name>]`); a query is a flat chain of stages instead of nested `source-query`; `filter`/`condition` become `filters`/`conditions`; a card source is `source-card: N`; a join carries its own `stages`; native SQL is a `mbql.stage/native` first stage. Clause labels in `evidence` stay shape-independent (`filter`, `joins.condition`, …) so a Metabase upgrade does not rewrite the graph; stages after the first are prefixed `stage1.`, `stage2.`, ….
+
+**Card-on-card (exact, recursive).** `source-table: "card__123"`, MBQL 5 `source-card: 123` and `["metric", …]` refs (Metabase models and metrics) resolve transitively, cycle-guarded with a visited set.
 
 **Native SQL (Phase 3, `confidence: parsed`).** Substitute `{% snippet %}`, `{{var}}`, `[[optional]]`, `{{#123-card}}` template tags, then sqlglot with the Snowflake dialect; unqualified columns resolved against the catalog schema. Parse failure → degrade to table-level, record in the unresolved list. Never drop a card silently.
 

@@ -5,8 +5,8 @@ import uvicorn
 from typer.testing import CliRunner
 
 from stitch_lineage import __version__
-from stitch_lineage.cli import app
-from stitch_lineage.graph.schema import Graph, Node, NodeType
+from stitch_lineage.cli import _print_coverage, app
+from stitch_lineage.graph.schema import Coverage, Graph, Node, NodeType
 from stitch_lineage.io.dbt_runner import StitchDbtRunnerError
 from stitch_lineage.io.graph_store import write_graph
 
@@ -308,3 +308,27 @@ def test_build_docs_runner_failure_fails_cleanly(tmp_path, monkeypatch):
     result = runner.invoke(app, ["build", "--docs"])
     assert result.exit_code == 1
     assert "dbt executable not found on PATH" in result.output
+
+
+def _case_mismatch_line(case_mismatch_count: int, bindings_total: int, capsys) -> str:
+    _print_coverage(
+        Coverage(columns_traced=1, columns_total=1),
+        metabase_side=False,
+        case_mismatch_count=case_mismatch_count,
+        bindings_total=bindings_total,
+    )
+    return next(
+        line for line in capsys.readouterr().out.splitlines() if "case-only mismatch" in line
+    )
+
+
+def test_some_case_mismatches_stay_a_warning(capsys):
+    line = _case_mismatch_line(3, 100, capsys)
+    assert line == "warning: 3 column bindings matched on a case-only mismatch"
+
+
+def test_case_mismatch_everywhere_is_informational_not_alarming(capsys):
+    # a Snowflake warehouse upper-cases every identifier: nothing here is actionable
+    line = _case_mismatch_line(1210, 1210, capsys)
+    assert line.startswith("note: 1210/1210 column bindings matched on a case-only mismatch")
+    assert "warning" not in line
