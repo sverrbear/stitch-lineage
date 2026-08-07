@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='8' cy='16' r='5' fill='%2329B5E8'/%3E%3Ccircle cx='24' cy='16' r='5' fill='%23509EE3'/%3E%3Cpath d='M12 16h8' stroke='%23888' stroke-width='2.5' stroke-dasharray='3 2'/%3E%3C/svg%3E"
+    />
+    <title>stitch — dbt ↔ Metabase lineage</title>
+    <script>
+      // Theme before first paint (no flash). Mirrors src/theme.ts.
+      ;(function () {
+        try {
+          var t = localStorage.getItem('stitch-theme')
+          if (t !== 'light' && t !== 'dark') {
+            t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+          }
+          document.documentElement.dataset.theme = t
+        } catch (e) {}
+      })()
+    </script>
+    <!--
+      Static-export data injection point. `stitch export --site` replaces the
+      body of the script below with:
+        window.__STITCH_GRAPH__ = {...graph.json...};
+        window.__STITCH_META__ = {"metabase_url": ..., "generated_at": ..., "schema_version": ...};
+      When the globals are absent the app fetches api/graph and api/meta instead.
+    -->
+    <script>
+      /* __STITCH_INLINE_DATA__ */
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
