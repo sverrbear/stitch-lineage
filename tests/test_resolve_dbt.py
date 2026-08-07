@@ -185,14 +185,16 @@ def test_feeds_expression_gets_parsed_edge_per_input(resolution):
     assert all(e.confidence == Confidence.PARSED for e in incoming)
 
 
-def test_feeds_star_fallback_is_inferred(resolution):
+def test_feeds_star_over_manifest_columns_is_inferred(resolution):
+    # stg_payments is absent from the catalog, so mart_payments' `select *` expands
+    # against its schema.yml columns -- a name match, graded inferred like the fallback
     incoming = [
         e for e in _edges(resolution, EdgeType.FEEDS) if e.to.startswith(f"{MART_PAYMENTS}::")
     ]
     assert len(incoming) == 5
     for edge in incoming:
         assert edge.confidence == Confidence.INFERRED
-        assert edge.evidence == {"source": "star-expansion name match"}
+        assert edge.evidence["schema_source"] == "manifest_columns"
         assert edge.from_.split("::")[1] == edge.to.split("::")[1]
         assert edge.from_.startswith(f"{STG_PAYMENTS}::")
 
@@ -531,6 +533,232 @@ def test_star_over_upstream_with_known_columns_still_inferred():
     assert inferred[0].from_ == column_node_id("model.demo.fct_subs", "revenue_usd")
     assert inferred[0].confidence == Confidence.INFERRED
     assert not any("*" in e.from_ or "*" in e.to for e in feeds)
+
+
+# --- manifest columns as the sqlglot schema fallback ------------------------
+
+
+def _join_manifest(upstream_columns):
+    """fct_orders projects an unqualified column across a join: needs a schema map."""
+    return {
+        "metadata": {},
+        "nodes": {
+            "model.demo.stg_payments": _model(
+                "stg_payments", schema="staging", compiled="select 1", columns=upstream_columns
+            ),
+            "model.demo.dim_users": _model(
+                "dim_users",
+                schema="dims",
+                compiled="select 1",
+                columns={"user_id": _column("user_id")},
+            ),
+            "model.demo.fct_orders": _model(
+                "fct_orders",
+                compiled=(
+                    "select amount_usd * 2 as double_usd "
+                    "from analytics.staging.stg_payments as payments "
+                    "left join analytics.dims.dim_users as users "
+                    "on payments.payment_id = users.user_id"
+                ),
+                deps=["model.demo.stg_payments", "model.demo.dim_users"],
+                columns={"double_usd": _column("double_usd")},
+            ),
+        },
+        "sources": {},
+    }
+
+
+def test_manifest_columns_resolve_upstream_absent_from_catalog():
+    # a dev catalog holds only what that developer built; documented columns still
+    # let sqlglot attribute the unqualified amount_usd to the right side of the join
+    columns = {"payment_id": _column("payment_id"), "amount_usd": _column("amount_usd")}
+    result = resolve_dbt(_join_manifest(columns), {})
+    double_usd = column_node_id("model.demo.fct_orders", "double_usd")
+    assert {(e.from_, e.to) for e in _edges(result, EdgeType.FEEDS)} == {
+        (column_node_id("model.demo.stg_payments", "amount_usd"), double_usd)
+    }
+    assert _edges(result, EdgeType.FEEDS)[0].confidence == Confidence.PARSED
+    assert result.columns_traced == 1
+    assert double_usd not in result.untraced_columns
+
+
+def test_upstream_absent_from_catalog_and_manifest_stays_untraced():
+    result = resolve_dbt(_join_manifest(None), {})
+    assert _edges(result, EdgeType.FEEDS) == []
+    assert result.columns_traced == 0
+    assert column_node_id("model.demo.fct_orders", "double_usd") in result.untraced_columns
+
+
+def test_catalog_stays_authoritative_over_manifest_columns():
+    # schema.yml is stale (documents legacy_col, misses payment_id); the built table
+    # in the catalog decides both what the star expands to and the confidence grade
+    manifest = {
+        "metadata": {},
+        "nodes": {
+            "model.demo.stg_payments": _model(
+                "stg_payments",
+                schema="staging",
+                compiled="select 1",
+                columns={"amount_usd": _column("amount_usd"), "legacy_col": _column("legacy_col")},
+            ),
+            "model.demo.mart_payments": _model(
+                "mart_payments",
+                compiled="select * from analytics.staging.stg_payments",
+                deps=["model.demo.stg_payments"],
+                columns={"amount_usd": _column("amount_usd"), "legacy_col": _column("legacy_col")},
+            ),
+        },
+        "sources": {},
+    }
+    catalog = {
+        "nodes": {
+            "model.demo.stg_payments": {
+                "metadata": {"database": "analytics", "schema": "staging", "name": "stg_payments"},
+                "columns": {
+                    "payment_id": {"name": "payment_id", "type": "INT"},
+                    "amount_usd": {"name": "amount_usd", "type": "FLOAT"},
+                },
+            }
+        },
+        "sources": {},
+    }
+    result = resolve_dbt(manifest, catalog)
+    feeds = _edges(result, EdgeType.FEEDS)
+    assert {(e.from_, e.to) for e in feeds} == {
+        (
+            column_node_id("model.demo.stg_payments", "amount_usd"),
+            column_node_id("model.demo.mart_payments", "amount_usd"),
+        )
+    }
+    assert feeds[0].confidence == Confidence.EXACT
+    assert "schema_source" not in feeds[0].evidence
+    assert column_node_id("model.demo.mart_payments", "legacy_col") in result.untraced_columns
+    # the catalog column set also decides which column nodes exist at all
+    assert column_node_id("model.demo.stg_payments", "payment_id") in result.untraced_columns
+    assert column_node_id("model.demo.stg_payments", "legacy_col") not in result.untraced_columns
+
+
+def test_catalog_and_manifest_relation_casing_do_not_collide():
+    # catalog carries warehouse casing, the manifest project casing -- one schema map
+    # must hold both spellings of analytics.marts or a whole database silently vanishes
+    manifest = {
+        "metadata": {},
+        "nodes": {
+            "model.demo.dim_users": _model("dim_users", compiled="select 1"),
+            "model.demo.stg_new": _model(
+                "stg_new",
+                compiled="select 1",
+                columns={"user_id": _column("user_id"), "amount_usd": _column("amount_usd")},
+            ),
+            "model.demo.fct_orders": _model(
+                "fct_orders",
+                compiled=(
+                    "select country_code, amount_usd "
+                    "from analytics.marts.dim_users as users "
+                    "left join analytics.marts.stg_new as new_rows "
+                    "on users.user_id = new_rows.user_id"
+                ),
+                deps=["model.demo.dim_users", "model.demo.stg_new"],
+                columns={
+                    "country_code": _column("country_code"),
+                    "amount_usd": _column("amount_usd"),
+                },
+            ),
+        },
+        "sources": {},
+    }
+    catalog = {
+        "nodes": {
+            "model.demo.dim_users": {
+                "metadata": {"database": "ANALYTICS", "schema": "MARTS", "name": "DIM_USERS"},
+                "columns": {
+                    "USER_ID": {"name": "USER_ID", "type": "INT"},
+                    "COUNTRY_CODE": {"name": "COUNTRY_CODE", "type": "TEXT"},
+                },
+            }
+        },
+        "sources": {},
+    }
+    result = resolve_dbt(manifest, catalog)
+    assert {(e.from_, e.to) for e in _edges(result, EdgeType.FEEDS)} == {
+        (
+            column_node_id("model.demo.dim_users", "COUNTRY_CODE"),
+            column_node_id("model.demo.fct_orders", "country_code"),
+        ),
+        (
+            column_node_id("model.demo.stg_new", "amount_usd"),
+            column_node_id("model.demo.fct_orders", "amount_usd"),
+        ),
+    }
+
+
+def test_stale_manifest_duplicate_never_grafts_columns_onto_a_built_relation():
+    # a source declared over a mart the catalog already describes: sqlglot merges the
+    # two spellings of one relation, so the stale schema.yml column must not sneak in
+    source = {
+        "unique_id": "source.demo.app.dim_users",
+        "resource_type": "source",
+        "name": "dim_users",
+        "source_name": "app",
+        "identifier": "dim_users",
+        "database": "analytics",
+        "schema": "marts",
+        "columns": {"user_id": _column("user_id"), "stale_col": _column("stale_col")},
+    }
+    manifest = {
+        "metadata": {},
+        "nodes": {
+            "model.demo.dim_users": _model("dim_users", compiled="select 1"),
+            "model.demo.mart_x": _model(
+                "mart_x",
+                compiled="select * from analytics.marts.dim_users",
+                deps=["model.demo.dim_users"],
+                columns={"user_id": _column("user_id"), "stale_col": _column("stale_col")},
+            ),
+        },
+        "sources": {"source.demo.app.dim_users": source},
+    }
+    catalog = {
+        "nodes": {
+            "model.demo.dim_users": {
+                "metadata": {"database": "ANALYTICS", "schema": "MARTS", "name": "DIM_USERS"},
+                "columns": {"USER_ID": {"name": "USER_ID", "type": "INT"}},
+            }
+        },
+        "sources": {},
+    }
+    result = resolve_dbt(manifest, catalog)
+    traced = {e.to for e in _edges(result, EdgeType.FEEDS)}
+    assert column_node_id("model.demo.mart_x", "user_id") in traced
+    assert column_node_id("model.demo.mart_x", "stale_col") in result.untraced_columns
+
+
+def test_star_over_relation_missing_from_the_manifest_still_name_matches():
+    # the compiled SQL reads a relation no dbt node owns: nothing to expand the star
+    # against, so the name-matching fallback (inferred) is still the last resort
+    manifest = {
+        "metadata": {},
+        "nodes": {
+            "model.demo.stg_payments": _model(
+                "stg_payments",
+                schema="staging",
+                compiled="select 1",
+                columns={"amount_usd": _column("amount_usd")},
+            ),
+            "model.demo.mart_payments": _model(
+                "mart_payments",
+                compiled="select * from raw.legacy.payments",
+                deps=["model.demo.stg_payments"],
+                columns={"amount_usd": _column("amount_usd")},
+            ),
+        },
+        "sources": {},
+    }
+    feeds = _edges(resolve_dbt(manifest, {}), EdgeType.FEEDS)
+    assert len(feeds) == 1
+    assert feeds[0].from_ == column_node_id("model.demo.stg_payments", "amount_usd")
+    assert feeds[0].confidence == Confidence.INFERRED
+    assert feeds[0].evidence == {"source": "star-expansion name match"}
 
 
 def test_dangling_target_column_recorded():

@@ -229,9 +229,11 @@ Without `feeds` edges the chain has a hole in the middle: a renamed staging colu
 
 Mechanics: for every model, take `compiled_code` from the manifest (Jinja already rendered — this is the *easy* SQL-parsing problem, unlike Metabase native cards with their template tags) and run `sqlglot.lineage` per output column with `dialect="snowflake"`, schema-qualified from the catalog so unaliased columns resolve. Each traced input column becomes a `feeds` edge, `confidence: exact` for plain projections and renames, `parsed` for expressions (a column derived from `amount * fx_rate` gets edges from both inputs).
 
+The catalog is authoritative but incomplete: a *dev* catalog only describes the relations that developer happens to have built, and an upstream missing from the schema map takes its whole downstream subtree untraced with it. Relations absent from the catalog therefore fall back to their **manifest columns** (`schema.yml` docs) — types are unknown there, names are all resolution needs. Nothing is invented: a relation documented in neither stays out of the map and its consumers stay untraced.
+
 Known hard cases, handled explicitly rather than discovered:
 
-- **`SELECT *` and dbt macros like `dbt_utils.star`** — post-compilation these are literal stars; expand against the upstream catalog schema. Unexpandable (upstream missing from catalog) → fall back to name-matching columns across the edge, `confidence: inferred`.
+- **`SELECT *` and dbt macros like `dbt_utils.star`** — post-compilation these are literal stars; expand against the upstream catalog schema. Expanded against manifest columns instead, or unexpandable (upstream in neither) and falling back to name-matching columns across the edge → `confidence: inferred` either way: a star resolved against documentation is a name match however it is dressed up.
 - **Ephemeral models** — compiled inline into their parents as CTEs; sqlglot traces through CTEs natively, but the intermediate hop attributes to the parent model. Acceptable: lineage endpoints stay correct.
 - **Unparseable model** — fail soft: emit model-level `references` only, add the model to the unresolved list, keep building. One exotic PIVOT must not blank the whole graph.
 - **Lateral flatten / VARIANT paths** — Snowflake-specific and common in event models; sqlglot handles most, and `column:path` sub-column lineage is explicitly out of scope (the edge lands on the VARIANT column, which is the right conservative grain).
