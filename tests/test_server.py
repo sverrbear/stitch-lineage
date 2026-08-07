@@ -51,12 +51,24 @@ def test_api_meta_shape(client, sample_graph):
         "metabase_url": MB_URL,
         "generated_at": sample_graph.generated_at,
         "schema_version": sample_graph.schema_version,
+        "erd_default_scope": None,
     }
 
 
 def test_api_meta_tolerates_no_metabase_url(graph_path):
     meta = TestClient(create_app(graph_path, None)).get("/api/meta").json()
     assert meta["metabase_url"] is None
+
+
+def test_api_meta_carries_the_configured_erd_scope(graph_path):
+    client = TestClient(create_app(graph_path, None, "schema:MARTS"))
+    assert client.get("/api/meta").json()["erd_default_scope"] == "schema:MARTS"
+
+
+def test_api_meta_passes_an_unknown_erd_scope_through_for_the_app_to_flag(graph_path):
+    # the app falls back to its auto-picked scope and notes the mismatch itself
+    client = TestClient(create_app(graph_path, None, "tag:nope"))
+    assert client.get("/api/meta").json()["erd_default_scope"] == "tag:nope"
 
 
 def test_index_html_is_served_at_root(client):

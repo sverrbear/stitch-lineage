@@ -915,6 +915,15 @@ kbd {
   max-width: 340px;
 }
 
+.scope-warning {
+  color: var(--edge-weak);
+  font-size: 12px;
+}
+
+.scope-warning code {
+  font-size: 11px;
+}
+
 @media (max-width: 720px) {
   .app-header {
     gap: 10px;

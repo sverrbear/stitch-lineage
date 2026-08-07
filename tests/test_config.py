@@ -145,3 +145,39 @@ def test_env_interpolation_inside_longer_strings(tmp_path, monkeypatch):
     config = VALID_CONFIG.replace("${STITCH_METABASE_URL}", "https://${MB_HOST}/api")
     cfg = load_config(_write(tmp_path, config))
     assert cfg.metabase.url == "https://mb.example.com/api"
+
+
+def _serve_config(scope_line: str) -> str:
+    return VALID_CONFIG + f"serve:\n  erd_default_scope: {scope_line}\n"
+
+
+def test_serve_section_is_optional(tmp_path, monkeypatch):
+    monkeypatch.setenv("STITCH_METABASE_URL", "https://mb.example.com")
+    monkeypatch.setenv("STITCH_METABASE_API_KEY", "mb_test_key")
+    cfg = load_config(_write(tmp_path, VALID_CONFIG))
+    assert cfg.serve.erd_default_scope is None
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        ('"schema:models"', "schema:models"),
+        ('"tag:core"', "tag:core"),
+        ('"  schema:MARTS  "', "schema:MARTS"),
+        ('"tag:core:extra"', "tag:core:extra"),
+        ('""', None),
+    ],
+)
+def test_erd_default_scope_accepted_values(tmp_path, monkeypatch, configured, expected):
+    monkeypatch.setenv("STITCH_METABASE_URL", "https://mb.example.com")
+    monkeypatch.setenv("STITCH_METABASE_API_KEY", "mb_test_key")
+    cfg = load_config(_write(tmp_path, _serve_config(configured)))
+    assert cfg.serve.erd_default_scope == expected
+
+
+@pytest.mark.parametrize("configured", ['"models"', '"schemas:models"', '"schema:"', '"tag: "'])
+def test_erd_default_scope_rejects_an_unprefixed_value(tmp_path, monkeypatch, configured):
+    monkeypatch.setenv("STITCH_METABASE_URL", "https://mb.example.com")
+    monkeypatch.setenv("STITCH_METABASE_API_KEY", "mb_test_key")
+    with pytest.raises(StitchConfigError, match="erd_default_scope"):
+        load_config(_write(tmp_path, _serve_config(configured)))

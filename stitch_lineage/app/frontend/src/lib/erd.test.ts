@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { defaultScope, erdClickHref, erdColumnNodeId, erdForScope, listScopes } from './erd'
+import {
+  defaultScope,
+  erdClickHref,
+  erdColumnNodeId,
+  erdForScope,
+  findScope,
+  initialScope,
+  listScopes,
+} from './erd'
 import { buildIndex } from './graph'
 import { fixtureGraph } from './fixture'
 
@@ -60,6 +68,54 @@ describe('erdForScope', () => {
     // dim_users pulled in as the relationship target, flagged external
     const dim = erd.models.find((m) => m.node.name === 'dim_users')
     expect(dim?.external).toBe(true)
+  })
+})
+
+describe('initialScope', () => {
+  const scopes = listScopes(index)
+
+  it('falls back to the auto-picked scope when nothing is configured', () => {
+    for (const configured of [undefined, null, '', '   ']) {
+      expect(initialScope(scopes, configured)).toEqual({
+        scope: defaultScope(scopes),
+        unknownConfigured: null,
+      })
+    }
+  })
+
+  it('opens the configured schema scope', () => {
+    const picked = initialScope(scopes, 'schema:staging')
+    expect(picked.scope?.kind).toBe('schema')
+    expect(picked.scope?.value).toBe('staging')
+    expect(picked.unknownConfigured).toBeNull()
+  })
+
+  it('opens the configured tag scope', () => {
+    const picked = initialScope(scopes, ' tag:finance ')
+    expect(picked.scope?.kind).toBe('tag')
+    expect(picked.scope?.value).toBe('finance')
+  })
+
+  it('falls back and reports the key when the configured scope is not in the graph', () => {
+    expect(initialScope(scopes, 'schema:nope')).toEqual({
+      scope: defaultScope(scopes),
+      unknownConfigured: 'schema:nope',
+    })
+  })
+
+  it('falls back and reports the key when the configured value is malformed', () => {
+    for (const configured of ['marts', 'schemaish:marts', ':marts']) {
+      expect(initialScope(scopes, configured)).toEqual({
+        scope: defaultScope(scopes),
+        unknownConfigured: configured,
+      })
+    }
+  })
+
+  it('findScope only matches its own kind', () => {
+    expect(findScope(scopes, 'tag:marts')).toBeNull()
+    expect(findScope(scopes, 'schema:core')).toBeNull()
+    expect(findScope(scopes, 'schema:marts')?.value).toBe('marts')
   })
 })
 

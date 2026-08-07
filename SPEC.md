@@ -197,6 +197,11 @@ relationships:
   cardinality_meta_key: relationship_type                             # dbterd interop
   validated_test_severity: warn         # used when a relationship is promoted to validated
 
+serve:
+  erd_default_scope: "schema:MARTS"     # | tag:<name> — ERD scope the app opens on;
+                                        # unknown scopes warn and fall back to the
+                                        # auto-picked one, they are never an error
+
 output:
   dir: .stitch/
   retain_cache_runs: 3                  # raw Metabase payload snapshots

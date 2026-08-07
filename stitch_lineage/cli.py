@@ -33,6 +33,7 @@ from stitch_lineage.graph.impact import (
     impact_from_graphs,
 )
 from stitch_lineage.graph.schema import Coverage, EdgeType, Graph, NodeType
+from stitch_lineage.graph.scopes import erd_scopes
 from stitch_lineage.graph.search import search as search_graph
 from stitch_lineage.io.artifacts import StitchArtifactError, load_catalog, load_manifest
 from stitch_lineage.io.dbt_runner import StitchDbtRunnerError, run_docs_generate
@@ -123,6 +124,32 @@ def _metabase_url(config: Path) -> str | None:
         return None
     url = _load_config_or_fail(config).metabase.url
     return url if url and "${" not in url else None
+
+
+def _erd_default_scope(config: Path) -> str | None:
+    """Configured ERD landing scope -- None when there is no config."""
+    if not config.is_file():
+        return None
+    return _load_config_or_fail(config).serve.erd_default_scope
+
+
+def _warn_unknown_erd_scope(scope: str | None, graph_path: Path) -> None:
+    """Whether the scope exists is a property of the graph, so it is checked here
+    rather than at config load. The app still opens -- on its auto-picked scope."""
+    if not scope:
+        return
+    try:
+        available = erd_scopes(read_graph(graph_path))
+    except ValueError:
+        return
+    if scope in available:
+        return
+    sample = ", ".join(sorted(available)[:5]) or "none"
+    console.print(
+        f"[yellow]warning:[/] serve.erd_default_scope '{scope}' is not in the graph "
+        f"-- opening the auto-picked scope instead (available: {sample})",
+        soft_wrap=True,
+    )
 
 
 def _require_metabase_env(
@@ -733,7 +760,9 @@ def export(
     if output_format == "site":
         out = out or _default_out_dir(config, "site")
         try:
-            site_dir = export_site(graph_path, out, _metabase_url(config))
+            scope = _erd_default_scope(config)
+            _warn_unknown_erd_scope(scope, graph_path)
+            site_dir = export_site(graph_path, out, _metabase_url(config), scope)
         except (StitchAppError, ValueError) as exc:
             _fail(str(exc))
         console.print(
@@ -778,8 +807,10 @@ def serve(
 
     config = _resolve_config(config)
     graph_path = _graph_path_or_fail(_graph_path(config))
+    scope = _erd_default_scope(config)
+    _warn_unknown_erd_scope(scope, graph_path)
     try:
-        server = create_app(graph_path, _metabase_url(config))
+        server = create_app(graph_path, _metabase_url(config), scope)
     except StitchAppError as exc:
         _fail(str(exc))
     url = f"http://{host}:{port}"
