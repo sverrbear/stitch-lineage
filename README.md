@@ -2,7 +2,7 @@
 
 **dbt ↔ Metabase column lineage.**
 
-stitch answers "where does this column go, and what uses it?" for the half of the stack where the answer usually isn't visible. It reads your dbt artifacts and the Metabase API and traces column lineage end to end — source column → staging → mart → Metabase field → card → dashboard. The result is `.stitch/graph.json`, a plain local file next to your dbt project: search it from the terminal, explore it in the browser (`stitch serve`, shipping next), export it for agents. Local-first: no server, no warehouse backend, no hosted anything — and nothing generated needs to be committed. (Teams that want git history of the graph can commit it; nothing requires that.)
+stitch answers "where does this column go, and what uses it?" for the half of the stack where the answer usually isn't visible. It reads your dbt artifacts and the Metabase API and traces column lineage end to end — source column → staging → mart → Metabase field → card → dashboard. The result is `.stitch/graph.json`, a plain local file next to your dbt project: search it from the terminal, explore it in the browser (`stitch serve`), export it for agents. Local-first: no server, no warehouse backend, no hosted anything — and nothing generated needs to be committed. (Teams that want git history of the graph can commit it; nothing requires that.)
 
 > Full design in [SPEC.md](SPEC.md) (draft v0.4).
 
@@ -53,7 +53,7 @@ stitch build --no-metabase       # dbt side only; reuses the existing Metabase s
 stitch search order_total        # find models, columns, fields, cards, dashboards
 stitch search order_total --json # JSON lines for piping
 
-stitch serve                     # local lineage + ERD app (Phase 1, shipping next)
+stitch serve                     # local lineage + ERD app on http://127.0.0.1:8787
 
 stitch doctor                    # config, artifacts, graph, Metabase connectivity
 stitch doctor --list-databases   # database names visible to the API key
@@ -61,9 +61,16 @@ stitch doctor --unbound          # dbt models with no bound Metabase table
 stitch doctor --untraced         # columns sqlglot could not trace
 
 stitch export --format jsonl     # flat nodes.jsonl/edges.jsonl for agents/warehouses
+stitch export --format site      # static build of the app, graph inlined, host anywhere
 ```
 
 Commands that don't call the Metabase API (`build --no-metabase`, `search`, `export`, `doctor --unbound/--untraced`) work without the `STITCH_METABASE_*` env vars set. Add `.stitch/` to your `.gitignore` — the graph is a local artifact.
+
+## The app
+
+`stitch serve` opens a local, read-only browser app over the same `graph.json`: search everything (models, columns, Metabase fields, cards, dashboards) with `/` and `⌘K`, per-node detail panels, the end-to-end column lineage view from source column to dashboard, and a scoped ERD of declared relationships. Every node carries the badge of the system it lives in — Snowflake on the warehouse side, Metabase on the BI side — so a glance shows where one ends and the other begins. Cards deep-link back into Metabase.
+
+`stitch export --format site` writes the same app as a static directory with the graph inlined into `index.html` — no server, no API. Drop it on any static host for people who will never run a CLI.
 
 ## Coverage report
 
@@ -84,7 +91,7 @@ Native SQL cards are counted but not resolved in Phase 0 (they are Phase 3); MBQ
 | Phase | Scope | Status |
 |---|---|---|
 | **0** | `build` (dbt column lineage via sqlglot + MBQL cards), deterministic `graph.json` + `--check`, coverage report, recursive `impact` + GitHub Action template (impact shelved by default), `search` CLI, `doctor` | **shipped** |
-| 1 | `serve`: search + detail panels, lineage view, catalog, read-only ERD; `export --site` | planned |
+| **1** | `serve`: search + detail panels, end-to-end lineage view, catalog, read-only ERD; `export --format site` | **shipped** |
 | 2 | Editable ERD canvas: YAML write-back with diff preview, suggestion layer | planned |
 | 3 | Native SQL cards via sqlglot, rename heuristics, `--verify-lineage` | planned |
 
@@ -100,6 +107,7 @@ stitch deliberately reuses the conventions of the tools next to it rather than r
 - [dbt-metabase](https://github.com/gouline/dbt-metabase) — FK/semantic-type/description sync into Metabase; stitch's `metabase.fk_target_*` relationship meta keys are interop-compatible with it by design
 - [dbterd](https://github.com/datnguye/dbterd) — ERD conventions; stitch matches its `relationship_type` meta key
 - [typer](https://github.com/fastapi/typer) + [pydantic](https://github.com/pydantic/pydantic) + [ruamel.yaml](https://sourceforge.net/projects/ruamel-yaml/) + [requests](https://github.com/psf/requests) + [rich](https://github.com/Textualize/rich) — CLI, data contracts/validation, round-trip YAML write-back (Phase 2), Metabase API access, terminal output
+- [FastAPI](https://github.com/fastapi/fastapi) + [uvicorn](https://github.com/encode/uvicorn) + [React Flow](https://github.com/xyflow/xyflow) — `stitch serve`; the SPA ships prebuilt in the wheel, so installing never needs a node toolchain
 
 ## Development
 
@@ -111,5 +119,7 @@ pytest          # unit + end-to-end tests
 ruff check .    # lint
 lint-imports    # architecture seams (SPEC.md §4)
 ```
+
+The app's source lives in [`stitch_lineage/app/frontend/`](stitch_lineage/app/frontend/) (its own README covers the stack). Its built `dist/` is committed and bundled into the wheel — rebuild it with `npm run build` there whenever `src/` changes.
 
 MIT licensed.

@@ -1,0 +1,177 @@
+// Read-only ERD data prep: scope listing (schema / dbt tag) and per-scope
+// extraction of models + relates_to edges. Pure TS, unit-testable.
+
+import type { GraphEdge, GraphNode } from '../types'
+import { type GraphIndex, modelIdOfColumn } from './graph'
+
+export interface ErdScope {
+  kind: 'schema' | 'tag'
+  value: string
+  modelCount: number
+  /** relates_to edges whose FK side lives in this scope. */
+  relationshipCount: number
+}
+
+export interface ErdRelationship {
+  edge: GraphEdge
+  fromModelId: string
+  toModelId: string
+  fromColumn: string
+  toColumn: string
+  validated: boolean
+}
+
+export interface ErdModel {
+  node: GraphNode
+  columns: GraphNode[]
+  /** Columns participating in a relationship in this scope — always visible. */
+  keyColumns: Set<string>
+  /** Model pulled in only because a scoped relationship points at it. */
+  external: boolean
+}
+
+export interface ErdData {
+  scope: ErdScope
+  models: ErdModel[]
+  relationships: ErdRelationship[]
+}
+
+function isErdModel(node: GraphNode): boolean {
+  return node.node_type === 'model' || node.node_type === 'source'
+}
+
+function tagsOf(node: GraphNode): string[] {
+  const tags = node.properties?.tags
+  return Array.isArray(tags) ? tags.map(String) : []
+}
+
+function modelInScope(node: GraphNode, scope: ErdScope): boolean {
+  if (scope.kind === 'schema') return (node.schema ?? '') === scope.value
+  return tagsOf(node).includes(scope.value)
+}
+
+function relationships(index: GraphIndex): ErdRelationship[] {
+  const rels: ErdRelationship[] = []
+  for (const edge of index.graph.edges) {
+    if (edge.edge_type !== 'relates_to') continue
+    const fromModelId = modelIdOfColumn(edge.from)
+    const toModelId = modelIdOfColumn(edge.to)
+    if (!fromModelId || !toModelId) continue
+    rels.push({
+      edge,
+      fromModelId,
+      toModelId,
+      fromColumn: edge.from.slice(fromModelId.length + 2),
+      toColumn: edge.to.slice(toModelId.length + 2),
+      validated: edge.confidence === 'validated',
+    })
+  }
+  return rels
+}
+
+/**
+ * Available ERD scopes: every schema and every dbt tag that has models.
+ * Schemas are ordered by relationship count desc, then model count desc, then
+ * name — so `defaultScope` (the first schema) is the most connected one and
+ * the initial render is never a 200-node hairball.
+ */
+export function listScopes(index: GraphIndex): ErdScope[] {
+  const rels = relationships(index)
+  const relSchema = new Map<string, number>()
+  const relTag = new Map<string, number>()
+  for (const rel of rels) {
+    const model = index.nodesById.get(rel.fromModelId)
+    if (!model) continue
+    const schema = model.schema ?? ''
+    if (schema) relSchema.set(schema, (relSchema.get(schema) ?? 0) + 1)
+    for (const tag of tagsOf(model)) relTag.set(tag, (relTag.get(tag) ?? 0) + 1)
+  }
+
+  const schemaCounts = new Map<string, number>()
+  const tagCounts = new Map<string, number>()
+  for (const node of index.nodes) {
+    if (!isErdModel(node)) continue
+    const schema = node.schema ?? ''
+    if (schema) schemaCounts.set(schema, (schemaCounts.get(schema) ?? 0) + 1)
+    for (const tag of tagsOf(node)) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1)
+  }
+
+  const schemas: ErdScope[] = [...schemaCounts.entries()].map(([value, modelCount]) => ({
+    kind: 'schema',
+    value,
+    modelCount,
+    relationshipCount: relSchema.get(value) ?? 0,
+  }))
+  schemas.sort(
+    (a, b) =>
+      b.relationshipCount - a.relationshipCount ||
+      b.modelCount - a.modelCount ||
+      a.value.localeCompare(b.value),
+  )
+  const tags: ErdScope[] = [...tagCounts.entries()].map(([value, modelCount]) => ({
+    kind: 'tag',
+    value,
+    modelCount,
+    relationshipCount: relTag.get(value) ?? 0,
+  }))
+  tags.sort((a, b) => a.value.localeCompare(b.value))
+  return [...schemas, ...tags]
+}
+
+export function defaultScope(scopes: ErdScope[]): ErdScope | null {
+  return scopes.find((s) => s.kind === 'schema') ?? scopes[0] ?? null
+}
+
+/**
+ * ERD for one scope: its models, plus any model a scoped relationship points
+ * at (marked `external` — FK targets usually live in another schema).
+ */
+export function erdForScope(index: GraphIndex, scope: ErdScope): ErdData {
+  const inScope = new Set<string>()
+  for (const node of index.nodes) {
+    if (isErdModel(node) && modelInScope(node, scope)) inScope.add(node.node_id)
+  }
+
+  const rels = relationships(index).filter(
+    (rel) => inScope.has(rel.fromModelId) || inScope.has(rel.toModelId),
+  )
+
+  const externalIds = new Set<string>()
+  for (const rel of rels) {
+    for (const id of [rel.fromModelId, rel.toModelId]) {
+      if (!inScope.has(id) && index.nodesById.has(id)) externalIds.add(id)
+    }
+  }
+
+  const keyColumnsByModel = new Map<string, Set<string>>()
+  for (const rel of rels) {
+    for (const [modelId, column] of [
+      [rel.fromModelId, rel.fromColumn],
+      [rel.toModelId, rel.toColumn],
+    ] as const) {
+      const set = keyColumnsByModel.get(modelId)
+      if (set) set.add(column)
+      else keyColumnsByModel.set(modelId, new Set([column]))
+    }
+  }
+
+  const models: ErdModel[] = []
+  for (const id of [...inScope, ...externalIds]) {
+    const node = index.nodesById.get(id)
+    if (!node) continue
+    models.push({
+      node,
+      columns: index.columnsByModel.get(id) ?? [],
+      keyColumns: keyColumnsByModel.get(id) ?? new Set(),
+      external: externalIds.has(id),
+    })
+  }
+  models.sort((a, b) => {
+    if (a.external !== b.external) return a.external ? 1 : -1
+    const aRel = a.keyColumns.size > 0 ? 0 : 1
+    const bRel = b.keyColumns.size > 0 ? 0 : 1
+    return aRel - bRel || a.node.name.localeCompare(b.node.name)
+  })
+
+  return { scope, models, relationships: rels }
+}
