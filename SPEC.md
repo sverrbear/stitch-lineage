@@ -2,8 +2,13 @@
 
 **Working name:** `stitch` (placeholder)
 **License:** MIT
-**Distribution:** Python package on PyPI (`pip install stitch-lineage`). Local-first: no server, no warehouse backend, no hosted anything. The dbt repo is the database.
-**Status:** draft v0.4 — supersedes v0.3 (drops the Snowflake backend; carries forward its fixes: recursive impact, pinned edge directions, coverage reporting, seam enforcement)
+**Distribution:** `pip install git+https://github.com/sverrbear/stitch-lineage.git` (PyPI deliberately skipped). Local-first: no server, no warehouse backend, no hosted anything. The dbt repo is the database.
+**Status:** v0.5 — supersedes v0.4. Deltas from v0.4, decided during real-world rollout:
+
+- **The graph is a purely local artifact.** `.stitch/` is gitignored in consumer repos; nothing generated is committed. The committed-baseline design (§3, §5, §10) remains documented but optional — teams that want git history of the graph can commit it, nothing requires it.
+- **`stitch impact` is shelved by default** (hidden from `--help`, fully functional for teams that keep their own baselines) because the default PR-comment workflow required the committed baseline.
+- **Phase 2 is a plan/apply model, not direct write-back** — §8.2 below. Drawings stage locally; an explicit `stitch apply` writes dbt `relationships` tests.
+- **Phases 0 and 1 are shipped**, including `stitch build --docs/auto_docs`, per-database `table_prefix` (dev artifacts bind to a prod-pointed BI database), manifest-columns fallback for the sqlglot schema map, and system badges (Snowflake/Metabase marks) on every node in the app.
 
 ---
 
@@ -325,18 +330,20 @@ The honest cost of declared-only: nothing exercises it against data. Mitigated s
 
 The edge modal exposes all of this: shape is inferred from what you dragged (column→column = simple; multi-select = composite; table header→table header = conceptual), cardinality is a dropdown, "also add integrity test" is an off-by-default checkbox. `relationships.write_to` in config remains for teams that want tests or contract constraints as the written form of *simple* relationships.
 
-### 8.2 Write-back — direct, with guardrails
+### 8.2 Write-back — staged, then `stitch apply` (v0.5, supersedes direct write)
 
-The editor runs where the repo is checked out, so it writes YAML directly. Guardrails, not ceremony:
+Drawing in the app never touches the repo. The flow is plan/apply (issues #24 + #27):
 
-1. Drawing an edge opens a modal: target column confirm, cardinality, severity.
-2. **A YAML diff preview is always shown before writing.** No silent mutation of a git repo, ever.
-3. `ruamel.yaml` round-trip mode — comments, quoting, key order preserved. A PR that reformats every line of a hand-maintained schema file gets the tool banned; this is non-negotiable.
-4. Target file from manifest `patch_path`; no YAML entry for the column → insert in catalog column order; no YAML file for the model → create per convention.
-5. Refuse to write on a dirty target file (uncommitted changes) unless `--force` — the user's edits outrank ours.
-6. Optional: `stitch serve --branch stitch/relationships` checks out a branch first, and a "commit & push" button in the UI shells out to git. Review then happens as a normal PR. Default is write-to-working-tree, since a solo operator reviews their own diff anyway.
+1. Drawing an edge opens a modal: target column confirm, cardinality, shape. Confirming SAVES the declaration to a local staged store (`.stitch/staged_relationships.yml` — lives with the rest of the local state, never committed). Staged edges render visibly pending in the ERD and survive restarts.
+2. **`stitch apply`** materializes the staged relationships into the repo — by default as dbt `relationships` tests on the FK column (`relationships.write_to` still selects meta / test / contract form):
+   - a diff preview is always shown before writing; `--dry-run` shows it and stops; a confirmation prompt gates the write (`--yes` skips)
+   - `ruamel.yaml` round-trip mode — comments, quoting, key order preserved. A PR that reformats every line of a hand-maintained schema file gets the tool banned; this is non-negotiable.
+   - target file from manifest `patch_path`; no YAML entry for the column → insert in catalog column order; no YAML file for the model → create per convention
+   - refuse to write on a dirty target file (uncommitted changes) unless `--force` — the user's edits outrank ours
+   - applied entries clear from the staging store; the next `stitch build` reads them back from the manifest as `relates_to` (validated)
+3. `stitch serve` gains a staging-only write API; the static export stays fully read-only. All repo writes live in `stitch apply`.
 
-Layout is presentation, not contract: node positions and saved views live in `.stitch/layout.yml`, committed, never in model YAML.
+Layout is presentation, not contract: node positions, saved views and suggestion dismissals live in `.stitch/layout.yml` (local like the rest of `.stitch/`), never in model YAML.
 
 ## 9. UI — `stitch serve`
 
@@ -400,14 +407,14 @@ A scheduled nightly job runs full `stitch build` (with Metabase) on main and com
 
 ## 12. Phasing
 
-| Phase | Scope | Estimate |
+| Phase | Scope | Status |
 |---|---|---|
-| **0** | `build`: dbt models **+ column lineage via sqlglot on compiled SQL** + MBQL cards; `graph.json` deterministic + `--check`; coverage report incl. lineage trace rate; recursive `impact` + GitHub Action; `stitch search` (CLI); `doctor` basics | ~1 week (was a long weekend; sqlglot edge cases are the growth) |
-| **1** | `serve`: **search + detail panels** (the entry point), end-to-end column lineage view, catalog, read-only ERD; `export --site` | +2 weeks |
-| **2** | Editable canvas: write-back with diff preview, dirty-file guard, suggestion layer, `layout.yml` | +2–3 weeks |
-| **3** | Metabase **native SQL** cards via sqlglot + template-tag substitution, rename heuristics, `--verify-lineage` (ACCESS_HISTORY), Metabase version matrix, `--branch` git flow | ongoing |
+| **0** | `build`: dbt models **+ column lineage via sqlglot on compiled SQL** + MBQL cards; `graph.json` deterministic + `--check`; coverage report incl. lineage trace rate; recursive `impact` + GitHub Action; `stitch search` (CLI); `doctor` basics | **shipped** (impact shelved by default — see v0.5 deltas) |
+| **1** | `serve`: **search + detail panels** (the entry point), end-to-end column lineage view, catalog, read-only ERD; `export --format site` | **shipped** |
+| **2** | Editable canvas → **staged relationships + `stitch apply`** (§8.2, issues #24/#27), suggestion layer, `layout.yml` | next |
+| **3** | Metabase **native SQL** cards via sqlglot + template-tag substitution (NOTE: modern Metabase also emits **MBQL 5 lib/stages** for saved questions — issue #22, being fixed ahead of phase order), rename heuristics, `--verify-lineage` (ACCESS_HISTORY), Metabase version matrix | ongoing |
 
-Phase 0 is the whole bet, unchanged across three architectures: if the PR comment doesn't change behaviour, the canvas won't save the project.
+Work is tracked as GitHub issues; the tracker, not this table, is the operational truth.
 
 ## 13. Risks
 
