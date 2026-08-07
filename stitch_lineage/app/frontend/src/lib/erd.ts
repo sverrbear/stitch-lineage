@@ -1,6 +1,7 @@
 // Read-only ERD data prep: scope listing (schema / dbt tag) and per-scope
 // extraction of models + relates_to edges. Pure TS, unit-testable.
 
+import { lineageHref, nodeHref } from '../router'
 import type { GraphEdge, GraphNode } from '../types'
 import { type GraphIndex, modelIdOfColumn } from './graph'
 
@@ -174,4 +175,17 @@ export function erdForScope(index: GraphIndex, scope: ErdScope): ErdData {
   })
 
   return { scope, models, relationships: rels }
+}
+
+// ---------------------------------------------------------------------------
+// Canvas interaction (pure, unit-tested — the component only wires events to it)
+
+/** Column node id for a column drawn under `modelId` (may be catalog-missing). */
+export function erdColumnNodeId(modelId: string, columnName: string): string {
+  return `${modelId}::${columnName}`
+}
+
+/** Where a click on an ERD table header / column row goes. ⌘/ctrl skips to lineage. */
+export function erdClickHref(nodeId: string, modifiers: { metaKey?: boolean; ctrlKey?: boolean } = {}): string {
+  return modifiers.metaKey || modifiers.ctrlKey ? lineageHref(nodeId) : nodeHref(nodeId)
 }

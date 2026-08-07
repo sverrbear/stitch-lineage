@@ -19,6 +19,7 @@ import { useMemo, useState } from 'react'
 import { NODE_TYPE_NAME, SystemBadge } from '../components/badges'
 import { GraphLegend } from '../components/bits'
 import { useStitch } from '../data'
+import { CLICK_SLOP_PX } from '../lib/canvas'
 import { lineageFor, layoutLineage } from '../lib/lineage'
 import { navigate, nodeHref } from '../router'
 import type { Confidence, GraphNode } from '../types'
@@ -120,6 +121,7 @@ export function LineagePage({ nodeId }: { nodeId: string }) {
           nodesConnectable={false}
           nodesDraggable
           elementsSelectable
+          nodeClickDistance={CLICK_SLOP_PX}
           proOptions={{ hideAttribution: true }}
           onNodeClick={(_, node) => navigate(nodeHref(node.id))}
           onEdgeMouseEnter={(event, edge) => {

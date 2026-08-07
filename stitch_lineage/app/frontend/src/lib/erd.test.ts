@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defaultScope, erdForScope, listScopes } from './erd'
+import { defaultScope, erdClickHref, erdColumnNodeId, erdForScope, listScopes } from './erd'
 import { buildIndex } from './graph'
 import { fixtureGraph } from './fixture'
 
@@ -60,5 +60,29 @@ describe('erdForScope', () => {
     // dim_users pulled in as the relationship target, flagged external
     const dim = erd.models.find((m) => m.node.name === 'dim_users')
     expect(dim?.external).toBe(true)
+  })
+})
+
+describe('erdClickHref', () => {
+  const marts = listScopes(index).find((s) => s.kind === 'schema' && s.value === 'marts')!
+  const erd = erdForScope(index, marts)
+  const fct = erd.models.find((m) => m.node.name === 'fct_revenue')!
+  const userId = fct.columns.find((c) => c.name === 'user_id')!
+
+  it('routes a table header click to the model detail panel', () => {
+    expect(erdClickHref(fct.node.node_id)).toBe('#/node/model.demo.fct_revenue')
+  })
+
+  it('routes a column row click to the column detail panel', () => {
+    expect(erdClickHref(userId.node_id)).toBe('#/node/model.demo.fct_revenue%3A%3Auser_id')
+  })
+
+  it('routes a modifier-click straight to the lineage view', () => {
+    expect(erdClickHref(fct.node.node_id, { metaKey: true })).toBe('#/lineage/model.demo.fct_revenue')
+    expect(erdClickHref(userId.node_id, { ctrlKey: true })).toBe('#/lineage/model.demo.fct_revenue%3A%3Auser_id')
+  })
+
+  it('builds ids for relationship columns missing from the catalog', () => {
+    expect(erdColumnNodeId('model.demo.fct_revenue', 'account_id')).toBe('model.demo.fct_revenue::account_id')
   })
 })

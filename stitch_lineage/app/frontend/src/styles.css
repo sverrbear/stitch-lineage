@@ -777,17 +777,26 @@ kbd {
   border-style: dashed;
 }
 
+.erd-node-title {
+  cursor: pointer;
+}
+
+.erd-node-title:hover,
+.erd-node-title:focus-visible {
+  background: var(--bg-hover);
+}
+
+.erd-node-title:hover .erd-node-name,
+.erd-node-title:focus-visible .erd-node-name {
+  text-decoration: underline;
+}
+
 .erd-node-header {
   display: flex;
   align-items: center;
   gap: 7px;
   padding: 9px 12px 2px;
   font-weight: 650;
-  cursor: pointer;
-}
-
-.erd-node-header:hover .erd-node-name {
-  text-decoration: underline;
 }
 
 .erd-external-tag {
@@ -820,6 +829,17 @@ kbd {
   gap: 10px;
   padding: 2px 12px;
   font-size: 12px;
+  cursor: pointer;
+}
+
+.erd-column:hover,
+.erd-column:focus-visible {
+  background: var(--bg-hover);
+}
+
+.erd-column:hover .erd-column-name,
+.erd-column:focus-visible .erd-column-name {
+  text-decoration: underline;
 }
 
 .erd-column.key .erd-column-name {
