@@ -185,9 +185,7 @@ def test_archived_card_kept_with_flag(resolution):
 
 def test_appears_on_edges(resolution):
     appears = {
-        (edge.from_, edge.to)
-        for edge in resolution.edges
-        if edge.edge_type == EdgeType.APPEARS_ON
+        (edge.from_, edge.to) for edge in resolution.edges if edge.edge_type == EdgeType.APPEARS_ON
     }
     assert appears == {
         (mb_card_node_id(201), mb_dashboard_node_id(301)),
@@ -228,12 +226,8 @@ def test_card_on_card_cycle_guard(payload):
         databases=payload.databases,
         database_metadata=payload.database_metadata,
         cards=[
-            _minimal_card(
-                210, {"source-table": "card__211", "fields": [["field", 100, None]]}
-            ),
-            _minimal_card(
-                211, {"source-table": "card__210", "fields": [["field", 102, None]]}
-            ),
+            _minimal_card(210, {"source-table": "card__211", "fields": [["field", 100, None]]}),
+            _minimal_card(211, {"source-table": "card__210", "fields": [["field", 102, None]]}),
         ],
     )
     resolution = resolve_metabase(cyclic, [])

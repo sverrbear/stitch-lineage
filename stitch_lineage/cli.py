@@ -221,8 +221,7 @@ def _print_coverage(coverage: Coverage, metabase_side: bool, case_mismatch_count
         row("MBQL cards", f"{coverage.mbql_cards_resolved}/{coverage.mbql_cards_total}")
         row(
             "native SQL cards",
-            f"{coverage.native_cards_resolved}/{coverage.native_cards_total}"
-            "   unsupported in v0",
+            f"{coverage.native_cards_resolved}/{coverage.native_cards_total}   unsupported in v0",
         )
         row("dashboards", f"{coverage.dashboards}/{coverage.dashboards_total}")
     notes = []
@@ -432,9 +431,7 @@ def build(
         drifted = False
         if check:
             if not graph_path.is_file():
-                _fail(
-                    f"no committed graph at {graph_path} to check against -- run 'stitch build'"
-                )
+                _fail(f"no committed graph at {graph_path} to check against -- run 'stitch build'")
             drifted = not graphs_semantically_equal(read_graph(graph_path), graph)
         else:
             write_task = progress.add_task("writing graph", total=1)

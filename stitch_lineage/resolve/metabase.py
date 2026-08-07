@@ -63,9 +63,7 @@ def _collection_paths(collections: list[dict[str, Any]]) -> dict[Any, dict[str, 
     return indexed
 
 
-def _excluded_collection_ids(
-    collections: list[dict[str, Any]], patterns: list[str]
-) -> set[Any]:
+def _excluded_collection_ids(collections: list[dict[str, Any]], patterns: list[str]) -> set[Any]:
     excluded: set[Any] = set()
     for col_id, info in _collection_paths(collections).items():
         is_personal = info["personal_owner_id"] is not None
@@ -81,7 +79,7 @@ def _excluded_collection_ids(
 
 
 def _card_source_id(value: Any) -> int | None:
-    """"card__123" -> 123, anything else -> None."""
+    """ "card__123" -> 123, anything else -> None."""
     if isinstance(value, str) and value.startswith("card__"):
         suffix = value.removeprefix("card__")
         if suffix.isdigit():

@@ -175,9 +175,7 @@ def test_rebuild_is_deterministic_modulo_volatile_header(project):
         Graph.model_validate_json(first), Graph.model_validate_json(second)
     )
     changed = [
-        (a, b)
-        for a, b in zip(first.splitlines(), second.splitlines(), strict=True)
-        if a != b
+        (a, b) for a, b in zip(first.splitlines(), second.splitlines(), strict=True) if a != b
     ]
     assert all("generated_at" in a for a, _ in changed)
 
