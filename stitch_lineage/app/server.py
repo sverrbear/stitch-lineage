@@ -30,8 +30,15 @@ def _load_graph(graph_path: Path) -> Graph:
         raise HTTPException(status_code=503, detail=f"{graph_path} does not parse: {exc}") from exc
 
 
-def create_app(graph_path: Path, metabase_url: str | None) -> FastAPI:
-    """Build the local app serving `graph_path`; `metabase_url` powers card deep links."""
+def create_app(
+    graph_path: Path, metabase_url: str | None, erd_default_scope: str | None = None
+) -> FastAPI:
+    """Build the local app serving `graph_path`; `metabase_url` powers card deep links.
+
+    `erd_default_scope` ("schema:<name>" / "tag:<name>", from serve.erd_default_scope)
+    is passed through as configured -- the app falls back to its auto-picked scope and
+    notes the mismatch when the graph has no such scope.
+    """
     dist = frontend_dist()
     api = FastAPI(title="stitch", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -48,6 +55,7 @@ def create_app(graph_path: Path, metabase_url: str | None) -> FastAPI:
                 "metabase_url": metabase_url,
                 "generated_at": graph.generated_at,
                 "schema_version": graph.schema_version,
+                "erd_default_scope": erd_default_scope,
             }
         )
 

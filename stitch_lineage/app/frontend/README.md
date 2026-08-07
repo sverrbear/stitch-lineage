@@ -19,8 +19,9 @@ The app acquires data in this order (see `src/lib/load.ts`):
    inlined into `index.html` by replacing the `/* __STITCH_INLINE_DATA__ */` marker
    script body.
 2. **Served mode**: `GET api/graph` (the graph.json body) and `GET api/meta`
-   (`{"metabase_url": str|null, "generated_at": str|null, "schema_version": int}`).
-   Paths are **relative**, so the app works under any URL prefix.
+   (`{"metabase_url": str|null, "generated_at": str|null, "schema_version": int,
+   "erd_default_scope": str|null}`). Paths are **relative**, so the app works under
+   any URL prefix.
 3. **Dev fallback** (`npm run dev` only): `dev-public/dev-graph.json`.
 
 Routing is hash-based (`#/node/<id>`, `#/lineage/<id>`, `#/erd/...`), so the server

@@ -630,9 +630,10 @@ def test_upstream_absent_from_catalog_and_manifest_stays_untraced():
     assert column_node_id("model.demo.fct_orders", "double_usd") in result.untraced_columns
 
 
-def test_catalog_stays_authoritative_over_manifest_columns():
-    # schema.yml is stale (documents legacy_col, misses payment_id); the built table
-    # in the catalog decides both what the star expands to and the confidence grade
+def test_catalog_stays_authoritative_where_sql_cannot_speak():
+    # stg_payments' SQL projects no nameable output, so its set falls back to the built
+    # table: stale schema.yml legacy_col stays out, catalog-only payment_id stays in.
+    # mart_payments' star expands against that same catalog schema.
     manifest = {
         "metadata": {},
         "nodes": {
@@ -667,14 +668,18 @@ def test_catalog_stays_authoritative_over_manifest_columns():
     feeds = _edges(result, EdgeType.FEEDS)
     assert {(e.from_, e.to) for e in feeds} == {
         (
+            column_node_id("model.demo.stg_payments", "payment_id"),
+            column_node_id("model.demo.mart_payments", "payment_id"),
+        ),
+        (
             column_node_id("model.demo.stg_payments", "amount_usd"),
             column_node_id("model.demo.mart_payments", "amount_usd"),
-        )
+        ),
     }
-    assert feeds[0].confidence == Confidence.EXACT
-    assert "schema_source" not in feeds[0].evidence
+    assert {e.confidence for e in feeds} == {Confidence.EXACT}
+    assert all("schema_source" not in e.evidence for e in feeds)
+    # the star told us mart_payments has payment_id; schema.yml still claims legacy_col
     assert column_node_id("model.demo.mart_payments", "legacy_col") in result.untraced_columns
-    # the catalog column set also decides which column nodes exist at all
     assert column_node_id("model.demo.stg_payments", "payment_id") in result.untraced_columns
     assert column_node_id("model.demo.stg_payments", "legacy_col") not in result.untraced_columns
 
@@ -800,6 +805,180 @@ def test_star_over_relation_missing_from_the_manifest_still_name_matches():
     assert feeds[0].from_ == column_node_id("model.demo.stg_payments", "amount_usd")
     assert feeds[0].confidence == Confidence.INFERRED
     assert feeds[0].evidence == {"source": "star-expansion name match"}
+
+
+# --- pre-deploy column sets from compiled SQL -------------------------------
+
+
+def _built_catalog(columns, uid="model.demo.stg_payments", schema="staging", name="stg_payments"):
+    return {
+        "nodes": {
+            uid: {
+                "metadata": {"database": "analytics", "schema": schema, "name": name},
+                "columns": {column: {"name": column, "type": type_} for column, type_ in columns},
+            }
+        },
+        "sources": {},
+    }
+
+
+def _stg_manifest(compiled, columns, extra_nodes=None):
+    return {
+        "metadata": {},
+        "nodes": {
+            "model.demo.stg_payments": _model(
+                "stg_payments", schema="staging", compiled=compiled, columns=columns
+            ),
+            **(extra_nodes or {}),
+        },
+        "sources": {},
+    }
+
+
+def _column_ids(result, uid):
+    return {
+        node.node_id
+        for node in result.nodes
+        if node.node_type == NodeType.COLUMN and node.node_id.startswith(f"{uid}::")
+    }
+
+
+def test_column_dropped_from_sql_disappears_though_the_warehouse_still_has_it():
+    # the whole point of issue #10: the PR removed amount_usd, the built table has not
+    # caught up yet, and a graph diff must see the removal now rather than post-deploy
+    manifest = _stg_manifest(
+        "select payment_id from analytics.raw.raw_payments",
+        {"payment_id": _column("payment_id")},
+    )
+    catalog = _built_catalog([("payment_id", "INT"), ("amount_usd", "FLOAT")])
+    result = resolve_dbt(manifest, catalog)
+    assert _column_ids(result, "model.demo.stg_payments") == {
+        column_node_id("model.demo.stg_payments", "payment_id")
+    }
+    assert result.columns_total == 1
+
+
+def test_column_added_in_sql_but_not_yet_built_gets_a_node_without_a_type():
+    manifest = _stg_manifest(
+        "select payment_id, amount * fx_rate as amount_usd from analytics.raw.raw_payments",
+        {"payment_id": _column("payment_id")},
+    )
+    result = resolve_dbt(manifest, _built_catalog([("payment_id", "INT")]))
+    added = _node(result, column_node_id("model.demo.stg_payments", "amount_usd"))
+    assert added.data_type is None
+    assert added.description is None
+    # types still flow from the catalog for the columns that do exist there
+    assert _node(result, column_node_id("model.demo.stg_payments", "payment_id")).data_type == "INT"
+    assert result.columns_total == 2
+
+
+def test_documented_column_absent_from_the_projection_is_kept():
+    # schema.yml is a claim about this model; dropping it silently would read as a
+    # deliberate removal in a diff, so the set is projection UNION documentation
+    manifest = _stg_manifest(
+        "select payment_id from analytics.raw.raw_payments",
+        {"payment_id": _column("payment_id"), "amount_usd": _column("amount_usd")},
+    )
+    result = resolve_dbt(manifest, {})
+    assert _column_ids(result, "model.demo.stg_payments") == {
+        column_node_id("model.demo.stg_payments", "payment_id"),
+        column_node_id("model.demo.stg_payments", "amount_usd"),
+    }
+
+
+def test_unparseable_model_keeps_the_catalog_column_set():
+    manifest = _stg_manifest("select payment_id sum(x) pivot for in (,,) from", {})
+    catalog = _built_catalog([("payment_id", "INT"), ("amount_usd", "FLOAT")])
+    result = resolve_dbt(manifest, catalog)
+    assert _column_ids(result, "model.demo.stg_payments") == {
+        column_node_id("model.demo.stg_payments", "payment_id"),
+        column_node_id("model.demo.stg_payments", "amount_usd"),
+    }
+
+
+def test_unnameable_projection_keeps_the_catalog_column_set():
+    # `select 1` / an unaliased expression: sqlglot can only call these "1" and
+    # "_col_0", which match nothing -- fall back rather than invent a column set
+    catalog = _built_catalog([("payment_id", "INT"), ("amount_usd", "FLOAT")])
+    for compiled in ("select 1", "select max(amount_usd) from analytics.raw.raw_payments"):
+        result = resolve_dbt(_stg_manifest(compiled, {}), catalog)
+        assert _column_ids(result, "model.demo.stg_payments") == {
+            column_node_id("model.demo.stg_payments", "payment_id"),
+            column_node_id("model.demo.stg_payments", "amount_usd"),
+        }, compiled
+
+
+def test_star_over_known_upstream_expands_to_the_upstream_set():
+    manifest = _stg_manifest(
+        "select payment_id, amount_usd from analytics.raw.raw_payments",
+        {},
+        extra_nodes={
+            "model.demo.mart_payments": _model(
+                "mart_payments",
+                compiled=(
+                    "select * exclude (payment_id) rename (amount_usd as revenue_usd) "
+                    "from analytics.staging.stg_payments"
+                ),
+                deps=["model.demo.stg_payments"],
+                columns={},
+            )
+        },
+    )
+    result = resolve_dbt(manifest, _built_catalog([("payment_id", "INT"), ("amount_usd", "FLOAT")]))
+    assert _column_ids(result, "model.demo.mart_payments") == {
+        column_node_id("model.demo.mart_payments", "revenue_usd")
+    }
+
+
+def test_removal_propagates_through_a_star_to_the_next_model():
+    # mart_payments is resolved after stg_payments, against stg_payments' new set --
+    # otherwise the star would resurrect the removed column and feed it from a node
+    # that no longer exists
+    manifest = _stg_manifest(
+        "select payment_id from analytics.raw.raw_payments",
+        {"payment_id": _column("payment_id")},
+        extra_nodes={
+            "model.demo.mart_payments": _model(
+                "mart_payments",
+                compiled="select * from analytics.staging.stg_payments",
+                deps=["model.demo.stg_payments"],
+                columns={},
+            )
+        },
+    )
+    result = resolve_dbt(manifest, _built_catalog([("payment_id", "INT"), ("amount_usd", "FLOAT")]))
+    assert _column_ids(result, "model.demo.mart_payments") == {
+        column_node_id("model.demo.mart_payments", "payment_id")
+    }
+    column_ids = {node.node_id for node in result.nodes if node.node_type == NodeType.COLUMN}
+    assert {e.from_ for e in _edges(result, EdgeType.FEEDS)} <= column_ids
+
+
+def test_source_column_sets_stay_catalog_authoritative():
+    source = {
+        "unique_id": "source.demo.app.raw_payments",
+        "resource_type": "source",
+        "name": "raw_payments",
+        "source_name": "app",
+        "identifier": "raw_payments",
+        "database": "analytics",
+        "schema": "raw",
+        "columns": {"documented_only": _column("documented_only")},
+    }
+    manifest = {"metadata": {}, "nodes": {}, "sources": {"source.demo.app.raw_payments": source}}
+    catalog = {
+        "sources": {
+            "source.demo.app.raw_payments": {
+                "metadata": {"database": "analytics", "schema": "raw", "name": "raw_payments"},
+                "columns": {"id": {"name": "id", "type": "INT"}},
+            }
+        },
+        "nodes": {},
+    }
+    result = resolve_dbt(manifest, catalog)
+    assert _column_ids(result, "source.demo.app.raw_payments") == {
+        column_node_id("source.demo.app.raw_payments", "id")
+    }
 
 
 def test_dangling_target_column_recorded():

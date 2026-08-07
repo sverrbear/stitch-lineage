@@ -20,10 +20,10 @@ import { GraphLegend } from '../components/bits'
 import { useStitch } from '../data'
 import { CLICK_SLOP_PX, isClickNotDrag, type Point } from '../lib/canvas'
 import {
-  defaultScope,
   erdClickHref,
   erdColumnNodeId,
   erdForScope,
+  initialScope,
   listScopes,
   type ErdModel,
   type ErdScope,
@@ -168,11 +168,15 @@ export function ErdPage({
   scopeKind?: 'schema' | 'tag'
   scopeValue?: string
 }) {
-  const { index } = useStitch()
+  const { index, meta } = useStitch()
   const scopes = useMemo(() => listScopes(index), [index])
-  const active =
+  const routed =
     (scopeKind && scopeValue && scopes.find((s) => s.kind === scopeKind && s.value === scopeValue)) ||
-    defaultScope(scopes)
+    null
+  // No scope in the URL: open the configured one, else the auto-picked one.
+  const landing = useMemo(() => initialScope(scopes, meta.erd_default_scope), [scopes, meta])
+  const active = routed ?? landing.scope
+  const unknownConfigured = routed ? null : landing.unknownConfigured
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   const erd = useMemo(() => (active ? erdForScope(index, active) : null), [index, active])
@@ -255,6 +259,11 @@ export function ErdPage({
         <span className="muted">
           {erd.models.length} models · {erd.relationships.length} relationships
         </span>
+        {unknownConfigured && (
+          <span className="scope-warning" title="serve.erd_default_scope in stitch.yml">
+            configured scope <code>{unknownConfigured}</code> is not in this graph
+          </span>
+        )}
         <span className="muted graph-toolbar-hint">click a table or column for details</span>
       </div>
       <div className="graph-canvas">

@@ -123,6 +123,34 @@ export function defaultScope(scopes: ErdScope[]): ErdScope | null {
   return scopes.find((s) => s.kind === 'schema') ?? scopes[0] ?? null
 }
 
+/** `schema:marts` / `tag:core` -> the matching scope, null when it is not in the graph. */
+export function findScope(scopes: ErdScope[], key: string): ErdScope | null {
+  const separator = key.indexOf(':')
+  if (separator < 0) return null
+  const kind = key.slice(0, separator)
+  const value = key.slice(separator + 1)
+  if (kind !== 'schema' && kind !== 'tag') return null
+  return scopes.find((s) => s.kind === kind && s.value === value) ?? null
+}
+
+export interface InitialScope {
+  scope: ErdScope | null
+  /** Configured scope key the graph does not have — surfaced next to the picker. */
+  unknownConfigured: string | null
+}
+
+/**
+ * Which scope the ERD opens on: the one pinned in `serve.erd_default_scope` when
+ * the graph has it, otherwise the auto-picked (most connected) one.
+ */
+export function initialScope(scopes: ErdScope[], configured?: string | null): InitialScope {
+  const key = configured?.trim()
+  if (!key) return { scope: defaultScope(scopes), unknownConfigured: null }
+  const pinned = findScope(scopes, key)
+  if (pinned) return { scope: pinned, unknownConfigured: null }
+  return { scope: defaultScope(scopes), unknownConfigured: key }
+}
+
 /**
  * ERD for one scope: its models, plus any model a scoped relationship points
  * at (marked `external` — FK targets usually live in another schema).

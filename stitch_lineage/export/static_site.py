@@ -15,7 +15,12 @@ def _script_literal(payload: Any) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).replace("</", "<\\/")
 
 
-def export_site(graph_path: Path, out_dir: Path, metabase_url: str | None) -> Path:
+def export_site(
+    graph_path: Path,
+    out_dir: Path,
+    metabase_url: str | None,
+    erd_default_scope: str | None = None,
+) -> Path:
     """Copy the built SPA into out_dir with the graph inlined; return out_dir.
 
     The graph is passed through as parsed JSON rather than re-validated, so a graph
@@ -34,6 +39,7 @@ def export_site(graph_path: Path, out_dir: Path, metabase_url: str | None) -> Pa
         "metabase_url": metabase_url,
         "generated_at": graph.get("generated_at"),
         "schema_version": graph.get("schema_version", 1),
+        "erd_default_scope": erd_default_scope,
     }
     inlined = index.replace(
         _MARKER,

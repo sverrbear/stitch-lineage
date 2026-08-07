@@ -40,6 +40,15 @@ def resolution(payload):
     return resolve_metabase(payload, EXCLUDE)
 
 
+@pytest.fixture(scope="module")
+def mixed(payload) -> MetabasePayload:
+    """One instance serving both shapes: legacy cards 201-209 plus MBQL 5 cards 401-405."""
+    return resolve_metabase(
+        payload.model_copy(update={"cards": [*payload.cards, *fixture("cards_mbql5")]}),
+        EXCLUDE,
+    )
+
+
 def consumed_by(resolution, card_id: int) -> dict[str, dict]:
     return {
         edge.from_: edge.evidence
@@ -213,6 +222,85 @@ def test_coverage_numbers(resolution):
     assert sorted(resolution.unresolved_cards) == [205, 208]
 
 
+# --- MBQL 5 ("lib") shape: dataset_query.stages, opts map in the middle of a ref ----
+
+# legacy card id -> the MBQL 5 fixture card expressing the same question
+TWINS = {201: 401, 202: 402, 203: 403}
+
+
+def test_mbql5_twins_yield_the_same_edges_as_the_legacy_walk(mixed):
+    """The whole point of the two walks: same question, same evidence, same confidence."""
+    for legacy_id, stage_id in TWINS.items():
+        legacy_edges = consumed_by(mixed, legacy_id)
+        stage_edges = consumed_by(mixed, stage_id)
+        assert set(stage_edges) == set(legacy_edges), f"card {stage_id} consumed a different set"
+        for field_node, evidence in legacy_edges.items():
+            expected = dict(evidence)
+            if "via" in expected:  # the upstream card is the twin's, not the legacy one
+                upstream = int(str(expected["via"]).removeprefix("card__"))
+                expected["via"] = f"card__{TWINS[upstream]}"
+            assert stage_edges[field_node] == expected
+            field_id = int(field_node.removeprefix("mb_field::"))
+            assert (
+                consumed_edge(mixed, stage_id, field_id).confidence
+                == consumed_edge(mixed, legacy_id, field_id).confidence
+            )
+
+
+def test_mbql5_every_clause_type_yields_edges(mixed):
+    edges = consumed_by(mixed, 401)
+    assert set(edges) == {mb_field_node_id(100), mb_field_node_id(102), mb_field_node_id(103)}
+    assert edges[mb_field_node_id(100)]["clauses"] == ["fields"]
+    # MBQL 5 spells it `filters`; the clause label stays `filter` on both shapes
+    assert edges[mb_field_node_id(102)]["clauses"] == [
+        "aggregation",
+        "expressions",
+        "fields",
+        "filter",
+    ]
+    assert edges[mb_field_node_id(103)]["clauses"] == ["breakout", "order-by"]
+
+
+def test_mbql5_joins_and_source_field_implicit_join(mixed):
+    edges = consumed_by(mixed, 402)
+    assert set(edges) == {mb_field_node_id(i) for i in (101, 104, 105, 106)}
+    assert edges[mb_field_node_id(104)]["clauses"] == ["joins.condition"]
+    assert edges[mb_field_node_id(105)]["clauses"] == ["joins.fields"]
+    assert edges[mb_field_node_id(101)]["implicit_join"] is True
+
+
+def test_mbql5_card_on_card_via_source_card(mixed):
+    edges = consumed_by(mixed, 403)
+    assert edges[mb_field_node_id(105)]["by_name"] is True
+    assert consumed_edge(mixed, 403, 105).confidence == Confidence.EXACT
+    for field_id in (101, 104, 106):
+        assert edges[mb_field_node_id(field_id)] == {"via": "card__402"}
+
+
+def test_mbql5_chained_stages_label_later_stages(mixed):
+    edges = consumed_by(mixed, 404)
+    assert set(edges) == {mb_field_node_id(101), mb_field_node_id(102)}
+    assert edges[mb_field_node_id(102)]["clauses"] == ["aggregation"]
+    # stage 0 keeps bare labels; the stage consuming its output is prefixed
+    assert edges[mb_field_node_id(101)]["clauses"] == ["breakout", "stage1.filter"]
+    assert edges[mb_field_node_id(101)]["by_name"] is True
+
+
+def test_mbql5_native_stage_counted_not_resolved(mixed):
+    assert consumed_by(mixed, 405) == {}
+    assert 405 in mixed.unresolved_cards
+    node = next(n for n in mixed.nodes if n.node_id == mb_card_node_id(405))
+    assert node.properties["query_type"] == "native"
+
+
+def test_mixed_instance_coverage_counts_both_shapes(mixed):
+    # legacy: 201-206 + 208 in scope (5 MBQL resolved, 205 native, 208 unresolvable name)
+    # MBQL 5: 401-404 resolved, 405 native
+    assert (mixed.mbql_cards_resolved, mixed.mbql_cards_total) == (9, 10)
+    assert (mixed.native_cards_resolved, mixed.native_cards_total) == (0, 2)
+    assert sorted(mixed.unresolved_cards) == [205, 208, 405]
+
+
 def _minimal_card(card_id: int, query: dict) -> dict:
     return {
         "id": card_id,
@@ -223,20 +311,239 @@ def _minimal_card(card_id: int, query: dict) -> dict:
     }
 
 
-def test_card_on_card_cycle_guard(payload):
-    cyclic = MetabasePayload(
-        databases=payload.databases,
-        database_metadata=payload.database_metadata,
-        cards=[
-            _minimal_card(
-                210, {"source-table": "card__211", "fields": [["field", 100, None]]}
-            ),
-            _minimal_card(
-                211, {"source-table": "card__210", "fields": [["field", 102, None]]}
-            ),
+def _stage_card(card_id: int, stages: list[dict]) -> dict:
+    """A minimal MBQL 5 card: lib/type + stages, no legacy type/query keys."""
+    return {
+        "id": card_id,
+        "name": f"card {card_id}",
+        "collection_id": None,
+        "archived": False,
+        "dataset_query": {"database": 2, "lib/type": "mbql/query", "stages": stages},
+    }
+
+
+def _mbql_join(alias: str, source: dict, conditions: list, **extra: object) -> dict:
+    """An MBQL 5 join: its source lives in its own stages, conditions are plural."""
+    return {
+        "lib/type": "mbql/join",
+        "alias": alias,
+        "strategy": "left-join",
+        "stages": [{"lib/type": "mbql.stage/mbql", **source}],
+        "conditions": conditions,
+        **extra,
+    }
+
+
+def _resolve(payload: MetabasePayload, cards: list[dict]):
+    """Resolve an ad-hoc card list against the fixture instance's field metadata."""
+    return resolve_metabase(
+        MetabasePayload(
+            databases=payload.databases,
+            database_metadata=payload.database_metadata,
+            cards=cards,
+        ),
+        [],
+    )
+
+
+def test_mbql5_join_alias_maps_string_ref_to_joined_table(payload):
+    card = _stage_card(
+        440,
+        [
+            {
+                "lib/type": "mbql.stage/mbql",
+                "source-table": 10,
+                "joins": [
+                    _mbql_join(
+                        "Cust",
+                        {"source-table": 11},
+                        [["=", {}, ["field", {}, 101], ["field", {"join-alias": "Cust"}, 104]]],
+                    )
+                ],
+                "breakout": [
+                    ["field", {"base-type": "type/Text", "join-alias": "Cust"}, "customer_name"]
+                ],
+            }
         ],
     )
-    resolution = resolve_metabase(cyclic, [])
+    edge = consumed_edge(_resolve(payload, [card]), 440, 105)
+    assert edge.confidence == Confidence.EXACT
+    assert edge.evidence["by_name"] is True
+
+
+def test_mbql5_unmappable_join_alias_downgrades_to_parsed(payload):
+    cards = [
+        _stage_card(
+            450,
+            [{"lib/type": "mbql.stage/mbql", "source-table": 11, "fields": [["field", {}, 104]]}],
+        ),
+        _stage_card(
+            451,
+            [
+                {
+                    "lib/type": "mbql.stage/mbql",
+                    "source-table": 10,
+                    "joins": [
+                        _mbql_join(
+                            "Up",
+                            {"source-card": 450},
+                            [["=", {}, ["field", {}, 101], ["field", {"join-alias": "Up"}, 104]]],
+                        )
+                    ],
+                    "breakout": [
+                        ["field", {"base-type": "type/BigInteger", "join-alias": "Up"}, "order_id"]
+                    ],
+                }
+            ],
+        ),
+    ]
+    assert consumed_edge(_resolve(payload, cards), 451, 100).confidence == Confidence.PARSED
+
+
+def test_mbql5_join_alias_scope_is_per_stage(payload):
+    """A later stage's join alias shadows the same alias inherited from an earlier one."""
+    card = _stage_card(
+        460,
+        [
+            {
+                "lib/type": "mbql.stage/mbql",
+                "source-table": 10,
+                "joins": [
+                    _mbql_join(
+                        "Ref",
+                        {"source-table": 11},
+                        [["=", {}, ["field", {}, 101], ["field", {"join-alias": "Ref"}, 104]]],
+                    )
+                ],
+            },
+            {
+                "lib/type": "mbql.stage/mbql",
+                "joins": [
+                    _mbql_join(
+                        "Ref",
+                        {"source-table": 10},
+                        [["=", {}, ["field", {}, 104], ["field", {"join-alias": "Ref"}, 100]]],
+                    )
+                ],
+                "fields": [
+                    ["field", {"base-type": "type/BigInteger", "join-alias": "Ref"}, "order_id"]
+                ],
+            },
+        ],
+    )
+    edge = consumed_edge(_resolve(payload, [card]), 460, 100)
+    assert edge.confidence == Confidence.EXACT
+    assert edge.evidence["by_name"] is True  # resolved through stage 1's join, not stage 0's
+    assert "stage1.fields" in edge.evidence["clauses"]
+
+
+def test_mbql5_metric_ref_propagates_the_metric_cards_fields(payload):
+    cards = [
+        _stage_card(
+            470,
+            [
+                {
+                    "lib/type": "mbql.stage/mbql",
+                    "source-table": 10,
+                    "aggregation": [["sum", {}, ["field", {}, 102]]],
+                }
+            ],
+        ),
+        _stage_card(
+            471,
+            [
+                {
+                    "lib/type": "mbql.stage/mbql",
+                    "source-table": 10,
+                    "aggregation": [["metric", {"lib/uuid": "aaaa"}, 470]],
+                    "breakout": [["field", {"temporal-unit": "month"}, 103]],
+                }
+            ],
+        ),
+    ]
+    resolution = _resolve(payload, cards)
+    edges = consumed_by(resolution, 471)
+    assert edges[mb_field_node_id(102)] == {"via": "card__470"}
+    assert edges[mb_field_node_id(103)]["clauses"] == ["breakout"]
+    assert resolution.mbql_cards_resolved == 2
+
+
+def test_mbql5_card_source_string_form_and_cycle_guard(payload):
+    cards = [
+        _stage_card(
+            490,
+            [
+                {
+                    "lib/type": "mbql.stage/mbql",
+                    "source-table": "card__491",
+                    "fields": [["field", {}, 100]],
+                }
+            ],
+        ),
+        _stage_card(
+            491,
+            [
+                {
+                    "lib/type": "mbql.stage/mbql",
+                    "source-table": "card__490",
+                    "fields": [["field", {}, 102]],
+                }
+            ],
+        ),
+    ]
+    resolution = _resolve(payload, cards)
+    assert set(consumed_by(resolution, 490)) == {mb_field_node_id(100), mb_field_node_id(102)}
+    assert consumed_by(resolution, 491)[mb_field_node_id(100)] == {"via": "card__490"}
+
+
+def test_mbql5_unresolvable_name_keeps_the_raw_ref(payload):
+    card = _stage_card(
+        480,
+        [
+            {
+                "lib/type": "mbql.stage/mbql",
+                "source-table": 10,
+                "fields": [["field", {"base-type": "type/Text"}, "ghost_column"]],
+            }
+        ],
+    )
+    resolution = _resolve(payload, [card])
+    assert 480 in resolution.unresolved_cards
+    problem = next(p for p in resolution.unresolved_field_refs if p["card_id"] == 480)
+    assert problem["reason"] == "unresolvable field name"
+    assert problem["ref"][2] == "ghost_column"  # verbatim MBQL 5 ref: opts in the middle
+
+
+def test_mbql5_tolerates_alternate_stage_type_spellings(payload):
+    # both spellings occur in the wild: mbql.stage/mbql and mbql/stage/mbql
+    walked = _stage_card(
+        495,
+        [{"lib/type": "mbql/stage/mbql", "source-table": 10, "fields": [["field", {}, 100]]}],
+    )
+    native = _stage_card(496, [{"lib/type": "mbql/stage/native", "native": "select 1"}])
+    resolution = _resolve(payload, [walked, native])
+    assert set(consumed_by(resolution, 495)) == {mb_field_node_id(100)}
+    assert (resolution.mbql_cards_total, resolution.native_cards_total) == (1, 1)
+
+
+def test_empty_stage_list_is_an_unresolved_card_not_a_crash(payload):
+    resolution = _resolve(payload, [_stage_card(497, [])])
+    assert 497 in resolution.unresolved_cards
+    assert resolution.mbql_cards_total == 1
+    assert any(
+        problem["reason"] == "no MBQL query in dataset_query"
+        for problem in resolution.unresolved_field_refs
+    )
+
+
+def test_card_on_card_cycle_guard(payload):
+    resolution = _resolve(
+        payload,
+        [
+            _minimal_card(210, {"source-table": "card__211", "fields": [["field", 100, None]]}),
+            _minimal_card(211, {"source-table": "card__210", "fields": [["field", 102, None]]}),
+        ],
+    )
     assert set(consumed_by(resolution, 210)) == {mb_field_node_id(100), mb_field_node_id(102)}
     assert consumed_by(resolution, 211)[mb_field_node_id(100)] == {"via": "card__210"}
 
@@ -273,14 +580,7 @@ def test_by_name_falls_back_to_upstream_consumed_fields_as_parsed(payload):
             },
         ),
     ]
-    resolution = resolve_metabase(
-        MetabasePayload(
-            databases=payload.databases,
-            database_metadata=payload.database_metadata,
-            cards=cards,
-        ),
-        [],
-    )
+    resolution = _resolve(payload, cards)
     edges = consumed_by(resolution, 221)
     assert edges[mb_field_node_id(105)]["by_name"] is True
     # heuristic name match against the upstream card's consumed fields, not a fact
@@ -305,14 +605,7 @@ def test_join_alias_maps_string_ref_to_joined_table(payload):
             ],
         },
     )
-    resolution = resolve_metabase(
-        MetabasePayload(
-            databases=payload.databases,
-            database_metadata=payload.database_metadata,
-            cards=[card],
-        ),
-        [],
-    )
+    resolution = _resolve(payload, [card])
     edge = consumed_edge(resolution, 240, 105)
     assert edge.confidence == Confidence.EXACT
     assert edge.evidence["by_name"] is True
@@ -366,15 +659,7 @@ def test_unmappable_join_alias_downgrades_to_parsed(payload):
             },
         ),
     ]
-    resolution = resolve_metabase(
-        MetabasePayload(
-            databases=payload.databases,
-            database_metadata=payload.database_metadata,
-            cards=cards,
-        ),
-        [],
-    )
-    assert consumed_edge(resolution, 251, 100).confidence == Confidence.PARSED
+    assert consumed_edge(_resolve(payload, cards), 251, 100).confidence == Confidence.PARSED
 
 
 def test_include_schemas_scopes_fields(payload):
@@ -411,14 +696,7 @@ def test_dashboard_with_unknown_card_not_counted_resolved(payload):
 
 
 def test_reference_to_missing_card_is_a_problem_not_a_crash(payload):
-    resolution = resolve_metabase(
-        MetabasePayload(
-            databases=payload.databases,
-            database_metadata=payload.database_metadata,
-            cards=[_minimal_card(230, {"source-table": "card__999"})],
-        ),
-        [],
-    )
+    resolution = _resolve(payload, [_minimal_card(230, {"source-table": "card__999"})])
     assert 230 in resolution.unresolved_cards
     assert any(
         problem["ref"] == "card__999" and "missing or excluded" in problem["reason"]

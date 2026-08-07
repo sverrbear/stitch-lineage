@@ -139,7 +139,9 @@ def test_full_build_produces_unbroken_end_to_end_chain(project):
 
     assert "models bound" in result.output
     assert "dbt column lineage" in result.output
-    assert "case-only mismatch" in result.output
+    # every binding in this fixture is a case-only mismatch (warehouse identifier
+    # casing), so the line reports itself calmly instead of as a warning
+    assert "note: 4/4 column bindings matched on a case-only mismatch" in result.output
 
 
 def test_build_progress_renders_to_stderr_and_keeps_stdout_clean(project):
@@ -299,8 +301,11 @@ def test_impact_reports_downstream_blast_radius(project, monkeypatch):
     result = runner.invoke(app, ["impact", "--base", "main", "--format", "github-comment"])
     assert result.exit_code == 0, result.output
     out = result.output
-    assert "1 column removed or renamed" in out
+    # mart_payments is `select *` over stg_payments, so the removal reaches it too:
+    # column sets come from the compiled SQL, not from the still-built warehouse
+    assert "2 columns removed or renamed" in out
     assert "stg_payments.amount_usd" in out
+    assert "mart_payments.amount_usd" in out
     assert "downstream model" in out
     assert "fct_orders" in out
     assert "mart_payments" in out
@@ -319,7 +324,7 @@ def test_impact_reports_downstream_blast_radius(project, monkeypatch):
 
     slack = runner.invoke(app, ["impact", "--base", "main", "--format", "slack"])
     assert slack.exit_code == 0, slack.output
-    assert "*⚠ 1 column removed or renamed*" in slack.output
+    assert "*⚠ 2 columns removed or renamed*" in slack.output
     assert "*stg_payments.amount_usd* → removed" in slack.output
     assert "    • #201 Orders overview (Orders Board, Sverrir)" in slack.output
     assert "Orders Board" in slack.output

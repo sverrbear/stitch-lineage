@@ -5,10 +5,11 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from ruamel.yaml import YAML
 
 _ENV_REF = re.compile(r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}")
+_ERD_SCOPE = re.compile(r"^(schema|tag):(?P<value>\S.*)$")
 
 
 class StitchConfigError(Exception):
@@ -79,11 +80,36 @@ class OutputConfig(BaseModel):
     retain_cache_runs: int = 3
 
 
+class ServeConfig(BaseModel):
+    """App presentation defaults, shared by `stitch serve` and `export --format site`."""
+
+    # ERD scope to open on: "schema:<name>" or "tag:<name>". Only the prefix is
+    # checked here -- whether the scope exists is a property of the graph, which
+    # is not loaded yet, so `stitch serve` warns about that at startup instead.
+    erd_default_scope: str | None = None
+
+    @field_validator("erd_default_scope")
+    @classmethod
+    def _validate_erd_default_scope(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        scope = value.strip()
+        if not scope:
+            return None
+        if _ERD_SCOPE.match(scope) is None:
+            raise ValueError(
+                f"serve.erd_default_scope must look like 'schema:<name>' or 'tag:<name>' "
+                f"-- got '{value}'"
+            )
+        return scope
+
+
 class StitchConfig(BaseModel):
     dbt: DbtConfig = Field(default_factory=DbtConfig)
     metabase: MetabaseConfig
     relationships: RelationshipsConfig = Field(default_factory=RelationshipsConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
+    serve: ServeConfig = Field(default_factory=ServeConfig)
 
 
 def load_config(path: Path) -> StitchConfig:

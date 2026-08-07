@@ -33,6 +33,7 @@ from stitch_lineage.graph.impact import (
     impact_from_graphs,
 )
 from stitch_lineage.graph.schema import Coverage, EdgeType, Graph, NodeType
+from stitch_lineage.graph.scopes import erd_scopes
 from stitch_lineage.graph.search import search as search_graph
 from stitch_lineage.io.artifacts import StitchArtifactError, load_catalog, load_manifest
 from stitch_lineage.io.dbt_runner import StitchDbtRunnerError, run_docs_generate
@@ -125,6 +126,32 @@ def _metabase_url(config: Path) -> str | None:
     return url if url and "${" not in url else None
 
 
+def _erd_default_scope(config: Path) -> str | None:
+    """Configured ERD landing scope -- None when there is no config."""
+    if not config.is_file():
+        return None
+    return _load_config_or_fail(config).serve.erd_default_scope
+
+
+def _warn_unknown_erd_scope(scope: str | None, graph_path: Path) -> None:
+    """Whether the scope exists is a property of the graph, so it is checked here
+    rather than at config load. The app still opens -- on its auto-picked scope."""
+    if not scope:
+        return
+    try:
+        available = erd_scopes(read_graph(graph_path))
+    except ValueError:
+        return
+    if scope in available:
+        return
+    sample = ", ".join(sorted(available)[:5]) or "none"
+    console.print(
+        f"[yellow]warning:[/] serve.erd_default_scope '{scope}' is not in the graph "
+        f"-- opening the auto-picked scope instead (available: {sample})",
+        soft_wrap=True,
+    )
+
+
 def _require_metabase_env(
     cfg: StitchConfig, command: str = "stitch", *, dbt_only_alternative: bool = False
 ) -> None:
@@ -207,7 +234,17 @@ def _main(
     """stitch: dbt <-> Metabase column lineage."""
 
 
-def _print_coverage(coverage: Coverage, metabase_side: bool, case_mismatch_count: int) -> None:
+# above this share of bindings, a case-only mismatch is the warehouse's identifier
+# casing (Snowflake upper-cases unquoted names), not something a user can act on
+_CASE_MISMATCH_NORM_SHARE = 0.9
+
+
+def _print_coverage(
+    coverage: Coverage,
+    metabase_side: bool,
+    case_mismatch_count: int,
+    bindings_total: int = 0,
+) -> None:
     def row(label: str, value: str) -> None:
         console.print(f"{label:<20} {value}", soft_wrap=True)
 
@@ -246,10 +283,17 @@ def _print_coverage(coverage: Coverage, metabase_side: bool, case_mismatch_count
         for item in coverage.dangling_relationships:
             console.print(f"    {item}", soft_wrap=True)
     if case_mismatch_count:
-        console.print(
-            f"warning: {case_mismatch_count} column bindings matched on a case-only mismatch",
-            soft_wrap=True,
-        )
+        if bindings_total and case_mismatch_count / bindings_total > _CASE_MISMATCH_NORM_SHARE:
+            console.print(
+                f"note: {case_mismatch_count}/{bindings_total} column bindings matched on a "
+                "case-only mismatch -- warehouse identifier casing, nothing to fix",
+                soft_wrap=True,
+            )
+        else:
+            console.print(
+                f"warning: {case_mismatch_count} column bindings matched on a case-only mismatch",
+                soft_wrap=True,
+            )
     if coverage.unverified_field_count:
         console.print(
             f"warning: {coverage.unverified_field_count} Metabase fields left unbound -- "
@@ -331,6 +375,7 @@ def build(
         metabase_version: str | None = None
         metabase_side = True
         case_mismatch_count = 0
+        bindings_total = 0
 
         if no_metabase:
             # SPEC section 10: reuse the committed baseline's Metabase side; the dbt side
@@ -361,6 +406,7 @@ def build(
                 edges.extend(bind_res.edges)
                 metabase_version = baseline.metabase_version
                 case_mismatch_count = bind_res.case_mismatch_count
+                bindings_total = len(bind_res.edges)
                 coverage_fields.update(
                     models_bound=bind_res.models_bound,
                     models_total=bind_res.models_total,
@@ -405,6 +451,7 @@ def build(
             edges.extend(bind_res.edges)
             metabase_version = payload.metabase_version
             case_mismatch_count = bind_res.case_mismatch_count
+            bindings_total = len(bind_res.edges)
             coverage_fields.update(
                 models_bound=bind_res.models_bound,
                 models_total=bind_res.models_total,
@@ -454,7 +501,7 @@ def build(
         console.print("graph.json is up to date")
         return
     console.print(f"wrote {graph_path} ({len(nodes)} nodes, {len(edges)} edges)")
-    _print_coverage(graph.coverage, metabase_side, case_mismatch_count)
+    _print_coverage(graph.coverage, metabase_side, case_mismatch_count, bindings_total)
 
 
 def _baseline_graph(base: str, graph_path: Path) -> Graph:
@@ -733,7 +780,9 @@ def export(
     if output_format == "site":
         out = out or _default_out_dir(config, "site")
         try:
-            site_dir = export_site(graph_path, out, _metabase_url(config))
+            scope = _erd_default_scope(config)
+            _warn_unknown_erd_scope(scope, graph_path)
+            site_dir = export_site(graph_path, out, _metabase_url(config), scope)
         except (StitchAppError, ValueError) as exc:
             _fail(str(exc))
         console.print(
@@ -778,8 +827,10 @@ def serve(
 
     config = _resolve_config(config)
     graph_path = _graph_path_or_fail(_graph_path(config))
+    scope = _erd_default_scope(config)
+    _warn_unknown_erd_scope(scope, graph_path)
     try:
-        server = create_app(graph_path, _metabase_url(config))
+        server = create_app(graph_path, _metabase_url(config), scope)
     except StitchAppError as exc:
         _fail(str(exc))
     url = f"http://{host}:{port}"
