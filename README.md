@@ -87,7 +87,7 @@ dashboards           19/19
 dbt column lineage   1842/1901 columns traced   (37 inferred via star-expansion, 22 unresolved -> stitch doctor --untraced)
 ```
 
-Native SQL cards are counted but not resolved in Phase 0 (they are Phase 3); MBQL cards resolve exactly, including card-on-card sources.
+Native SQL cards are counted but not resolved in Phase 0 (they are Phase 3); MBQL cards resolve exactly, including card-on-card sources. Both query formats are handled: the legacy `dataset_query.query` shape and the MBQL 5 (`lib/type` + `stages`) shape modern Metabase returns.
 
 ## Phases
 

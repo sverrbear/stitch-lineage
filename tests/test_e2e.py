@@ -139,7 +139,9 @@ def test_full_build_produces_unbroken_end_to_end_chain(project):
 
     assert "models bound" in result.output
     assert "dbt column lineage" in result.output
-    assert "case-only mismatch" in result.output
+    # every binding in this fixture is a case-only mismatch (warehouse identifier
+    # casing), so the line reports itself calmly instead of as a warning
+    assert "note: 4/4 column bindings matched on a case-only mismatch" in result.output
 
 
 def test_build_progress_renders_to_stderr_and_keeps_stdout_clean(project):

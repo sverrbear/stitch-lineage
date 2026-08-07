@@ -364,9 +364,16 @@ def test_export_site_skips_an_unresolved_metabase_url(tmp_path, monkeypatch):
 # --- coverage report ---------------------------------------------------------
 
 
-def _coverage_output(coverage: Coverage, case_mismatch_count: int = 0) -> str:
+def _coverage_output(
+    coverage: Coverage, case_mismatch_count: int = 0, bindings_total: int = 0
+) -> str:
     with console.capture() as capture:
-        _print_coverage(coverage, metabase_side=True, case_mismatch_count=case_mismatch_count)
+        _print_coverage(
+            coverage,
+            metabase_side=True,
+            case_mismatch_count=case_mismatch_count,
+            bindings_total=bindings_total,
+        )
     return capture.get()
 
 
@@ -383,6 +390,18 @@ def test_coverage_report_stays_quiet_when_counters_are_zero():
     output = _coverage_output(Coverage())
     assert "left unbound" not in output
     assert "seed/snapshot" not in output
+
+
+def test_some_case_mismatches_stay_a_warning():
+    output = _coverage_output(Coverage(), case_mismatch_count=3, bindings_total=100)
+    assert "warning: 3 column bindings matched on a case-only mismatch" in output
+
+
+def test_case_mismatch_everywhere_is_informational_not_alarming():
+    # a Snowflake warehouse upper-cases every identifier: nothing here is actionable
+    output = _coverage_output(Coverage(), case_mismatch_count=1210, bindings_total=1210)
+    assert "note: 1210/1210 column bindings matched on a case-only mismatch" in output
+    assert "warning" not in output
 
 
 # --- build --docs / dbt.auto_docs -------------------------------------------

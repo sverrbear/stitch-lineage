@@ -234,7 +234,17 @@ def _main(
     """stitch: dbt <-> Metabase column lineage."""
 
 
-def _print_coverage(coverage: Coverage, metabase_side: bool, case_mismatch_count: int) -> None:
+# above this share of bindings, a case-only mismatch is the warehouse's identifier
+# casing (Snowflake upper-cases unquoted names), not something a user can act on
+_CASE_MISMATCH_NORM_SHARE = 0.9
+
+
+def _print_coverage(
+    coverage: Coverage,
+    metabase_side: bool,
+    case_mismatch_count: int,
+    bindings_total: int = 0,
+) -> None:
     def row(label: str, value: str) -> None:
         console.print(f"{label:<20} {value}", soft_wrap=True)
 
@@ -273,10 +283,17 @@ def _print_coverage(coverage: Coverage, metabase_side: bool, case_mismatch_count
         for item in coverage.dangling_relationships:
             console.print(f"    {item}", soft_wrap=True)
     if case_mismatch_count:
-        console.print(
-            f"warning: {case_mismatch_count} column bindings matched on a case-only mismatch",
-            soft_wrap=True,
-        )
+        if bindings_total and case_mismatch_count / bindings_total > _CASE_MISMATCH_NORM_SHARE:
+            console.print(
+                f"note: {case_mismatch_count}/{bindings_total} column bindings matched on a "
+                "case-only mismatch -- warehouse identifier casing, nothing to fix",
+                soft_wrap=True,
+            )
+        else:
+            console.print(
+                f"warning: {case_mismatch_count} column bindings matched on a case-only mismatch",
+                soft_wrap=True,
+            )
     if coverage.unverified_field_count:
         console.print(
             f"warning: {coverage.unverified_field_count} Metabase fields left unbound -- "
@@ -358,6 +375,7 @@ def build(
         metabase_version: str | None = None
         metabase_side = True
         case_mismatch_count = 0
+        bindings_total = 0
 
         if no_metabase:
             # SPEC section 10: reuse the committed baseline's Metabase side; the dbt side
@@ -388,6 +406,7 @@ def build(
                 edges.extend(bind_res.edges)
                 metabase_version = baseline.metabase_version
                 case_mismatch_count = bind_res.case_mismatch_count
+                bindings_total = len(bind_res.edges)
                 coverage_fields.update(
                     models_bound=bind_res.models_bound,
                     models_total=bind_res.models_total,
@@ -432,6 +451,7 @@ def build(
             edges.extend(bind_res.edges)
             metabase_version = payload.metabase_version
             case_mismatch_count = bind_res.case_mismatch_count
+            bindings_total = len(bind_res.edges)
             coverage_fields.update(
                 models_bound=bind_res.models_bound,
                 models_total=bind_res.models_total,
@@ -481,7 +501,7 @@ def build(
         console.print("graph.json is up to date")
         return
     console.print(f"wrote {graph_path} ({len(nodes)} nodes, {len(edges)} edges)")
-    _print_coverage(graph.coverage, metabase_side, case_mismatch_count)
+    _print_coverage(graph.coverage, metabase_side, case_mismatch_count, bindings_total)
 
 
 def _baseline_graph(base: str, graph_path: Path) -> Graph:

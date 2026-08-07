@@ -1,0 +1,231 @@
+[
+  {
+    "id": 401,
+    "name": "Orders overview (MBQL 5)",
+    "description": "MBQL 5 twin of card 201",
+    "collection_id": 7,
+    "archived": false,
+    "display": "line",
+    "query_type": "query",
+    "type": "question",
+    "creator_id": 5,
+    "creator": {"id": 5, "common_name": "Sverrir", "email": "sverrir@smitten.fun"},
+    "dataset_query": {
+      "database": 2,
+      "lib/type": "mbql/query",
+      "stages": [
+        {
+          "lib/type": "mbql.stage/mbql",
+          "source-table": 10,
+          "fields": [
+            ["field", {"base-type": "type/BigInteger", "lib/uuid": "3f1a0001-0000-4000-8000-000000000001"}, 100],
+            ["field", {"base-type": "type/Float", "lib/uuid": "3f1a0001-0000-4000-8000-000000000002"}, 102]
+          ],
+          "filters": [
+            [
+              ">",
+              {"lib/uuid": "3f1a0001-0000-4000-8000-000000000003"},
+              ["field", {"base-type": "type/Float", "lib/uuid": "3f1a0001-0000-4000-8000-000000000004"}, 102],
+              100
+            ]
+          ],
+          "aggregation": [
+            [
+              "sum",
+              {"lib/uuid": "3f1a0001-0000-4000-8000-000000000005"},
+              ["field", {"base-type": "type/Float", "lib/uuid": "3f1a0001-0000-4000-8000-000000000006"}, 102]
+            ]
+          ],
+          "breakout": [
+            ["field", {"temporal-unit": "month", "lib/uuid": "3f1a0001-0000-4000-8000-000000000007"}, 103]
+          ],
+          "order-by": [
+            [
+              "asc",
+              {"lib/uuid": "3f1a0001-0000-4000-8000-000000000008"},
+              ["field", {"temporal-unit": "month", "lib/uuid": "3f1a0001-0000-4000-8000-000000000009"}, 103]
+            ]
+          ],
+          "expressions": [
+            [
+              "*",
+              {"lib/expression-name": "total_with_vat", "lib/uuid": "3f1a0001-0000-4000-8000-00000000000a"},
+              ["field", {"base-type": "type/Float", "lib/uuid": "3f1a0001-0000-4000-8000-00000000000b"}, 102],
+              1.24
+            ]
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "id": 402,
+    "name": "Orders with customer (MBQL 5)",
+    "description": "MBQL 5 twin of card 202: explicit join plus an implicit one",
+    "collection_id": 7,
+    "archived": false,
+    "display": "table",
+    "query_type": "query",
+    "type": "question",
+    "creator_id": 5,
+    "creator": {"id": 5, "common_name": "Sverrir", "email": "sverrir@smitten.fun"},
+    "dataset_query": {
+      "database": 2,
+      "lib/type": "mbql/query",
+      "stages": [
+        {
+          "lib/type": "mbql.stage/mbql",
+          "source-table": 10,
+          "joins": [
+            {
+              "lib/type": "mbql/join",
+              "lib/options": {"lib/uuid": "3f1a0002-0000-4000-8000-000000000001"},
+              "alias": "Dim Customers",
+              "strategy": "left-join",
+              "stages": [{"lib/type": "mbql.stage/mbql", "source-table": 11}],
+              "conditions": [
+                [
+                  "=",
+                  {"lib/uuid": "3f1a0002-0000-4000-8000-000000000002"},
+                  ["field", {"base-type": "type/BigInteger", "lib/uuid": "3f1a0002-0000-4000-8000-000000000003"}, 101],
+                  [
+                    "field",
+                    {
+                      "base-type": "type/BigInteger",
+                      "join-alias": "Dim Customers",
+                      "lib/uuid": "3f1a0002-0000-4000-8000-000000000004"
+                    },
+                    104
+                  ]
+                ]
+              ],
+              "fields": [
+                [
+                  "field",
+                  {
+                    "base-type": "type/Text",
+                    "join-alias": "Dim Customers",
+                    "lib/uuid": "3f1a0002-0000-4000-8000-000000000005"
+                  },
+                  105
+                ]
+              ]
+            }
+          ],
+          "breakout": [
+            [
+              "field",
+              {
+                "base-type": "type/Text",
+                "source-field": 101,
+                "lib/uuid": "3f1a0002-0000-4000-8000-000000000006"
+              },
+              106
+            ]
+          ]
+        }
+      ]
+    },
+    "result_metadata": [
+      {"name": "customer_name", "display_name": "Customer Name", "field_ref": ["field", 105, {"join-alias": "Dim Customers"}]},
+      {"name": "country_code", "display_name": "Country Code", "field_ref": ["field", 106, {"source-field": 101}]},
+      {"name": "count", "display_name": "Count", "field_ref": ["aggregation", 0]}
+    ]
+  },
+  {
+    "id": 403,
+    "name": "Top customers (MBQL 5)",
+    "description": "MBQL 5 twin of card 203: source-card plus a by-name breakout",
+    "collection_id": 7,
+    "archived": false,
+    "display": "row",
+    "query_type": "query",
+    "type": "question",
+    "creator_id": 6,
+    "creator": {"id": 6, "common_name": "Magnus", "email": "magnus@smitten.fun"},
+    "dataset_query": {
+      "database": 2,
+      "lib/type": "mbql/query",
+      "stages": [
+        {
+          "lib/type": "mbql.stage/mbql",
+          "source-card": 402,
+          "aggregation": [["count", {"lib/uuid": "3f1a0003-0000-4000-8000-000000000001"}]],
+          "breakout": [
+            ["field", {"base-type": "type/Text", "lib/uuid": "3f1a0003-0000-4000-8000-000000000002"}, "customer_name"]
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "id": 404,
+    "name": "Revenue per customer (MBQL 5)",
+    "description": "Two chained stages: the flat form of a nested source-query",
+    "collection_id": 7,
+    "archived": false,
+    "display": "bar",
+    "query_type": "query",
+    "type": "question",
+    "creator_id": 5,
+    "creator": {"id": 5, "common_name": "Sverrir", "email": "sverrir@smitten.fun"},
+    "dataset_query": {
+      "database": 2,
+      "lib/type": "mbql/query",
+      "stages": [
+        {
+          "lib/type": "mbql.stage/mbql",
+          "source-table": 10,
+          "aggregation": [
+            [
+              "sum",
+              {"lib/uuid": "3f1a0004-0000-4000-8000-000000000001"},
+              ["field", {"base-type": "type/Float", "lib/uuid": "3f1a0004-0000-4000-8000-000000000002"}, 102]
+            ]
+          ],
+          "breakout": [
+            ["field", {"base-type": "type/BigInteger", "lib/uuid": "3f1a0004-0000-4000-8000-000000000003"}, 101]
+          ]
+        },
+        {
+          "lib/type": "mbql.stage/mbql",
+          "filters": [
+            [
+              "!=",
+              {"lib/uuid": "3f1a0004-0000-4000-8000-000000000004"},
+              [
+                "field",
+                {"base-type": "type/BigInteger", "lib/uuid": "3f1a0004-0000-4000-8000-000000000005"},
+                "customer_id"
+              ],
+              0
+            ]
+          ],
+          "limit": 50
+        }
+      ]
+    }
+  },
+  {
+    "id": 405,
+    "name": "Raw orders SQL (MBQL 5)",
+    "description": "MBQL 5 wraps native SQL in a native stage",
+    "collection_id": 7,
+    "archived": false,
+    "display": "table",
+    "query_type": "native",
+    "type": "question",
+    "creator_id": 6,
+    "creator": {"id": 6, "common_name": "Magnus", "email": "magnus@smitten.fun"},
+    "dataset_query": {
+      "database": 2,
+      "lib/type": "mbql/query",
+      "stages": [
+        {
+          "lib/type": "mbql.stage/native",
+          "native": "select order_id, order_total from marts.fct_orders"
+        }
+      ]
+    }
+  }
+]
