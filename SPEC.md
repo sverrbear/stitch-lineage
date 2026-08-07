@@ -211,6 +211,8 @@ Reads dbt artifacts and the Metabase API, writes `graph.json`. Idempotent; safe 
 
 `target/manifest.json` → models, sources, columns, `references` edges from `depends_on`, `relates_to` edges from declared FKs (§8). `target/catalog.json` → column types; manifest columns as fallback for views/ephemerals absent from the catalog. Missing artifacts → error naming the fix (`run dbt docs generate`), never a partial graph.
 
+A **model's column set** comes from its compiled SQL, not from the catalog: the outermost projection (§7.3) unioned with its `schema.yml` columns, with the catalog supplying data types for matching names only. The catalog describes the *warehouse*, and a PR that drops a column has not deployed yet — a catalog-authoritative set would make pre-deploy removals invisible to `stitch impact` until after the damage. Models resolve in dependency order so a removal reaches the `select *` downstream of it in the same build. Fall back to the catalog set (manifest columns when the relation is absent from the catalog) whenever the projection cannot be pinned down — unparseable SQL, no `compiled_code`, an unexpandable star, or an output sqlglot can only call `_col_0`. Never an empty set. **Sources** have no SQL, so they stay catalog-then-manifest.
+
 ### 7.2 Metabase side
 
 | Endpoint | Purpose |
@@ -233,7 +235,7 @@ The catalog is authoritative but incomplete: a *dev* catalog only describes the 
 
 Known hard cases, handled explicitly rather than discovered:
 
-- **`SELECT *` and dbt macros like `dbt_utils.star`** — post-compilation these are literal stars; expand against the upstream catalog schema. Expanded against manifest columns instead, or unexpandable (upstream in neither) and falling back to name-matching columns across the edge → `confidence: inferred` either way: a star resolved against documentation is a name match however it is dressed up.
+- **`SELECT *` and dbt macros like `dbt_utils.star`** — post-compilation these are literal stars; expand against the upstream schema (its resolved column set, seeded from the catalog), honouring Snowflake's `EXCLUDE`/`RENAME`. Expanded against manifest columns instead, or unexpandable (upstream in neither) and falling back to name-matching columns across the edge → `confidence: inferred` either way: a star resolved against documentation is a name match however it is dressed up.
 - **Ephemeral models** — compiled inline into their parents as CTEs; sqlglot traces through CTEs natively, but the intermediate hop attributes to the parent model. Acceptable: lineage endpoints stay correct.
 - **Unparseable model** — fail soft: emit model-level `references` only, add the model to the unresolved list, keep building. One exotic PIVOT must not blank the whole graph.
 - **Lateral flatten / VARIANT paths** — Snowflake-specific and common in event models; sqlglot handles most, and `column:path` sub-column lineage is explicitly out of scope (the edge lands on the VARIANT column, which is the right conservative grain).
