@@ -444,6 +444,95 @@ def test_custom_fk_meta_keys_and_cardinality_key():
     assert edge.evidence["relationship_type"] == "many-to-one"
 
 
+def test_union_star_branch_never_emits_phantom_star_edge():
+    # sqlglot emits a lineage leaf literally named "*" when a column resolves through
+    # one branch of a UNION while another branch is `select *` over a table absent
+    # from the catalog -- must never become a "{uid}::*" feeds endpoint
+    manifest = {
+        "metadata": {},
+        "nodes": {
+            "model.demo.fct_subs": _model("fct_subs", compiled="select 1"),
+            "model.demo.dim_known": _model(
+                "dim_known", compiled="select 1", columns={"user_id": _column("user_id")}
+            ),
+            "model.demo.mart_union": _model(
+                "mart_union",
+                compiled=(
+                    "select user_id from analytics.marts.dim_known "
+                    "union all select * from analytics.marts.fct_subs"
+                ),
+                deps=["model.demo.dim_known", "model.demo.fct_subs"],
+                columns={"user_id": _column("user_id")},
+            ),
+        },
+        "sources": {},
+    }
+    catalog = {
+        "nodes": {
+            "model.demo.dim_known": {
+                "metadata": {"database": "analytics", "schema": "marts", "name": "dim_known"},
+                "columns": {"user_id": {"name": "user_id", "type": "INT"}},
+            },
+        },
+        "sources": {},
+    }
+    result = resolve_dbt(manifest, catalog)
+    feeds = _edges(result, EdgeType.FEEDS)
+    assert not any("*" in e.from_ or "*" in e.to for e in feeds)
+    assert {(e.from_, e.to) for e in feeds} == {
+        (
+            column_node_id("model.demo.dim_known", "user_id"),
+            column_node_id("model.demo.mart_union", "user_id"),
+        )
+    }
+
+
+def test_star_over_upstream_without_columns_goes_untraced():
+    # upstream absent from catalog AND without manifest columns: the star fallback
+    # finds nothing to name-match -> no feeds edges at all, downstream columns untraced
+    manifest = {
+        "metadata": {},
+        "nodes": {
+            "model.demo.fct_subs": _model("fct_subs", compiled="select 1"),
+            "model.demo.viz_subs": _model(
+                "viz_subs",
+                compiled="select * from analytics.marts.fct_subs",
+                deps=["model.demo.fct_subs"],
+                columns={"revenue_usd": _column("revenue_usd")},
+            ),
+        },
+        "sources": {},
+    }
+    result = resolve_dbt(manifest, {})
+    assert _edges(result, EdgeType.FEEDS) == []
+    assert result.untraced_columns == [column_node_id("model.demo.viz_subs", "revenue_usd")]
+
+
+def test_star_over_upstream_with_known_columns_still_inferred():
+    manifest = {
+        "metadata": {},
+        "nodes": {
+            "model.demo.fct_subs": _model(
+                "fct_subs", compiled="select 1", columns={"revenue_usd": _column("revenue_usd")}
+            ),
+            "model.demo.viz_subs": _model(
+                "viz_subs",
+                compiled="select * from analytics.marts.fct_subs",
+                deps=["model.demo.fct_subs"],
+                columns={"revenue_usd": _column("revenue_usd")},
+            ),
+        },
+        "sources": {},
+    }
+    result = resolve_dbt(manifest, {})
+    feeds = _edges(result, EdgeType.FEEDS)
+    inferred = [e for e in feeds if e.to == column_node_id("model.demo.viz_subs", "revenue_usd")]
+    assert len(inferred) == 1
+    assert inferred[0].from_ == column_node_id("model.demo.fct_subs", "revenue_usd")
+    assert inferred[0].confidence == Confidence.INFERRED
+    assert not any("*" in e.from_ or "*" in e.to for e in feeds)
+
+
 def test_dangling_target_column_recorded():
     meta = {"metabase.fk_target_table": "dim_b", "metabase.fk_target_field": "missing_col"}
     manifest = {
@@ -461,3 +550,26 @@ def test_dangling_target_column_recorded():
     assert result.dangling_relationships == [
         "fct_a.user_id -> dim_b.missing_col: target column not found"
     ]
+
+
+# --- on_progress ------------------------------------------------------------
+
+
+def test_on_progress_fires_per_model_with_fixed_total():
+    manifest, catalog = _load_fixture_pair()
+    model_count = sum(
+        1 for node in manifest["nodes"].values() if node.get("resource_type") == "model"
+    )
+    calls: list[tuple[int, int]] = []
+
+    with_progress = resolve_dbt(
+        manifest, catalog, on_progress=lambda done, total: calls.append((done, total))
+    )
+
+    assert calls, "on_progress never fired"
+    assert {total for _, total in calls} == {model_count}
+    dones = [done for done, _ in calls]
+    assert dones == sorted(dones), "done must be monotonically nondecreasing"
+    assert dones[-1] == model_count, "progress must reach total"
+    # the callback is observational only: the resolution is unchanged
+    assert with_progress == resolve_dbt(manifest, catalog)

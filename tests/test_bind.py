@@ -158,3 +158,80 @@ def test_fuzzy_ambiguous_binds_nothing():
     dbt_nodes = [make_model(), make_column(FCT, "user_id"), make_column(FCT, "u_serid")]
     result = bind(dbt_nodes, [make_field(101, "USERID", "FCT_MATCHES")], MAP)
     assert result.edges == []
+
+
+# --- table_prefix strip -----------------------------------------------------
+
+PREFIX_MAP = [("Analytics", "ANALYTICS", "sis_")]
+
+
+def test_table_prefix_strip_binds_dev_dbt_to_prod_metabase():
+    # dev-target artifacts: physical table SIS_FCT_MATCHES; Metabase points at prod
+    dbt_nodes = [make_model(table="SIS_FCT_MATCHES"), make_column(FCT, "match_intensity")]
+    result = bind(dbt_nodes, [make_field(101, "MATCH_INTENSITY", "FCT_MATCHES")], PREFIX_MAP)
+    assert len(result.edges) == 1
+    edge = result.edges[0]
+    assert edge.from_ == column_node_id(FCT, "match_intensity")
+    assert edge.to == mb_field_node_id(101)
+    assert edge.confidence == Confidence.EXACT
+    assert edge.evidence == {"table_prefix_stripped": "sis_"}
+    assert result.models_bound == 1
+    assert result.case_mismatch_count == 0
+
+
+def test_table_prefix_strip_is_case_insensitive():
+    mapping = [("Analytics", "ANALYTICS", "SIS_")]
+    dbt_nodes = [make_model(table="sis_FCT_MATCHES"), make_column(FCT, "match_id")]
+    result = bind(dbt_nodes, [make_field(101, "MATCH_ID", "FCT_MATCHES")], mapping)
+    assert len(result.edges) == 1
+    assert result.edges[0].evidence == {"table_prefix_stripped": "SIS_"}
+    assert result.case_mismatch_count == 0
+
+
+def test_table_prefix_is_anchored_never_substring_stripped():
+    dbt_nodes = [make_model(table="FCT_SIS_MATCHES"), make_column(FCT, "match_id")]
+    result = bind(dbt_nodes, [make_field(101, "MATCH_ID", "FCT_MATCHES")], PREFIX_MAP)
+    assert result.edges == []
+    assert result.models_bound == 0
+    assert result.unbound_models == [FCT]
+
+
+def test_table_prefix_nonmatching_leaves_binding_unchanged():
+    dbt_nodes = [make_model(table="FCT_MATCHES"), make_column(FCT, "match_id")]
+    result = bind(dbt_nodes, [make_field(101, "MATCH_ID", "FCT_MATCHES")], PREFIX_MAP)
+    assert len(result.edges) == 1
+    assert result.edges[0].evidence == {}  # bound without stripping
+
+
+def test_table_prefix_exact_table_match_wins_over_strip():
+    plain = make_model(uid=FCT, name="fct_matches", table="FCT_MATCHES")
+    prefixed = make_model(
+        uid="model.smitten.sis_fct_matches", name="sis_fct_matches", table="SIS_FCT_MATCHES"
+    )
+    dbt_nodes = [
+        plain,
+        prefixed,
+        make_column(FCT, "match_id"),
+        make_column("model.smitten.sis_fct_matches", "match_id"),
+    ]
+    result = bind(dbt_nodes, [make_field(101, "MATCH_ID", "FCT_MATCHES")], PREFIX_MAP)
+    assert len(result.edges) == 1
+    assert result.edges[0].from_ == column_node_id(FCT, "match_id")
+    assert result.edges[0].evidence == {}
+
+
+def test_table_prefix_strip_keeps_case_mismatch_evidence():
+    dbt_nodes = [make_model(table="sis_fct_matches"), make_column(FCT, "match_id")]
+    result = bind(dbt_nodes, [make_field(101, "MATCH_ID", "FCT_MATCHES")], PREFIX_MAP)
+    assert len(result.edges) == 1
+    edge = result.edges[0]
+    assert edge.confidence == Confidence.EXACT
+    assert edge.evidence == {"table_prefix_stripped": "sis_", "case_mismatch": True}
+    assert result.case_mismatch_count == 1
+
+
+def test_two_tuple_database_map_still_supported():
+    dbt_nodes = [make_model(table="SIS_FCT_MATCHES"), make_column(FCT, "match_id")]
+    result = bind(dbt_nodes, [make_field(101, "MATCH_ID", "FCT_MATCHES")], MAP)
+    assert result.edges == []  # no prefix configured -> no strip
+    assert result.unbound_models == [FCT]

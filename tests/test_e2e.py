@@ -142,6 +142,26 @@ def test_full_build_produces_unbroken_end_to_end_chain(project):
     assert "case-only mismatch" in result.output
 
 
+def test_build_progress_renders_to_stderr_and_keeps_stdout_clean(project):
+    result = _full_build()
+    graph = _graph(project)
+    lines = result.stdout.splitlines()
+    # stdout starts with the summary line and carries the coverage report, exactly as
+    # without progress -- the progress display goes to stderr (free-form there)
+    assert lines[0] == (
+        f"wrote .stitch/graph.json ({len(graph.nodes)} nodes, {len(graph.edges)} edges)"
+    )
+    assert lines[1].startswith("models bound")
+    for stage in (
+        "loading artifacts",
+        "tracing column lineage",
+        "fetching Metabase",
+        "resolving cards",
+        "writing graph",
+    ):
+        assert stage not in result.stdout, f"progress stage '{stage}' leaked to stdout"
+
+
 def test_rebuild_is_deterministic_modulo_volatile_header(project):
     graph_path = project / ".stitch" / "graph.json"
     with responses.RequestsMock() as rsps:
@@ -322,6 +342,31 @@ def test_impact_missing_baseline_is_a_clear_error(project):
     result = runner.invoke(app, ["impact", "--base", "main"])
     assert result.exit_code == 1
     assert "baseline" in result.output
+
+
+def test_impact_baseline_missing_at_ref_names_the_fix(project):
+    _full_build()
+    _git(project, "init", "-b", "main")
+    _git(project, "add", "stitch.yml")
+    _git(project, "commit", "-m", "base ref without a committed graph")
+    result = runner.invoke(app, ["impact", "--base", "main"])
+    assert result.exit_code == 1
+    assert "no committed baseline at main:.stitch/graph.json" in result.output
+    assert "diffs the current build against the graph committed on the base ref" in result.output
+    assert "run 'stitch build' and commit .stitch/graph.json" in result.output
+    assert "--base <ref>" in result.output
+
+
+def test_impact_bad_base_ref_keeps_the_raw_git_error(project):
+    _full_build()
+    _git(project, "init", "-b", "main")
+    _git(project, "add", ".")
+    _git(project, "commit", "-m", "baseline graph")
+    result = runner.invoke(app, ["impact", "--base", "nosuchref"])
+    assert result.exit_code == 1
+    assert "could not load the baseline" in result.output
+    assert "nosuchref" in result.output
+    assert "no committed baseline" not in result.output
 
 
 # --- search / export / doctor ------------------------------------------------

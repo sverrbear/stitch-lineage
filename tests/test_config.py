@@ -34,9 +34,12 @@ def test_load_valid_config(tmp_path, monkeypatch):
     assert cfg.metabase.min_version == "0.49"
     assert cfg.metabase.databases[0].metabase_name == "Analytics"
     assert cfg.metabase.databases[0].dbt_database == "ANALYTICS"
+    assert cfg.metabase.databases[0].table_prefix == ""
     assert cfg.metabase.include_schemas == ["MARTS", "DIMS"]
     assert cfg.metabase.exclude_collections == []
     assert cfg.dbt.project_dir == "."
+    assert cfg.dbt.auto_docs is False
+    assert cfg.dbt.docs_args == []
     assert cfg.relationships.write_to == "meta"
     assert cfg.relationships.fk_meta_keys == [
         "metabase.fk_target_table",
@@ -110,6 +113,30 @@ def test_missing_url(tmp_path):
 def test_missing_file(tmp_path):
     with pytest.raises(StitchConfigError, match="stitch init"):
         load_config(tmp_path / "stitch.yml")
+
+
+def test_dbt_auto_docs_and_docs_args(tmp_path, monkeypatch):
+    monkeypatch.setenv("STITCH_METABASE_URL", "https://mb.example.com")
+    monkeypatch.setenv("STITCH_METABASE_API_KEY", "mb_test_key")
+    config = VALID_CONFIG.replace(
+        "dbt:\n  project_dir: .",
+        'dbt:\n  project_dir: .\n  auto_docs: true\n  docs_args: ["--target", "prod"]',
+    )
+    cfg = load_config(_write(tmp_path, config))
+    assert cfg.dbt.auto_docs is True
+    assert cfg.dbt.docs_args == ["--target", "prod"]
+
+
+def test_table_prefix_env_interpolation(tmp_path, monkeypatch):
+    monkeypatch.setenv("STITCH_METABASE_URL", "https://mb.example.com")
+    monkeypatch.setenv("STITCH_METABASE_API_KEY", "mb_test_key")
+    monkeypatch.setenv("USER_PREFIX", "sis")
+    config = VALID_CONFIG.replace(
+        "dbt_database: ANALYTICS",
+        "dbt_database: ANALYTICS\n      table_prefix: ${USER_PREFIX}_",
+    )
+    cfg = load_config(_write(tmp_path, config))
+    assert cfg.metabase.databases[0].table_prefix == "sis_"
 
 
 def test_env_interpolation_inside_longer_strings(tmp_path, monkeypatch):

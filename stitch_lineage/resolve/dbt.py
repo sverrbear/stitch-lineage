@@ -1,6 +1,7 @@
 """Resolve dbt manifest + catalog into graph nodes and edges (SPEC.md sections 7.1, 7.3, 8.1)."""
 
 import re
+from collections.abc import Callable
 from typing import Any
 
 import sqlglot
@@ -48,6 +49,7 @@ def resolve_dbt(
     catalog: dict[str, Any],
     fk_meta_keys: tuple[str, str] | list[str] = _DEFAULT_FK_META_KEYS,
     cardinality_meta_key: str = _DEFAULT_CARDINALITY_META_KEY,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> DbtResolution:
     """Build the dbt side of the graph from parsed manifest.json and catalog.json.
 
@@ -56,6 +58,10 @@ def resolve_dbt(
     relationship cardinality -- both default to the dbt-metabase/dbterd interop keys
     and are configurable via relationships.fk_meta_keys / cardinality_meta_key in
     stitch.yml (additive; passing nothing keeps the historical behavior).
+
+    on_progress, when given, is called as on_progress(done, total) after each model's
+    column lineage is traced (the sqlglot pass dominates build time); total is the
+    model count, fixed for the whole run.
 
     Produces:
       * source/model Nodes (node_id = dbt unique_id) from manifest nodes/sources.
@@ -69,7 +75,9 @@ def resolve_dbt(
         (one edge per input column); star-expansion fallback by name-matching ->
         inferred. Unparseable model -> fail soft: keep its `references` edges, add its
         columns to untraced_columns, never blank the graph. Ephemeral hops attribute
-        to the parent model; VARIANT sub-paths land on the VARIANT column.
+        to the parent model; VARIANT sub-paths land on the VARIANT column. A feeds
+        edge never carries a "*" or empty column endpoint: when a star branch cannot
+        resolve to real upstream columns the downstream column goes untraced instead.
       * `relates_to` edges (FK column -> referenced PK column) read from column meta
         (metabase.fk_target_table/field + relationship_type), model-level
         stitch.relationships meta, existing relationships tests, and contract
@@ -94,7 +102,7 @@ def resolve_dbt(
     entity_nodes = _entity_nodes(models, sources)
     column_nodes = _column_nodes(models, sources, column_specs)
     references = _references_edges(models, sources)
-    feeds = _feeds_edges(models, sources, column_specs, catalog)
+    feeds = _feeds_edges(models, sources, column_specs, catalog, on_progress)
     relates, dangling = _relates_to_edges(
         manifest_nodes, models, column_specs, tuple(fk_meta_keys), cardinality_meta_key
     )
@@ -316,6 +324,10 @@ def _is_plain_projection(root) -> bool:
     return True
 
 
+def _is_real_column(name: str) -> bool:
+    return bool(name) and name != "*"
+
+
 def _leaf_columns(root, relation_map: dict[tuple, str]) -> list[tuple[str, str]]:
     leaves = []
     for node in root.walk():
@@ -326,7 +338,13 @@ def _leaf_columns(root, relation_map: dict[tuple, str]) -> list[tuple[str, str]]
         upstream_uid = relation_map.get(key)
         if upstream_uid is None:
             continue
-        leaves.append((upstream_uid, node.name.rpartition(".")[2]))
+        column = node.name.rpartition(".")[2]
+        # sqlglot emits a leaf literally named "*" when a `select *` branch reads a
+        # table absent from the catalog schema -- a phantom "{uid}::*" endpoint, not
+        # a real column. Skip it; the downstream column goes untraced instead.
+        if not _is_real_column(column):
+            continue
+        leaves.append((upstream_uid, column))
     return leaves
 
 
@@ -335,56 +353,79 @@ def _feeds_edges(
     sources: dict[str, Any],
     column_specs: dict[str, dict[str, dict[str, Any]]],
     catalog: dict[str, Any],
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> list[Edge]:
     schema_mapping = _sqlglot_schema(catalog)
     relation_map = _relation_map(models, sources)
     edges: list[Edge] = []
 
-    for uid in sorted(models):
-        model = models[uid]
-        specs = column_specs.get(uid, {})
-        compiled = model.get("compiled_code") or model.get("compiled_sql") or ""
-        if not compiled.strip():
-            continue
-        try:
-            parsed = sqlglot.parse_one(compiled, dialect=_DIALECT)
-        except SqlglotError:
-            continue
-        has_star = _has_projection_star(parsed)
-        deps = [
-            dep
-            for dep in dict.fromkeys((model.get("depends_on") or {}).get("nodes") or [])
-            if dep in models or dep in sources
-        ]
+    model_ids = sorted(models)
+    for done, uid in enumerate(model_ids, start=1):
+        edges.extend(
+            _model_feeds_edges(
+                uid, models[uid], models, sources, column_specs, schema_mapping, relation_map
+            )
+        )
+        if on_progress is not None:
+            on_progress(done, len(model_ids))
+    return edges
 
-        for lower, spec in specs.items():
-            target_id = column_node_id(uid, spec["name"])
-            try:
-                root = _sqlglot_lineage(
-                    spec["name"], parsed.copy(), schema=schema_mapping, dialect=_DIALECT
+
+def _model_feeds_edges(
+    uid: str,
+    model: dict[str, Any],
+    models: dict[str, Any],
+    sources: dict[str, Any],
+    column_specs: dict[str, dict[str, dict[str, Any]]],
+    schema_mapping: dict[str, Any],
+    relation_map: dict[tuple, str],
+) -> list[Edge]:
+    specs = column_specs.get(uid, {})
+    compiled = model.get("compiled_code") or model.get("compiled_sql") or ""
+    if not compiled.strip():
+        return []
+    try:
+        parsed = sqlglot.parse_one(compiled, dialect=_DIALECT)
+    except SqlglotError:
+        return []
+    has_star = _has_projection_star(parsed)
+    deps = [
+        dep
+        for dep in dict.fromkeys((model.get("depends_on") or {}).get("nodes") or [])
+        if dep in models or dep in sources
+    ]
+
+    edges: list[Edge] = []
+    for lower, spec in specs.items():
+        if not _is_real_column(spec["name"]):
+            continue
+        target_id = column_node_id(uid, spec["name"])
+        try:
+            root = _sqlglot_lineage(
+                spec["name"], parsed.copy(), schema=schema_mapping, dialect=_DIALECT
+            )
+        except SqlglotError:
+            if has_star:
+                edges.extend(_star_fallback_edges(lower, target_id, deps, column_specs))
+            continue
+        leaves = _leaf_columns(root, relation_map)
+        if not leaves:
+            continue
+        confidence = Confidence.EXACT if _is_plain_projection(root) else Confidence.PARSED
+        evidence = {
+            "source": "sqlglot.lineage",
+            "sql": root.expression.sql(dialect=_DIALECT),
+        }
+        for upstream_uid, leaf_column in dict.fromkeys(leaves):
+            edges.append(
+                Edge(
+                    from_=column_node_id(upstream_uid, leaf_column),
+                    to=target_id,
+                    edge_type=EdgeType.FEEDS,
+                    confidence=confidence,
+                    evidence=evidence,
                 )
-            except SqlglotError:
-                if has_star:
-                    edges.extend(_star_fallback_edges(lower, target_id, deps, column_specs))
-                continue
-            leaves = _leaf_columns(root, relation_map)
-            if not leaves:
-                continue
-            confidence = Confidence.EXACT if _is_plain_projection(root) else Confidence.PARSED
-            evidence = {
-                "source": "sqlglot.lineage",
-                "sql": root.expression.sql(dialect=_DIALECT),
-            }
-            for upstream_uid, leaf_column in dict.fromkeys(leaves):
-                edges.append(
-                    Edge(
-                        from_=column_node_id(upstream_uid, leaf_column),
-                        to=target_id,
-                        edge_type=EdgeType.FEEDS,
-                        confidence=confidence,
-                        evidence=evidence,
-                    )
-                )
+            )
     return edges
 
 
