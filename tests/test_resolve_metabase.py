@@ -548,6 +548,27 @@ def test_card_on_card_cycle_guard(payload):
     assert consumed_by(resolution, 211)[mb_field_node_id(100)] == {"via": "card__210"}
 
 
+def test_card_in_cycle_exposes_full_field_set_to_a_third_card(payload):
+    # 260 <-> 261 is a genuine cycle; 262 sources 260 and must still see 261's fields.
+    # Card order matters: resolving 260 first used to memoize a truncated set for 260
+    # (its walk hit the back-edge to itself), which 262 then inherited.
+    cyclic = MetabasePayload(
+        databases=payload.databases,
+        database_metadata=payload.database_metadata,
+        cards=[
+            _minimal_card(260, {"source-table": "card__261", "fields": [["field", 100, None]]}),
+            _minimal_card(261, {"source-table": "card__260", "fields": [["field", 102, None]]}),
+            _minimal_card(262, {"source-table": "card__260", "fields": [["field", 103, None]]}),
+        ],
+    )
+    resolution = resolve_metabase(cyclic, [])
+    assert set(consumed_by(resolution, 262)) == {
+        mb_field_node_id(100),
+        mb_field_node_id(102),
+        mb_field_node_id(103),
+    }
+
+
 def test_by_name_falls_back_to_upstream_consumed_fields_as_parsed(payload):
     cards = [
         _minimal_card(220, {"source-table": 11, "fields": [["field", 105, None]]}),
@@ -588,6 +609,38 @@ def test_join_alias_maps_string_ref_to_joined_table(payload):
     edge = consumed_edge(resolution, 240, 105)
     assert edge.confidence == Confidence.EXACT
     assert edge.evidence["by_name"] is True
+    assert resolution.mbql_cards_resolved == 1
+
+
+def test_join_alias_is_scoped_to_its_query_stage(payload):
+    # the same alias names fct_orders in the outer stage and dim_customers in the
+    # nested source-query; the nested by-name ref must resolve against the nested join
+    inner_condition = ["=", ["field", 101, None], ["field", 104, {"join-alias": "J"}]]
+    outer_condition = ["=", ["field", 100, None], ["field", 100, {"join-alias": "J"}]]
+    card = _minimal_card(
+        270,
+        {
+            "source-query": {
+                "source-table": 10,
+                "joins": [{"alias": "J", "source-table": 11, "condition": inner_condition}],
+                "breakout": [
+                    ["field", "customer_name", {"base-type": "type/Text", "join-alias": "J"}]
+                ],
+            },
+            "joins": [{"alias": "J", "source-table": 10, "condition": outer_condition}],
+        },
+    )
+    resolution = resolve_metabase(
+        MetabasePayload(
+            databases=payload.databases,
+            database_metadata=payload.database_metadata,
+            cards=[card],
+        ),
+        [],
+    )
+    edge = consumed_edge(resolution, 270, 105)
+    assert edge.confidence == Confidence.EXACT
+    assert edge.evidence["clauses"] == ["source-query.breakout"]
     assert resolution.mbql_cards_resolved == 1
 
 

@@ -5,7 +5,7 @@ import uvicorn
 from typer.testing import CliRunner
 
 from stitch_lineage import __version__
-from stitch_lineage.cli import _print_coverage, app
+from stitch_lineage.cli import _print_coverage, app, console
 from stitch_lineage.graph.schema import Coverage, Graph, Node, NodeType
 from stitch_lineage.io.dbt_runner import StitchDbtRunnerError
 from stitch_lineage.io.graph_store import write_graph
@@ -132,16 +132,82 @@ def test_build_without_artifacts_names_the_fix(tmp_path, monkeypatch):
     assert "dbt docs generate" in result.output
 
 
+def _write_artifacts(tmp_path):
+    (tmp_path / "target").mkdir(exist_ok=True)
+    (tmp_path / "target" / "manifest.json").write_text('{"metadata": {}, "nodes": {}}')
+    (tmp_path / "target" / "catalog.json").write_text('{"nodes": {}, "sources": {}}')
+
+
 def test_build_without_metabase_env_fails_before_http(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("STITCH_METABASE_API_KEY", raising=False)
     (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
-    (tmp_path / "target").mkdir()
-    (tmp_path / "target" / "manifest.json").write_text('{"metadata": {}, "nodes": {}}')
-    (tmp_path / "target" / "catalog.json").write_text('{"nodes": {}, "sources": {}}')
+    _write_artifacts(tmp_path)
     result = runner.invoke(app, ["build"])
     assert result.exit_code == 1
     assert "STITCH_METABASE_API_KEY" in result.output
+
+
+def test_build_without_metabase_env_fails_before_loading_artifacts(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("STITCH_METABASE_API_KEY", raising=False)
+    (tmp_path / "stitch.yml").write_text(AUTO_DOCS_CONFIG)
+    _write_artifacts(tmp_path)  # valid artifacts: the env check must still fire first
+
+    def _never_called(*args, **kwargs):
+        raise AssertionError("build did artifact work before checking the Metabase env")
+
+    monkeypatch.setattr("stitch_lineage.cli.load_manifest", _never_called)
+    monkeypatch.setattr("stitch_lineage.cli.load_catalog", _never_called)
+    docs_calls = _record_docs_calls(monkeypatch)
+
+    result = runner.invoke(app, ["build"])
+    assert result.exit_code == 1
+    assert docs_calls == []  # not even 'dbt docs generate' runs
+    assert "running dbt docs generate" not in result.output
+
+
+def test_build_missing_env_message_names_the_fix(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("STITCH_METABASE_API_KEY", raising=False)
+    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
+    result = runner.invoke(app, ["build"])
+    assert result.exit_code == 1
+    lines = [line.rstrip() for line in result.output.splitlines()]
+    assert lines[:4] == [
+        "error: environment variable STITCH_METABASE_API_KEY is referenced in stitch.yml "
+        "but not set",
+        "  stitch build needs it to call the Metabase API.",
+        "  fix: set it in your environment (create a key in Metabase: "
+        "Admin settings -> Authentication -> API keys),",
+        "  or run 'stitch build --no-metabase' for a dbt-only graph.",
+    ]
+
+
+def test_build_no_metabase_needs_no_env(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("STITCH_METABASE_API_KEY", raising=False)
+    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
+    _write_artifacts(tmp_path)
+    result = runner.invoke(app, ["build", "--no-metabase"])
+    assert result.exit_code == 0, result.output
+    assert "dbt-only" in result.output
+
+
+def test_multiple_missing_env_vars_are_all_listed(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("STITCH_METABASE_API_KEY", raising=False)
+    monkeypatch.delenv("STITCH_METABASE_URL", raising=False)
+    (tmp_path / "stitch.yml").write_text(
+        VALID_CONFIG.replace("https://mb.example.com", "${STITCH_METABASE_URL}")
+    )
+    result = runner.invoke(app, ["build"])
+    assert result.exit_code == 1
+    assert (
+        "environment variables STITCH_METABASE_URL, STITCH_METABASE_API_KEY "
+        "are referenced in stitch.yml but not set" in result.output
+    )
+    assert "needs them to call the Metabase API" in result.output
 
 
 def test_search_without_graph_points_at_build(tmp_path, monkeypatch):
@@ -236,6 +302,49 @@ def test_export_site_skips_an_unresolved_metabase_url(tmp_path, monkeypatch):
     assert '"metabase_url":null' in (tmp_path / ".stitch" / "site" / "index.html").read_text()
 
 
+# --- coverage report ---------------------------------------------------------
+
+
+def _coverage_output(
+    coverage: Coverage, case_mismatch_count: int = 0, bindings_total: int = 0
+) -> str:
+    with console.capture() as capture:
+        _print_coverage(
+            coverage,
+            metabase_side=True,
+            case_mismatch_count=case_mismatch_count,
+            bindings_total=bindings_total,
+        )
+    return capture.get()
+
+
+def test_coverage_report_surfaces_unverified_fields_and_seed_deps():
+    output = _coverage_output(
+        Coverage(unverified_field_count=3, seed_snapshot_dependencies=2), case_mismatch_count=1
+    )
+    assert "warning: 3 Metabase fields left unbound" in output
+    assert "note: 2 seed/snapshot dependencies not represented" in output
+    assert "case-only mismatch" in output
+
+
+def test_coverage_report_stays_quiet_when_counters_are_zero():
+    output = _coverage_output(Coverage())
+    assert "left unbound" not in output
+    assert "seed/snapshot" not in output
+
+
+def test_some_case_mismatches_stay_a_warning():
+    output = _coverage_output(Coverage(), case_mismatch_count=3, bindings_total=100)
+    assert "warning: 3 column bindings matched on a case-only mismatch" in output
+
+
+def test_case_mismatch_everywhere_is_informational_not_alarming():
+    # a Snowflake warehouse upper-cases every identifier: nothing here is actionable
+    output = _coverage_output(Coverage(), case_mismatch_count=1210, bindings_total=1210)
+    assert "note: 1210/1210 column bindings matched on a case-only mismatch" in output
+    assert "warning" not in output
+
+
 # --- build --docs / dbt.auto_docs -------------------------------------------
 
 AUTO_DOCS_CONFIG = (
@@ -259,6 +368,8 @@ def _record_docs_calls(monkeypatch):
 
 def test_build_docs_flag_runs_docs_generate(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    # the docs step runs after the Metabase env check, so these cases need the key set
+    monkeypatch.setenv("STITCH_METABASE_API_KEY", "mb_test_key")
     (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
     calls = _record_docs_calls(monkeypatch)
     result = runner.invoke(app, ["build", "--docs"])
@@ -271,6 +382,7 @@ def test_build_docs_flag_runs_docs_generate(tmp_path, monkeypatch):
 
 def test_build_auto_docs_config_runs_docs_generate_with_docs_args(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("STITCH_METABASE_API_KEY", "mb_test_key")
     (tmp_path / "stitch.yml").write_text(AUTO_DOCS_CONFIG)
     calls = _record_docs_calls(monkeypatch)
     result = runner.invoke(app, ["build"])
@@ -281,6 +393,7 @@ def test_build_auto_docs_config_runs_docs_generate_with_docs_args(tmp_path, monk
 
 def test_build_no_docs_flag_overrides_auto_docs(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("STITCH_METABASE_API_KEY", "mb_test_key")
     (tmp_path / "stitch.yml").write_text(AUTO_DOCS_CONFIG)
     calls = _record_docs_calls(monkeypatch)
     result = runner.invoke(app, ["build", "--no-docs"])
@@ -290,6 +403,7 @@ def test_build_no_docs_flag_overrides_auto_docs(tmp_path, monkeypatch):
 
 def test_build_docs_absent_defaults_to_off(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("STITCH_METABASE_API_KEY", "mb_test_key")
     (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
     calls = _record_docs_calls(monkeypatch)
     result = runner.invoke(app, ["build"])
@@ -299,6 +413,7 @@ def test_build_docs_absent_defaults_to_off(tmp_path, monkeypatch):
 
 def test_build_docs_runner_failure_fails_cleanly(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("STITCH_METABASE_API_KEY", "mb_test_key")
     (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
 
     def _boom(project_dir, extra_args):
@@ -308,27 +423,3 @@ def test_build_docs_runner_failure_fails_cleanly(tmp_path, monkeypatch):
     result = runner.invoke(app, ["build", "--docs"])
     assert result.exit_code == 1
     assert "dbt executable not found on PATH" in result.output
-
-
-def _case_mismatch_line(case_mismatch_count: int, bindings_total: int, capsys) -> str:
-    _print_coverage(
-        Coverage(columns_traced=1, columns_total=1),
-        metabase_side=False,
-        case_mismatch_count=case_mismatch_count,
-        bindings_total=bindings_total,
-    )
-    return next(
-        line for line in capsys.readouterr().out.splitlines() if "case-only mismatch" in line
-    )
-
-
-def test_some_case_mismatches_stay_a_warning(capsys):
-    line = _case_mismatch_line(3, 100, capsys)
-    assert line == "warning: 3 column bindings matched on a case-only mismatch"
-
-
-def test_case_mismatch_everywhere_is_informational_not_alarming(capsys):
-    # a Snowflake warehouse upper-cases every identifier: nothing here is actionable
-    line = _case_mismatch_line(1210, 1210, capsys)
-    assert line.startswith("note: 1210/1210 column bindings matched on a case-only mismatch")
-    assert "warning" not in line

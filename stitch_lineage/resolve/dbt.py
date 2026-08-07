@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 from sqlglot.lineage import lineage as _sqlglot_lineage
+from sqlglot.schema import MappingSchema
 
 from stitch_lineage.graph.schema import (
     Confidence,
@@ -28,7 +29,10 @@ class DbtResolution(BaseModel):
     """Output of resolve_dbt: the dbt side of the graph plus its coverage counters.
 
     Coverage fields map 1:1 onto graph.schema.Coverage (columns_traced/columns_total/
-    columns_inferred/untraced_columns/dangling_relationships); the CLI copies them over.
+    columns_inferred/untraced_columns/dangling_relationships/seed_snapshot_dependencies);
+    the CLI copies them over.
+
+    nodes/edges come out in resolver order -- io.graph_store canonicalizes on write.
     """
 
     nodes: list[Node] = Field(default_factory=list)
@@ -36,6 +40,7 @@ class DbtResolution(BaseModel):
     columns_traced: int = 0
     columns_total: int = 0
     columns_inferred: int = 0
+    seed_snapshot_dependencies: int = 0
     untraced_columns: list[str] = Field(default_factory=list)
     dangling_relationships: list[str] = Field(default_factory=list)
 
@@ -68,16 +73,21 @@ def resolve_dbt(
       * column Nodes (node_id via schema.column_node_id) -- types from the catalog,
         manifest columns as fallback for views/ephemerals absent from the catalog.
       * `references` edges (upstream model -> downstream model) from manifest
-        depends_on, confidence exact.
+        depends_on, confidence exact. Seeds and snapshots are not node types in the
+        graph, so those dependencies carry no edge and are counted in
+        seed_snapshot_dependencies instead of vanishing silently.
       * `feeds` edges (upstream column -> downstream column) via sqlglot.lineage over
         each model's compiled_code, dialect="snowflake", schema-qualified from the
-        catalog. Plain projections/renames -> confidence exact; expressions -> parsed
-        (one edge per input column); star-expansion fallback by name-matching ->
-        inferred. Unparseable model -> fail soft: keep its `references` edges, add its
-        columns to untraced_columns, never blank the graph. Ephemeral hops attribute
-        to the parent model; VARIANT sub-paths land on the VARIANT column. A feeds
-        edge never carries a "*" or empty column endpoint: when a star branch cannot
-        resolve to real upstream columns the downstream column goes untraced instead.
+        catalog, falling back to manifest columns for relations the catalog is missing
+        (a dev catalog only holds what that developer built). Plain projections/renames
+        -> confidence exact; expressions -> parsed (one edge per input column);
+        star-expansion by name-matching, whether via the fallback path or expanded
+        against manifest columns -> inferred. Unparseable model -> fail soft: keep its
+        `references` edges, add its columns to untraced_columns, never blank the graph.
+        Ephemeral hops attribute to the parent model; VARIANT sub-paths land on the
+        VARIANT column. A feeds edge never carries a "*" or empty column endpoint: when
+        a star branch cannot resolve to real upstream columns the downstream column
+        goes untraced instead.
       * `relates_to` edges (FK column -> referenced PK column) read from column meta
         (metabase.fk_target_table/field + relationship_type), model-level
         stitch.relationships meta, existing relationships tests, and contract
@@ -101,7 +111,7 @@ def resolve_dbt(
     column_specs = _column_specs(models, sources, catalog)
     entity_nodes = _entity_nodes(models, sources)
     column_nodes = _column_nodes(models, sources, column_specs)
-    references = _references_edges(models, sources)
+    references, seed_snapshot_deps = _references_edges(models, sources, manifest_nodes)
     feeds = _feeds_edges(models, sources, column_specs, catalog, on_progress)
     relates, dangling = _relates_to_edges(
         manifest_nodes, models, column_specs, tuple(fk_meta_keys), cardinality_meta_key
@@ -117,11 +127,12 @@ def resolve_dbt(
     traced = model_column_ids & fed
 
     return DbtResolution(
-        nodes=sorted(entity_nodes + column_nodes, key=lambda n: n.node_id),
-        edges=sorted(references + feeds + relates, key=lambda e: (e.from_, e.to, e.edge_type)),
+        nodes=entity_nodes + column_nodes,
+        edges=references + feeds + relates,
         columns_traced=len(traced),
         columns_total=len(model_column_ids),
         columns_inferred=len(model_column_ids & inferred_targets),
+        seed_snapshot_dependencies=seed_snapshot_deps,
         untraced_columns=sorted(model_column_ids - fed),
         dangling_relationships=dangling,
     )
@@ -247,8 +258,13 @@ def _column_nodes(
     return nodes
 
 
-def _references_edges(models: dict[str, Any], sources: dict[str, Any]) -> list[Edge]:
+def _references_edges(
+    models: dict[str, Any], sources: dict[str, Any], manifest_nodes: dict[str, Any]
+) -> tuple[list[Edge], int]:
+    """Returns (edges, seed/snapshot dependency count) -- the latter are real
+    dependencies with no node type to point at, so they are counted, not dropped."""
     edges = []
+    seed_snapshot_deps = 0
     for uid, model in models.items():
         deps = (model.get("depends_on") or {}).get("nodes") or []
         for dep in dict.fromkeys(deps):
@@ -262,13 +278,47 @@ def _references_edges(models: dict[str, Any], sources: dict[str, Any]) -> list[E
                         evidence={"source": "manifest.depends_on"},
                     )
                 )
-    return edges
+            elif (manifest_nodes.get(dep) or {}).get("resource_type") in ("seed", "snapshot"):
+                seed_snapshot_deps += 1
+    return edges, seed_snapshot_deps
 
 
-def _sqlglot_schema(catalog: dict[str, Any]) -> dict[str, Any]:
+def _add_relation(
+    mapping: dict[str, Any],
+    database: str | None,
+    schema: str,
+    table: str,
+    columns: dict[str, str],
+) -> None:
+    level = mapping
+    for part in [database, schema] if database else [schema]:
+        level = level.setdefault(str(part), {})
+    level[table] = columns
+
+
+def _sqlglot_schema(
+    models: dict[str, Any],
+    sources: dict[str, Any],
+    column_specs: dict[str, dict[str, dict[str, Any]]],
+    catalog: dict[str, Any],
+) -> tuple[dict[str, Any], set[str]]:
+    """sqlglot schema mapping, plus the uids whose entry came from manifest columns.
+
+    The catalog is authoritative, but a dev catalog only holds the relations that
+    developer happens to have built -- every other relation would fail schema-qualified
+    resolution and take its whole downstream subtree untraced with it. Relations absent
+    from the catalog therefore fall back to their manifest (schema.yml) columns: types
+    are unknown there, but lineage resolves on names alone.
+
+    Relation keys are compared case-insensitively across the two passes: catalog
+    metadata carries warehouse casing (SMITTEN_PROD.SEEDS.USER_MASTER_ID) and the
+    manifest project casing, and sqlglot merges the two spellings into one relation --
+    so a stale schema.yml would otherwise graft phantom columns onto a built table.
+    """
     mapping: dict[str, Any] = {}
-    entries = {**(catalog.get("nodes") or {}), **(catalog.get("sources") or {})}
-    for entry in entries.values():
+    catalog_entries = {**(catalog.get("nodes") or {}), **(catalog.get("sources") or {})}
+    claimed: set[tuple[str, str, str]] = set()
+    for entry in catalog_entries.values():
         metadata = entry.get("metadata") or {}
         database, schema, table = (
             metadata.get("database"),
@@ -277,15 +327,39 @@ def _sqlglot_schema(catalog: dict[str, Any]) -> dict[str, Any]:
         )
         if not schema or not table:
             continue
+        claimed.add((str(database or "").lower(), schema.lower(), table.lower()))
+        _add_relation(
+            mapping,
+            database,
+            schema,
+            table,
+            {
+                (column.get("name") or str(key)): (column.get("type") or "TEXT")
+                for key, column in (entry.get("columns") or {}).items()
+            },
+        )
+
+    manifest_sourced: set[str] = set()
+    for uid, entity in {**models, **sources}.items():
+        # ephemerals are compiled inline as CTEs -- they are never a real relation
+        if uid in catalog_entries or (uid in models and _is_ephemeral(entity)):
+            continue
+        database, schema = entity.get("database"), entity.get("schema")
+        table = _physical_table(entity)
         columns = {
-            (column.get("name") or str(key)): (column.get("type") or "TEXT")
-            for key, column in (entry.get("columns") or {}).items()
+            spec["name"]: spec["data_type"] or "UNKNOWN"
+            for spec in column_specs.get(uid, {}).values()
+            if _is_real_column(spec["name"])
         }
-        if database:
-            mapping.setdefault(database, {}).setdefault(schema, {})[table] = columns
-        else:
-            mapping.setdefault(schema, {})[table] = columns
-    return mapping
+        if not schema or not table or not columns:
+            continue
+        key = (str(database or "").lower(), schema.lower(), table.lower())
+        if key in claimed:
+            continue
+        claimed.add(key)
+        _add_relation(mapping, database, schema, table, columns)
+        manifest_sourced.add(uid)
+    return mapping, manifest_sourced
 
 
 def _relation_map(models: dict[str, Any], sources: dict[str, Any]) -> dict[tuple, str]:
@@ -328,6 +402,15 @@ def _is_real_column(name: str) -> bool:
     return bool(name) and name != "*"
 
 
+def _explicit_output_names(parsed: exp.Expression) -> set[str]:
+    """Lowercased output names the query projects by name (i.e. not via a star)."""
+    select = parsed if isinstance(parsed, exp.Select) else parsed.find(exp.Select)
+    if select is None:
+        return set()
+    names = {projection.alias_or_name for projection in select.expressions}
+    return {name.lower() for name in names if _is_real_column(name)}
+
+
 def _leaf_columns(root, relation_map: dict[tuple, str]) -> list[tuple[str, str]]:
     leaves = []
     for node in root.walk():
@@ -355,7 +438,9 @@ def _feeds_edges(
     catalog: dict[str, Any],
     on_progress: Callable[[int, int], None] | None = None,
 ) -> list[Edge]:
-    schema_mapping = _sqlglot_schema(catalog)
+    mapping, manifest_sourced = _sqlglot_schema(models, sources, column_specs, catalog)
+    # built once: sqlglot would otherwise re-normalize every relation on every lineage call
+    schema_mapping = MappingSchema(mapping, dialect=_DIALECT)
     relation_map = _relation_map(models, sources)
     edges: list[Edge] = []
 
@@ -363,7 +448,14 @@ def _feeds_edges(
     for done, uid in enumerate(model_ids, start=1):
         edges.extend(
             _model_feeds_edges(
-                uid, models[uid], models, sources, column_specs, schema_mapping, relation_map
+                uid,
+                models[uid],
+                models,
+                sources,
+                column_specs,
+                schema_mapping,
+                manifest_sourced,
+                relation_map,
             )
         )
         if on_progress is not None:
@@ -377,7 +469,8 @@ def _model_feeds_edges(
     models: dict[str, Any],
     sources: dict[str, Any],
     column_specs: dict[str, dict[str, dict[str, Any]]],
-    schema_mapping: dict[str, Any],
+    schema_mapping: MappingSchema,
+    manifest_sourced: set[str],
     relation_map: dict[tuple, str],
 ) -> list[Edge]:
     specs = column_specs.get(uid, {})
@@ -389,6 +482,7 @@ def _model_feeds_edges(
     except SqlglotError:
         return []
     has_star = _has_projection_star(parsed)
+    explicit_outputs = _explicit_output_names(parsed)
     deps = [
         dep
         for dep in dict.fromkeys((model.get("depends_on") or {}).get("nodes") or [])
@@ -416,14 +510,22 @@ def _model_feeds_edges(
             "source": "sqlglot.lineage",
             "sql": root.expression.sql(dialect=_DIALECT),
         }
+        star_expanded = has_star and lower not in explicit_outputs
         for upstream_uid, leaf_column in dict.fromkeys(leaves):
+            # a star expanded over an upstream we only know from schema.yml is a
+            # name match dressed up as resolution -- same grade as the fallback below
+            if star_expanded and upstream_uid in manifest_sourced:
+                edge_confidence = Confidence.INFERRED
+                edge_evidence = {**evidence, "schema_source": "manifest_columns"}
+            else:
+                edge_confidence, edge_evidence = confidence, evidence
             edges.append(
                 Edge(
                     from_=column_node_id(upstream_uid, leaf_column),
                     to=target_id,
                     edge_type=EdgeType.FEEDS,
-                    confidence=confidence,
-                    evidence=evidence,
+                    confidence=edge_confidence,
+                    evidence=edge_evidence,
                 )
             )
     return edges

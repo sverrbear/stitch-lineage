@@ -126,6 +126,10 @@ class Coverage(BaseModel):
     columns_traced: int = 0
     columns_total: int = 0
     columns_inferred: int = 0
+    # mb fields whose dbt relation supplied no column inventory -- skipped, never fabricated
+    unverified_field_count: int = 0
+    # seed/snapshot deps dropped from `references` (neither is a node type in the graph)
+    seed_snapshot_dependencies: int = 0
     unbound_models: list[str] = Field(default_factory=list)
     unresolved_cards: list[int] = Field(default_factory=list)
     unresolved_field_refs: list[dict[str, Any]] = Field(default_factory=list)

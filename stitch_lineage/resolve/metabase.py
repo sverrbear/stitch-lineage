@@ -135,8 +135,10 @@ def _ref_parts(ref: list[Any]) -> tuple[Any, dict[str, Any] | None]:
 class _Ref(NamedTuple):
     """One collected field ref: the raw clause (verbatim, for `stitch doctor`), its
     shape-normalized target (field id or column name) and opts, the clause label it
-    sits under, whether it came from opts["source-field"], and the join aliases in
-    scope where it was found (a live dict -- fully populated once the walk ends)."""
+    sits under, whether it came from opts["source-field"], and the join aliases of the
+    query level that owns it -- a live dict, fully populated once the walk ends. Aliases
+    are per-level on purpose: a nested source-query (or another stage) may reuse an
+    outer alias for a different table."""
 
     raw: Any
     target: Any
@@ -195,44 +197,40 @@ def _walk_query(
     prefix: str,
     refs: list[_Ref],
     upstream_cards: list[int],
-    join_aliases: dict[str, Any],
 ) -> None:
-    """Walk a legacy MBQL query, descending into source-query and joins."""
+    """Walk a legacy MBQL query, descending into source-query and joins.
+
+    Each nesting level owns its join-alias scope, so a nested source-query reusing an
+    outer alias for a different table resolves against its own join.
+    """
+    aliases: dict[str, Any] = {}
     upstream = _source_card_id(query)
     if upstream is not None:
         upstream_cards.append(upstream)
     for key in _CLAUSE_KEYS:
         if key in query:
-            _collect_refs(query[key], f"{prefix}{key}", refs, join_aliases, upstream_cards)
+            _collect_refs(query[key], f"{prefix}{key}", refs, aliases, upstream_cards)
     joins = query.get("joins")
     for join in joins if isinstance(joins, list) else []:
         if not isinstance(join, dict):
             continue
         if isinstance(join.get("alias"), str):
-            join_aliases.setdefault(join["alias"], join.get("source-table"))
+            aliases.setdefault(join["alias"], join.get("source-table"))
         join_upstream = _source_card_id(join)
         if join_upstream is not None:
             upstream_cards.append(join_upstream)
         if "condition" in join:
             _collect_refs(
-                join["condition"], f"{prefix}joins.condition", refs, join_aliases, upstream_cards
+                join["condition"], f"{prefix}joins.condition", refs, aliases, upstream_cards
             )
         if isinstance(join.get("fields"), list):
-            _collect_refs(
-                join["fields"], f"{prefix}joins.fields", refs, join_aliases, upstream_cards
-            )
+            _collect_refs(join["fields"], f"{prefix}joins.fields", refs, aliases, upstream_cards)
         if isinstance(join.get("source-query"), dict):
             _walk_query(
-                join["source-query"],
-                f"{prefix}joins.source-query.",
-                refs,
-                upstream_cards,
-                join_aliases,
+                join["source-query"], f"{prefix}joins.source-query.", refs, upstream_cards
             )
     if isinstance(query.get("source-query"), dict):
-        _walk_query(
-            query["source-query"], f"{prefix}source-query.", refs, upstream_cards, join_aliases
-        )
+        _walk_query(query["source-query"], f"{prefix}source-query.", refs, upstream_cards)
 
 
 def _is_native_stage(stage: Any) -> bool:
@@ -260,7 +258,6 @@ def _walk_stages(
     prefix: str,
     refs: list[_Ref],
     upstream_cards: list[int],
-    join_aliases: dict[str, Any],
 ) -> None:
     """Walk an MBQL 5 stage chain -- the flat equivalent of nested source-query.
 
@@ -268,15 +265,13 @@ def _walk_stages(
     MBQL 5 query yields exactly the evidence its legacy twin would; each later stage
     consumes the previous stage's output and is labelled stage1./stage2./... .
 
-    Join aliases are scoped per stage: a stage starts from the aliases visible in the
-    stage before it (a later stage can still reference "Alias -> column") and adds its
-    own joins, so sibling joins and join subqueries never see each other's aliases.
+    Each stage (and each join subquery) owns its join-alias scope, exactly as a legacy
+    nesting level does: a ref's join-alias names a join of its own stage.
     """
-    scope = join_aliases
     for index, stage in enumerate(stages):
         if not isinstance(stage, dict):
             continue
-        scope = dict(scope)
+        scope: dict[str, Any] = {}
         stage_prefix = prefix if index == 0 else f"{prefix}stage{index}."
         upstream = _source_card_id(stage)
         if upstream is not None:
@@ -292,19 +287,14 @@ def _walk_stages(
                 continue
             join_stages = join.get("stages") if isinstance(join.get("stages"), list) else []
             if isinstance(join.get("alias"), str):
-                # this stage's own join shadows an inherited alias of the same name
-                scope[join["alias"]] = _join_source(join_stages)
+                scope.setdefault(join["alias"], _join_source(join_stages))
             # MBQL 5 pluralized `condition` -> `conditions`; the label stays singular
             for key, label in (("conditions", "joins.condition"), ("fields", "joins.fields")):
                 if key in join:
                     _collect_refs(join[key], f"{stage_prefix}{label}", refs, scope, upstream_cards)
             if join_stages:
                 _walk_stages(
-                    join_stages,
-                    f"{stage_prefix}joins.source-query.",
-                    refs,
-                    upstream_cards,
-                    scope,
+                    join_stages, f"{stage_prefix}joins.source-query.", refs, upstream_cards
                 )
 
 
@@ -370,6 +360,10 @@ def _resolve_by_name(
     join_aliases: dict[str, Any],
 ) -> tuple[int | None, bool]:
     """Resolve a by-name field ref; returns (field_id, exact).
+
+    join_aliases is the alias map of the ref's own query level (legacy nesting level or
+    MBQL 5 stage), not the whole card: another level may reuse an alias for a different
+    table.
 
     exact is True only for deterministic lookups: the ref's join-alias mapped to a
     joined table's metadata, the source table's metadata map, or the upstream card's
@@ -553,11 +547,11 @@ def resolve_metabase(
         if kind == _LEGACY_QUERY:
             query = dataset_query["query"]
             context = _source_context(query)
-            _walk_query(query, "", refs, walk.upstream_cards, {})
+            _walk_query(query, "", refs, walk.upstream_cards)
         elif kind == _STAGE_QUERY:
             stages = dataset_query["stages"]
             context = _stage_context(stages)
-            _walk_stages(stages, "", refs, walk.upstream_cards, {})
+            _walk_stages(stages, "", refs, walk.upstream_cards)
         else:
             continue
         for ref in refs:
@@ -608,19 +602,30 @@ def resolve_metabase(
 
     transitive: dict[int, set[int]] = {}
 
-    def _transitive_fields(card_id: int, visiting: set[int]) -> set[int]:
+    def _transitive_fields(card_id: int, visiting: set[int]) -> tuple[set[int], bool]:
+        """Fields consumed by a card and everything upstream of it, plus whether the
+        walk was cut short by a cycle.
+
+        A cycled result is only complete relative to the walk that produced it (the
+        back-edge contributes nothing), so it is never memoized: a third card sourcing
+        a card inside an A<->B cycle would otherwise inherit the truncated set.
+        """
         if card_id in transitive:
-            return transitive[card_id]
+            return transitive[card_id], False
         if card_id in visiting:
-            return set()
+            return set(), True
         visiting.add(card_id)
         walk = walks.get(card_id)
         consumed = set(walk.consumed) if walk else set()
+        cycled = False
         for upstream_id in walk.upstream_cards if walk else []:
-            consumed |= _transitive_fields(upstream_id, visiting)
+            upstream_fields, upstream_cycled = _transitive_fields(upstream_id, visiting)
+            consumed |= upstream_fields
+            cycled = cycled or upstream_cycled
         visiting.discard(card_id)
-        transitive[card_id] = consumed
-        return consumed
+        if not cycled:
+            transitive[card_id] = consumed
+        return consumed, cycled
 
     def _resolve_card(card: dict[str, Any]) -> None:
         card_id = card["id"]
@@ -694,7 +699,8 @@ def resolve_metabase(
                     {"card_id": card_id, "ref": f"card__{upstream_id}", "reason": reason}
                 )
                 continue
-            for field_id in sorted(_transitive_fields(upstream_id, set()) - emitted):
+            upstream_fields, _ = _transitive_fields(upstream_id, set())
+            for field_id in sorted(upstream_fields - emitted):
                 emitted.add(field_id)
                 result.edges.append(
                     Edge(

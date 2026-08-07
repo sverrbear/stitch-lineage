@@ -47,15 +47,18 @@ class MetabaseConfig(BaseModel):
     def require_env(self) -> None:
         """Raise unless every ${ENV_VAR} in the metabase section resolved at load time.
 
-        Commands that call the Metabase API must call this before using url/api_key;
-        commands that never touch the API (build --no-metabase, impact, search, export,
-        doctor --unbound/--untraced) work without the env vars set.
+        Commands that call the Metabase API must call this up front, before doing any
+        work; commands that never touch the API (build --no-metabase, impact, search,
+        export, doctor --unbound/--untraced) work without the env vars set.
+
+        The message is only the headline -- the CLI appends the why and the fix.
         """
-        if self.missing_env:
-            names = ", ".join(dict.fromkeys(self.missing_env))
+        names = list(dict.fromkeys(self.missing_env))
+        if names:
+            plural = len(names) > 1
             raise StitchConfigError(
-                f"environment variable(s) {names} referenced in stitch.yml but not set -- "
-                "required for commands that call the Metabase API"
+                f"environment variable{'s' if plural else ''} {', '.join(names)} "
+                f"{'are' if plural else 'is'} referenced in stitch.yml but not set"
             )
 
 
