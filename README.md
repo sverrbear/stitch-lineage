@@ -32,6 +32,9 @@ metabase:
                                         # absent in the BI database, stripped before
                                         # matching (dev artifacts vs prod Metabase)
 
+serve:
+  erd_default_scope: "schema:marts"     # optional: ERD scope to open on ("tag:core" works too)
+
 output:
   dir: .stitch/
 ```
