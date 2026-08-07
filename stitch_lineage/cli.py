@@ -5,6 +5,7 @@ import json
 import subprocess
 import threading
 import webbrowser
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, NoReturn
@@ -56,7 +57,19 @@ _MB_NODE_TYPES = (NodeType.MB_FIELD, NodeType.MB_CARD, NodeType.MB_DASHBOARD)
 _MB_EDGE_TYPES = (EdgeType.CONSUMED_BY, EdgeType.APPEARS_ON)
 
 
+# the live build progress, so anything printing to `console` can tear it down first
+_active_progress: Progress | None = None
+
+
+def _stop_active_progress() -> None:
+    """The progress display renders on its own stderr console, so a message printed to
+    `console` while it is live comes out garbled -- stop it before printing."""
+    if _active_progress is not None:
+        _active_progress.stop()
+
+
 def _fail(message: str) -> NoReturn:
+    _stop_active_progress()
     console.print(f"[red]error:[/red] {message}")
     raise typer.Exit(code=1)
 
@@ -112,11 +125,36 @@ def _metabase_url(config: Path) -> str | None:
     return url if url and "${" not in url else None
 
 
-def _metabase_client(cfg: StitchConfig, cache_dir: Path | None = None) -> MetabaseClient:
+def _require_metabase_env(
+    cfg: StitchConfig, command: str = "stitch", *, dbt_only_alternative: bool = False
+) -> None:
+    """Fail with actionable copy unless every ${ENV_VAR} in the metabase section resolved.
+
+    Single source of the missing-env error text: `build` calls it up front so a run that
+    will hit the API dies before any work, and _metabase_client() guards every other
+    command that talks to Metabase.
+    """
     try:
         cfg.metabase.require_env()
     except StitchConfigError as exc:
-        _fail(str(exc))
+        pronoun = "them" if len(dict.fromkeys(cfg.metabase.missing_env)) > 1 else "it"
+        _stop_active_progress()
+        console.print(f"[red]error:[/red] {exc}", soft_wrap=True)
+        console.print(f"  {command} needs {pronoun} to call the Metabase API.", soft_wrap=True)
+        console.print(
+            f"  fix: set {pronoun} in your environment (create a key in Metabase: "
+            f"Admin settings -> Authentication -> API keys){',' if dbt_only_alternative else '.'}",
+            soft_wrap=True,
+        )
+        if dbt_only_alternative:
+            console.print(
+                f"  or run '{command} --no-metabase' for a dbt-only graph.", soft_wrap=True
+            )
+        raise typer.Exit(code=1) from None
+
+
+def _metabase_client(cfg: StitchConfig, cache_dir: Path | None = None) -> MetabaseClient:
+    _require_metabase_env(cfg)
     return MetabaseClient(
         cfg.metabase.url,
         cfg.metabase.api_key,
@@ -138,6 +176,19 @@ def _build_progress() -> Progress:
         console=Console(stderr=True),
         transient=True,
     )
+
+
+@contextlib.contextmanager
+def _live_build_progress() -> Iterator[Progress]:
+    """Run the build progress while registering it for _stop_active_progress()."""
+    global _active_progress
+    progress = _build_progress()
+    _active_progress = progress
+    try:
+        with progress:
+            yield progress
+    finally:
+        _active_progress = None
 
 
 def _version_callback(value: bool) -> None:
@@ -229,6 +280,9 @@ def build(
     """Resolve dbt artifacts and the Metabase API into .stitch/graph.json."""
     config = _resolve_config(config)
     cfg = _load_config_or_fail(config)
+    if not no_metabase:
+        # this run will call the API: fail now, not after docs generate and minutes of tracing
+        _require_metabase_env(cfg, "stitch build", dbt_only_alternative=True)
     target_path = _target_path(config, cfg)
     out_dir = _output_dir(config, cfg)
     graph_path = out_dir / "graph.json"
@@ -243,8 +297,8 @@ def build(
         except StitchDbtRunnerError as exc:
             _fail(str(exc))
 
-    progress = _build_progress()
-    with progress:
+    dbt_only_note: str | None = None
+    with _live_build_progress() as progress:
         load_task = progress.add_task("loading artifacts", total=1)
         try:
             manifest = load_manifest(target_path)
@@ -294,7 +348,7 @@ def build(
                     if baseline is None
                     else f"existing {graph_path} has no Metabase side"
                 )
-                console.print(
+                dbt_only_note = (
                     f"note: {missing} -- building a dbt-only graph "
                     "(run a full 'stitch build' to add the Metabase side)"
                 )
@@ -375,25 +429,30 @@ def build(
             edges=edges,
         )
 
+        drifted = False
         if check:
             if not graph_path.is_file():
                 _fail(
                     f"no committed graph at {graph_path} to check against -- run 'stitch build'"
                 )
-            baseline = read_graph(graph_path)
-            if graphs_semantically_equal(baseline, graph):
-                console.print("graph.json is up to date")
-                return
+            drifted = not graphs_semantically_equal(read_graph(graph_path), graph)
+        else:
+            write_task = progress.add_task("writing graph", total=1)
+            write_graph(graph, graph_path)
+            progress.update(write_task, completed=1)
+
+    # everything below prints after the transient progress display has stopped
+    if dbt_only_note:
+        console.print(dbt_only_note)
+    if check:
+        if drifted:
             console.print(
                 f"[red]drift:[/red] {graph_path} is stale -- "
                 "run 'stitch build' and commit the result"
             )
             raise typer.Exit(code=1)
-
-        write_task = progress.add_task("writing graph", total=1)
-        write_graph(graph, graph_path)
-        progress.update(write_task, completed=1)
-
+        console.print("graph.json is up to date")
+        return
     console.print(f"wrote {graph_path} ({len(nodes)} nodes, {len(edges)} edges)")
     _print_coverage(graph.coverage, metabase_side, case_mismatch_count)
 

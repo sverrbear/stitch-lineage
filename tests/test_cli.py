@@ -132,16 +132,82 @@ def test_build_without_artifacts_names_the_fix(tmp_path, monkeypatch):
     assert "dbt docs generate" in result.output
 
 
+def _write_artifacts(tmp_path):
+    (tmp_path / "target").mkdir(exist_ok=True)
+    (tmp_path / "target" / "manifest.json").write_text('{"metadata": {}, "nodes": {}}')
+    (tmp_path / "target" / "catalog.json").write_text('{"nodes": {}, "sources": {}}')
+
+
 def test_build_without_metabase_env_fails_before_http(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("STITCH_METABASE_API_KEY", raising=False)
     (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
-    (tmp_path / "target").mkdir()
-    (tmp_path / "target" / "manifest.json").write_text('{"metadata": {}, "nodes": {}}')
-    (tmp_path / "target" / "catalog.json").write_text('{"nodes": {}, "sources": {}}')
+    _write_artifacts(tmp_path)
     result = runner.invoke(app, ["build"])
     assert result.exit_code == 1
     assert "STITCH_METABASE_API_KEY" in result.output
+
+
+def test_build_without_metabase_env_fails_before_loading_artifacts(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("STITCH_METABASE_API_KEY", raising=False)
+    (tmp_path / "stitch.yml").write_text(AUTO_DOCS_CONFIG)
+    _write_artifacts(tmp_path)  # valid artifacts: the env check must still fire first
+
+    def _never_called(*args, **kwargs):
+        raise AssertionError("build did artifact work before checking the Metabase env")
+
+    monkeypatch.setattr("stitch_lineage.cli.load_manifest", _never_called)
+    monkeypatch.setattr("stitch_lineage.cli.load_catalog", _never_called)
+    docs_calls = _record_docs_calls(monkeypatch)
+
+    result = runner.invoke(app, ["build"])
+    assert result.exit_code == 1
+    assert docs_calls == []  # not even 'dbt docs generate' runs
+    assert "running dbt docs generate" not in result.output
+
+
+def test_build_missing_env_message_names_the_fix(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("STITCH_METABASE_API_KEY", raising=False)
+    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
+    result = runner.invoke(app, ["build"])
+    assert result.exit_code == 1
+    lines = [line.rstrip() for line in result.output.splitlines()]
+    assert lines[:4] == [
+        "error: environment variable STITCH_METABASE_API_KEY is referenced in stitch.yml "
+        "but not set",
+        "  stitch build needs it to call the Metabase API.",
+        "  fix: set it in your environment (create a key in Metabase: "
+        "Admin settings -> Authentication -> API keys),",
+        "  or run 'stitch build --no-metabase' for a dbt-only graph.",
+    ]
+
+
+def test_build_no_metabase_needs_no_env(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("STITCH_METABASE_API_KEY", raising=False)
+    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
+    _write_artifacts(tmp_path)
+    result = runner.invoke(app, ["build", "--no-metabase"])
+    assert result.exit_code == 0, result.output
+    assert "dbt-only" in result.output
+
+
+def test_multiple_missing_env_vars_are_all_listed(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("STITCH_METABASE_API_KEY", raising=False)
+    monkeypatch.delenv("STITCH_METABASE_URL", raising=False)
+    (tmp_path / "stitch.yml").write_text(
+        VALID_CONFIG.replace("https://mb.example.com", "${STITCH_METABASE_URL}")
+    )
+    result = runner.invoke(app, ["build"])
+    assert result.exit_code == 1
+    assert (
+        "environment variables STITCH_METABASE_URL, STITCH_METABASE_API_KEY "
+        "are referenced in stitch.yml but not set" in result.output
+    )
+    assert "needs them to call the Metabase API" in result.output
 
 
 def test_search_without_graph_points_at_build(tmp_path, monkeypatch):
@@ -283,6 +349,8 @@ def _record_docs_calls(monkeypatch):
 
 def test_build_docs_flag_runs_docs_generate(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    # the docs step runs after the Metabase env check, so these cases need the key set
+    monkeypatch.setenv("STITCH_METABASE_API_KEY", "mb_test_key")
     (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
     calls = _record_docs_calls(monkeypatch)
     result = runner.invoke(app, ["build", "--docs"])
@@ -295,6 +363,7 @@ def test_build_docs_flag_runs_docs_generate(tmp_path, monkeypatch):
 
 def test_build_auto_docs_config_runs_docs_generate_with_docs_args(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("STITCH_METABASE_API_KEY", "mb_test_key")
     (tmp_path / "stitch.yml").write_text(AUTO_DOCS_CONFIG)
     calls = _record_docs_calls(monkeypatch)
     result = runner.invoke(app, ["build"])
@@ -305,6 +374,7 @@ def test_build_auto_docs_config_runs_docs_generate_with_docs_args(tmp_path, monk
 
 def test_build_no_docs_flag_overrides_auto_docs(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("STITCH_METABASE_API_KEY", "mb_test_key")
     (tmp_path / "stitch.yml").write_text(AUTO_DOCS_CONFIG)
     calls = _record_docs_calls(monkeypatch)
     result = runner.invoke(app, ["build", "--no-docs"])
@@ -314,6 +384,7 @@ def test_build_no_docs_flag_overrides_auto_docs(tmp_path, monkeypatch):
 
 def test_build_docs_absent_defaults_to_off(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("STITCH_METABASE_API_KEY", "mb_test_key")
     (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
     calls = _record_docs_calls(monkeypatch)
     result = runner.invoke(app, ["build"])
@@ -323,6 +394,7 @@ def test_build_docs_absent_defaults_to_off(tmp_path, monkeypatch):
 
 def test_build_docs_runner_failure_fails_cleanly(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("STITCH_METABASE_API_KEY", "mb_test_key")
     (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
 
     def _boom(project_dir, extra_args):
