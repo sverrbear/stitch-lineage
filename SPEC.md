@@ -104,7 +104,7 @@ This is the one non-negotiable rule. It's what makes a Looker or BigQuery resolv
 
 ## 5. Graph model
 
-`graph.json` — one file, deterministic ordering (nodes sorted by `node_id`, edges by `(from, to, type)`, keys sorted) so that regeneration without semantic change produces a zero diff. Gzip-optional; plain JSON by default because reviewable diffs are the point of committing it.
+`graph.json` — one file, deterministic ordering (nodes sorted by `node_id`, edges by `(from, to, type)`, header keys first and every other key sorted) so that regeneration without semantic change produces a zero diff. Gzip-optional; plain JSON by default because reviewable diffs are the point of committing it.
 
 ```jsonc
 {

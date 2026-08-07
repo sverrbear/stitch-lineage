@@ -29,6 +29,32 @@ def test_writes_are_byte_identical(tmp_path, sample_graph):
     assert path_a.read_bytes() == path_b.read_bytes()
 
 
+def test_writes_are_byte_identical_regardless_of_evidence_key_order(tmp_path, sample_graph):
+    # nested dicts are key-sorted by the writer, so runtime insertion order cannot
+    # leak into the file (json sort_keys can no longer do this -- the header is ordered)
+    path_a = tmp_path / "a.json"
+    path_b = tmp_path / "b.json"
+    edge = sample_graph.edges[0]
+    forward = edge.model_copy(update={"evidence": {"alpha": 1, "beta": 2}})
+    reversed_keys = edge.model_copy(update={"evidence": {"beta": 2, "alpha": 1}})
+    write_graph(sample_graph.model_copy(update={"edges": [forward]}), path_a)
+    write_graph(sample_graph.model_copy(update={"edges": [reversed_keys]}), path_b)
+    assert path_a.read_bytes() == path_b.read_bytes()
+
+
+def test_header_fields_are_written_first(tmp_path, sample_graph):
+    path = tmp_path / "graph.json"
+    write_graph(sample_graph, path)
+    keys = list(json.loads(path.read_text()))  # json.loads preserves file key order
+    assert keys[:4] == [
+        "schema_version",
+        "generated_at",
+        "dbt_invocation_id",
+        "metabase_version",
+    ]
+    assert keys[4:] == sorted(keys[4:])
+
+
 def test_file_format(tmp_path, sample_graph):
     path = tmp_path / "graph.json"
     write_graph(sample_graph, path)

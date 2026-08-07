@@ -3,7 +3,14 @@ from pathlib import Path
 
 import pytest
 
-from stitch_lineage.graph.schema import Confidence, EdgeType, NodeType, column_node_id
+from stitch_lineage.graph.schema import (
+    Confidence,
+    EdgeType,
+    Graph,
+    NodeType,
+    column_node_id,
+)
+from stitch_lineage.io.graph_store import write_graph
 from stitch_lineage.resolve.dbt import DbtResolution, resolve_dbt
 
 FIXTURES = Path(__file__).parent / "fixtures" / "dbt"
@@ -335,7 +342,7 @@ def test_source_columns_excluded_from_coverage(resolution):
     assert resolution.columns_total == len(model_columns) == 26
 
 
-def test_output_is_deterministic():
+def test_output_is_deterministic(tmp_path):
     first = resolve_dbt(*_load_fixture_pair())
     second = resolve_dbt(*_load_fixture_pair())
     assert [n.model_dump(by_alias=True) for n in first.nodes] == [
@@ -344,6 +351,40 @@ def test_output_is_deterministic():
     assert [e.model_dump(by_alias=True) for e in first.edges] == [
         e.model_dump(by_alias=True) for e in second.edges
     ]
+
+    # the resolver emits in resolver order; canonical ordering is graph_store's job,
+    # so nothing downstream depends on it pre-sorting what the writer sorts again
+    path = tmp_path / "graph.json"
+    write_graph(Graph(nodes=first.nodes, edges=first.edges), path)
+    payload = json.loads(path.read_text())
+    node_ids = [node["node_id"] for node in payload["nodes"]]
+    assert node_ids == sorted(node_ids)
+    edge_keys = [(e["from"], e["to"], e["edge_type"]) for e in payload["edges"]]
+    assert edge_keys == sorted(edge_keys)
+
+
+def test_seed_and_snapshot_dependencies_are_counted_not_dropped():
+    manifest = {
+        "metadata": {},
+        "nodes": {
+            "model.demo.fct_a": _model(
+                "fct_a",
+                columns={"user_id": _column("user_id")},
+                deps=(
+                    "seed.demo.country_codes",
+                    "snapshot.demo.users_snapshot",
+                    "model.demo.dim_b",
+                ),
+            ),
+            "model.demo.dim_b": _model("dim_b", columns={"user_id": _column("user_id")}),
+            "seed.demo.country_codes": {"resource_type": "seed", "name": "country_codes"},
+            "snapshot.demo.users_snapshot": {"resource_type": "snapshot", "name": "users_snapshot"},
+        },
+        "sources": {},
+    }
+    result = resolve_dbt(manifest, {})
+    assert result.seed_snapshot_dependencies == 2
+    assert _edge_pairs(result, EdgeType.REFERENCES) == {("model.demo.dim_b", "model.demo.fct_a")}
 
 
 # --- inline-manifest edge cases --------------------------------------------
