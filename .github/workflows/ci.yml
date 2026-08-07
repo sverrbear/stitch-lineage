@@ -19,6 +19,8 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Lint
         run: ruff check .
+      - name: Format
+        run: ruff format --check .
       - name: Architecture seams
         run: lint-imports
       - name: Tests

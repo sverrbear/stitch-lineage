@@ -97,9 +97,7 @@ def test_missing_databases_points_at_doctor(tmp_path, monkeypatch):
 
 
 def test_missing_api_key(tmp_path):
-    without_key = "\n".join(
-        line for line in VALID_CONFIG.splitlines() if "api_key" not in line
-    )
+    without_key = "\n".join(line for line in VALID_CONFIG.splitlines() if "api_key" not in line)
     with pytest.raises(StitchConfigError, match="api_key is required"):
         load_config(_write(tmp_path, without_key))
 

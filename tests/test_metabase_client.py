@@ -60,9 +60,7 @@ def test_version_tuple(tag, expected):
 
 @responses.activate
 def test_assert_version_accepts_enterprise_tag():
-    responses.get(
-        f"{BASE}/api/session/properties", json={"version": {"tag": "v1.53.x"}}
-    )
+    responses.get(f"{BASE}/api/session/properties", json={"version": {"tag": "v1.53.x"}})
     assert make_client().assert_version() == "v1.53.x"
 
 
