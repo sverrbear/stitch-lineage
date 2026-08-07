@@ -2,32 +2,9 @@
 
 **dbt ↔ Metabase column lineage.**
 
-stitch answers "if I rename this column, what breaks?" for the half of the stack where the damage actually shows up. It reads your dbt artifacts and the Metabase API, traces column lineage end to end — source column → staging → mart → Metabase field → card → dashboard — and stores the result as a deterministic, committed `.stitch/graph.json`. In CI it diffs the PR branch's graph against the one committed on the base branch and posts the downstream blast radius as a PR comment. Local-first: no server, no warehouse backend, no hosted anything. The dbt repo is the database.
+stitch answers "where does this column go, and what uses it?" for the half of the stack where the answer usually isn't visible. It reads your dbt artifacts and the Metabase API and traces column lineage end to end — source column → staging → mart → Metabase field → card → dashboard. The result is `.stitch/graph.json`, a plain local file next to your dbt project: search it from the terminal, explore it in the browser (`stitch serve`, shipping next), export it for agents. Local-first: no server, no warehouse backend, no hosted anything — and nothing generated needs to be committed. (Teams that want git history of the graph can commit it; nothing requires that.)
 
 > Full design in [SPEC.md](SPEC.md) (draft v0.4).
-
-## The PR comment
-
-This is the whole point. On every PR that changes a model, stitch comments:
-
-```
-⚠ 1 column removed or renamed
-
-stg_payments.amount_usd → removed
-  ├ 2 downstream models: fct_orders, mart_payments
-  └ 3 Metabase cards:
-      #201 Orders overview  (Orders Board, Sverrir)
-      #204 Revenue per customer  (Sverrir)
-      #209 Legacy KPIs  (Sverrir)
-
-_Renames appear as remove+add: a renamed column shows up here as removed._
-```
-
-A ready-to-copy workflow template lives in [`action/stitch-impact.yml`](action/stitch-impact.yml). The impact job needs no Metabase credentials — it reuses the Metabase side of the committed baseline graph.
-
-### Deploy-time alerts
-
-The same report can go to Slack when a change actually ships. On push to main (or after your dbt prod run), run `stitch build` followed by `stitch impact --base <previous baseline> --format slack` and pipe the output to a Slack incoming webhook — the message is Slack mrkdwn, posted by whatever bot owns the webhook. A ready-to-copy template lives in [`action/stitch-deploy-alert.yml`](action/stitch-deploy-alert.yml).
 
 ## Quickstart
 
@@ -71,15 +48,12 @@ Or keep the two steps explicit (typical in CI, where `dbt docs generate` runs it
 dbt docs generate                # produce target/manifest.json + catalog.json
 stitch build --no-docs           # resolve only; --docs/--no-docs overrides auto_docs either way
 
-stitch build --check             # CI: exit 1 if the committed graph.json is stale
-stitch build --no-metabase       # dbt side only; reuses the committed Metabase side
-
-stitch impact --base origin/main --format github-comment
-stitch impact --base origin/main --format slack     # Slack mrkdwn for webhooks
-stitch impact --base origin/main --fail-on-impact   # red check on removed columns
+stitch build --no-metabase       # dbt side only; reuses the existing Metabase side
 
 stitch search order_total        # find models, columns, fields, cards, dashboards
 stitch search order_total --json # JSON lines for piping
+
+stitch serve                     # local lineage + ERD app (Phase 1, shipping next)
 
 stitch doctor                    # config, artifacts, graph, Metabase connectivity
 stitch doctor --list-databases   # database names visible to the API key
@@ -89,7 +63,7 @@ stitch doctor --untraced         # columns sqlglot could not trace
 stitch export --format jsonl     # flat nodes.jsonl/edges.jsonl for agents/warehouses
 ```
 
-Commands that don't call the Metabase API (`build --no-metabase`, `impact`, `search`, `export`, `doctor --unbound/--untraced`) work without the `STITCH_METABASE_*` env vars set — CI impact jobs need no secrets beyond warehouse access for `dbt docs generate`.
+Commands that don't call the Metabase API (`build --no-metabase`, `search`, `export`, `doctor --unbound/--untraced`) work without the `STITCH_METABASE_*` env vars set. Add `.stitch/` to your `.gitignore` — the graph is a local artifact.
 
 ## Coverage report
 
@@ -109,10 +83,14 @@ Native SQL cards are counted but not resolved in Phase 0 (they are Phase 3); MBQ
 
 | Phase | Scope | Status |
 |---|---|---|
-| **0** | `build` (dbt column lineage via sqlglot + MBQL cards), deterministic `graph.json` + `--check`, coverage report, recursive `impact` + GitHub Action template, `search` CLI, `doctor` | **shipped** |
+| **0** | `build` (dbt column lineage via sqlglot + MBQL cards), deterministic `graph.json` + `--check`, coverage report, recursive `impact` + GitHub Action template (impact shelved by default), `search` CLI, `doctor` | **shipped** |
 | 1 | `serve`: search + detail panels, lineage view, catalog, read-only ERD; `export --site` | planned |
 | 2 | Editable ERD canvas: YAML write-back with diff preview, suggestion layer | planned |
 | 3 | Native SQL cards via sqlglot, rename heuristics, `--verify-lineage` | planned |
+
+## Shelved: PR impact comments
+
+stitch can diff two graphs and walk the downstream blast radius — "this rename breaks 4 cards on 2 dashboards" — as a PR comment (`stitch impact --format github-comment`) or a Slack deploy alert (`--format slack`; templates in [`action/`](action/)). That workflow needs a baseline `graph.json` committed on the base branch, which conflicts with keeping the graph purely local, so it's shelved as the default story for now: the command is hidden from `--help` but fully functional if you keep your own baselines.
 
 ## Built on
 

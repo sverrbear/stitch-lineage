@@ -29,8 +29,19 @@ def _write_graph(tmp_path, nodes=()):
 def test_help_lists_commands():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    for command in ("build", "impact", "search", "doctor", "export", "init", "serve"):
+    for command in ("build", "search", "doctor", "export", "init", "serve"):
         assert command in result.output
+
+
+def test_impact_is_shelved_hidden_but_invocable():
+    # shelved: hidden from --help, but the command keeps working when invoked directly
+    top_help = runner.invoke(app, ["--help"])
+    assert top_help.exit_code == 0
+    assert "impact" not in top_help.output
+
+    own_help = runner.invoke(app, ["impact", "--help"])
+    assert own_help.exit_code == 0
+    assert "Shelved pending the committed-baseline workflow" in own_help.output
 
 
 def test_version():
