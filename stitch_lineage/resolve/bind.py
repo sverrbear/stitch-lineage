@@ -39,7 +39,7 @@ def _squash(value: str | None) -> str:
 def bind(
     dbt_nodes: list[Node],
     mb_field_nodes: list[Node],
-    database_map: list[tuple[str, str]],
+    database_map: list[tuple[str, str] | tuple[str, str, str]],
 ) -> BindResult:
     """Produce `binds_to` edges (dbt column -> mb_field).
 
@@ -50,7 +50,8 @@ def bind(
     unverified_field_count instead of fabricating exact edges to unverified columns.
     mb_field_nodes are the mb_field Nodes from resolve_metabase (database = Metabase
     display name, schema/table/column physical names); database_map is
-    [(metabase_display_name, dbt_database), ...] from config metabase.databases.
+    [(metabase_display_name, dbt_database), ...] from config metabase.databases,
+    optionally extended with a per-database table_prefix as a third element.
 
     Match (database, schema, table, column) case-insensitively, honouring the model's
     physical table (Node.table, set from alias). Exact match -> confidence exact; a
@@ -61,13 +62,23 @@ def bind(
     uppercase unquoted identifiers, Metabase display name != dbt database name (the
     map), multiple Metabase connections to one warehouse (multiple map entries).
 
+    table_prefix handles dev-target artifacts pointed at a prod Metabase: a prefix
+    present on dbt physical table names (sis_fct_matches) but absent in the BI
+    database (fct_matches). It is stripped from the DBT side only -- never from the
+    Metabase side -- case-insensitively and anchored at the start of the table name,
+    and only when no un-stripped table matches first. Edges bound this way keep
+    their confidence but record evidence {"table_prefix_stripped": "<prefix>"}.
+
     models_total counts dbt model nodes (sources bind but are not counted);
     models_bound those whose (db, schema, table) appears on the Metabase side;
     unbound_models the remaining unique_ids, sorted.
 
     Pure: nodes in, edges out. No filesystem or network access.
     """
-    display_to_dbt = {_fold(display): dbt_db for display, dbt_db in database_map}
+    mappings: dict[str, tuple[str, str]] = {}
+    for entry in database_map:
+        prefix = entry[2] if len(entry) > 2 else ""
+        mappings[_fold(entry[0])] = (entry[1], prefix or "")
 
     relations: dict[tuple[str, str, str], Node] = {}
     columns_by_model: dict[str, dict[str, Node]] = {}
@@ -89,22 +100,34 @@ def bind(
     unverified = 0
 
     for field in mb_field_nodes:
-        dbt_database = display_to_dbt.get(_fold(field.database))
-        if dbt_database is None or not field.table or not field.column:
+        mapping = mappings.get(_fold(field.database))
+        if mapping is None or not field.table or not field.column:
             continue
-        rel = relations.get((_fold(dbt_database), _fold(field.schema_), _fold(field.table)))
+        dbt_database, table_prefix = mapping
+        db_schema = (_fold(dbt_database), _fold(field.schema_))
+        rel = relations.get((*db_schema, _fold(field.table)))
+        stripped_prefix = None
+        if rel is None and table_prefix:
+            rel = relations.get((*db_schema, _fold(table_prefix) + _fold(field.table)))
+            if rel is not None:
+                stripped_prefix = table_prefix
         if rel is None:
             continue
         if rel.node_type is NodeType.MODEL:
             bound.add(rel.node_id)
 
+        dbt_table = rel.table or rel.name
+        if stripped_prefix:
+            dbt_table = dbt_table[len(stripped_prefix) :]
         case_mismatch = (
             (rel.database or "") != dbt_database
             or (rel.schema_ or "") != (field.schema_ or "")
-            or (rel.table or rel.name) != field.table
+            or dbt_table != field.table
         )
         confidence = Confidence.EXACT
         evidence: dict[str, object] = {}
+        if stripped_prefix:
+            evidence["table_prefix_stripped"] = stripped_prefix
         model_columns = columns_by_model.get(rel.node_id)
 
         if model_columns is None:
@@ -124,14 +147,16 @@ def bind(
             fuzzy_col = candidates[0]
             from_id = fuzzy_col.node_id
             confidence = Confidence.FUZZY
-            evidence = {
-                "dbt_column": fuzzy_col.column or fuzzy_col.name,
-                "mb_column": field.column,
-                "match": "underscore_case_fold",
-            }
+            evidence.update(
+                {
+                    "dbt_column": fuzzy_col.column or fuzzy_col.name,
+                    "mb_column": field.column,
+                    "match": "underscore_case_fold",
+                }
+            )
 
         if confidence is Confidence.EXACT and case_mismatch:
-            evidence = {"case_mismatch": True}
+            evidence["case_mismatch"] = True
             case_mismatches += 1
 
         edges.append(

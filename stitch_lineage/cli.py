@@ -173,7 +173,9 @@ def build(
     target_path = _target_path(config, cfg)
     out_dir = _output_dir(config, cfg)
     graph_path = out_dir / "graph.json"
-    database_map = [(db.metabase_name, db.dbt_database) for db in cfg.metabase.databases]
+    database_map = [
+        (db.metabase_name, db.dbt_database, db.table_prefix) for db in cfg.metabase.databases
+    ]
 
     try:
         manifest = load_manifest(target_path)

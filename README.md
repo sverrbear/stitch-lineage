@@ -50,6 +50,9 @@ metabase:
   databases:
     - metabase_name: "Analytics"        # display name in Metabase
       dbt_database: analytics           # database per the dbt manifest
+      table_prefix: ${USER_PREFIX}_     # optional: prefix on dbt physical table names
+                                        # absent in the BI database, stripped before
+                                        # matching (dev artifacts vs prod Metabase)
 
 output:
   dir: .stitch/
