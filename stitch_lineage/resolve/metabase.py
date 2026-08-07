@@ -1,5 +1,6 @@
 """Resolve raw Metabase payloads into graph nodes and edges (SPEC.md section 7.4)."""
 
+from collections.abc import Callable
 from fnmatch import fnmatch
 from typing import Any
 
@@ -242,6 +243,7 @@ def resolve_metabase(
     payload: MetabasePayload,
     exclude_collections: list[str],
     include_schemas: list[str] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> MetabaseResolution:
     """Build the Metabase side of the graph from raw API payloads.
 
@@ -272,6 +274,9 @@ def resolve_metabase(
 
     include_schemas (config metabase.include_schemas) limits mb_field/table scope to
     the named schemas, compared case-insensitively; empty/None includes every schema.
+
+    on_progress, when given, is called as on_progress(done, total) after each in-scope
+    card is resolved; total is the in-scope card count, fixed for the whole run.
 
     Pure: payload in, nodes/edges out. No filesystem or network access.
     """
@@ -411,7 +416,7 @@ def resolve_metabase(
         transitive[card_id] = consumed
         return consumed
 
-    for card in cards_in_scope:
+    def _resolve_card(card: dict[str, Any]) -> None:
         card_id = card["id"]
         card_node_id = mb_card_node_id(card_id)
         dataset_query = card.get("dataset_query")
@@ -441,7 +446,7 @@ def resolve_metabase(
         if query_type == "native":
             result.native_cards_total += 1
             result.unresolved_cards.append(card_id)
-            continue
+            return
 
         result.mbql_cards_total += 1
         walk = walks.get(card_id)
@@ -450,7 +455,7 @@ def resolve_metabase(
             result.unresolved_field_refs.append(
                 {"card_id": card_id, "ref": None, "reason": "no MBQL query in dataset_query"}
             )
-            continue
+            return
 
         for field_id in sorted(walk.consumed):
             entry = walk.consumed[field_id]
@@ -498,6 +503,11 @@ def resolve_metabase(
             result.unresolved_field_refs.extend(problems)
         else:
             result.mbql_cards_resolved += 1
+
+    for done, card in enumerate(cards_in_scope, start=1):
+        _resolve_card(card)
+        if on_progress is not None:
+            on_progress(done, len(cards_in_scope))
 
     card_node_ids = {mb_card_node_id(card["id"]) for card in cards_in_scope}
     for dashboard in payload.dashboards:

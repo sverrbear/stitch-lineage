@@ -371,3 +371,20 @@ def test_reference_to_missing_card_is_a_problem_not_a_crash(payload):
         problem["ref"] == "card__999" and "missing or excluded" in problem["reason"]
         for problem in resolution.unresolved_field_refs
     )
+
+
+def test_on_progress_fires_per_card_with_fixed_total(payload):
+    # 7 in-scope cards: 201-206 and 208 (207 and 209 sit in excluded collections)
+    calls: list[tuple[int, int]] = []
+
+    with_progress = resolve_metabase(
+        payload, EXCLUDE, on_progress=lambda done, total: calls.append((done, total))
+    )
+
+    assert calls, "on_progress never fired"
+    assert {total for _, total in calls} == {7}
+    dones = [done for done, _ in calls]
+    assert dones == sorted(dones), "done must be monotonically nondecreasing"
+    assert dones[-1] == 7, "progress must reach total"
+    # the callback is observational only: the resolution is unchanged
+    assert with_progress == resolve_metabase(payload, EXCLUDE)
