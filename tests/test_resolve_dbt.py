@@ -550,3 +550,26 @@ def test_dangling_target_column_recorded():
     assert result.dangling_relationships == [
         "fct_a.user_id -> dim_b.missing_col: target column not found"
     ]
+
+
+# --- on_progress ------------------------------------------------------------
+
+
+def test_on_progress_fires_per_model_with_fixed_total():
+    manifest, catalog = _load_fixture_pair()
+    model_count = sum(
+        1 for node in manifest["nodes"].values() if node.get("resource_type") == "model"
+    )
+    calls: list[tuple[int, int]] = []
+
+    with_progress = resolve_dbt(
+        manifest, catalog, on_progress=lambda done, total: calls.append((done, total))
+    )
+
+    assert calls, "on_progress never fired"
+    assert {total for _, total in calls} == {model_count}
+    dones = [done for done, _ in calls]
+    assert dones == sorted(dones), "done must be monotonically nondecreasing"
+    assert dones[-1] == model_count, "progress must reach total"
+    # the callback is observational only: the resolution is unchanged
+    assert with_progress == resolve_dbt(manifest, catalog)

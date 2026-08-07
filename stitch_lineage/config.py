@@ -18,6 +18,11 @@ class StitchConfigError(Exception):
 class DbtConfig(BaseModel):
     project_dir: str = "."
     target_path: str = "target/"
+    # run `dbt docs generate` automatically at the start of every `stitch build`
+    # (overridable per invocation with --docs/--no-docs)
+    auto_docs: bool = False
+    # extra args appended to the dbt docs generate command, e.g. ["--target", "prod"]
+    docs_args: list[str] = Field(default_factory=list)
 
 
 class MetabaseDatabaseMapping(BaseModel):

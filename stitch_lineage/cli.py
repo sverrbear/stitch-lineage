@@ -9,6 +9,14 @@ from typing import Annotated, Any, NoReturn
 
 import typer
 from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
 
 from stitch_lineage import __version__
@@ -22,6 +30,7 @@ from stitch_lineage.graph.impact import (
 from stitch_lineage.graph.schema import Coverage, EdgeType, Graph, NodeType
 from stitch_lineage.graph.search import search as search_graph
 from stitch_lineage.io.artifacts import StitchArtifactError, load_catalog, load_manifest
+from stitch_lineage.io.dbt_runner import StitchDbtRunnerError, run_docs_generate
 from stitch_lineage.io.graph_store import graphs_semantically_equal, read_graph, write_graph
 from stitch_lineage.io.metabase_client import MetabaseAPIError, MetabaseClient
 from stitch_lineage.resolve.bind import bind
@@ -100,6 +109,20 @@ def _metabase_client(cfg: StitchConfig, cache_dir: Path | None = None) -> Metaba
     )
 
 
+def _build_progress() -> Progress:
+    """Build-stage progress. Renders to stderr so stdout stays clean for piping;
+    transient so nothing lingers after the summary prints."""
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=Console(stderr=True),
+        transient=True,
+    )
+
+
 def _version_callback(value: bool) -> None:
     if value:
         console.print(__version__)
@@ -166,6 +189,13 @@ def build(
         bool,
         typer.Option("--check", help="Compare against the committed graph.json; exit 1 on drift."),
     ] = False,
+    docs: Annotated[
+        bool | None,
+        typer.Option(
+            "--docs/--no-docs",
+            help="Run 'dbt docs generate' first (overrides dbt.auto_docs either way).",
+        ),
+    ] = None,
 ) -> None:
     """Resolve dbt artifacts and the Metabase API into .stitch/graph.json."""
     config = _resolve_config(config)
@@ -177,126 +207,161 @@ def build(
         (db.metabase_name, db.dbt_database, db.table_prefix) for db in cfg.metabase.databases
     ]
 
-    try:
-        manifest = load_manifest(target_path)
-        catalog = load_catalog(target_path)
-    except StitchArtifactError as exc:
-        _fail(str(exc))
-    dbt_res = resolve_dbt(
-        manifest,
-        catalog,
-        fk_meta_keys=cfg.relationships.fk_meta_keys,
-        cardinality_meta_key=cfg.relationships.cardinality_meta_key,
-    )
+    if cfg.dbt.auto_docs if docs is None else docs:
+        console.print("running dbt docs generate...")
+        try:
+            run_docs_generate(config.parent / cfg.dbt.project_dir, cfg.dbt.docs_args)
+        except StitchDbtRunnerError as exc:
+            _fail(str(exc))
 
-    nodes = list(dbt_res.nodes)
-    edges = list(dbt_res.edges)
-    coverage_fields: dict[str, Any] = {
-        "columns_traced": dbt_res.columns_traced,
-        "columns_total": dbt_res.columns_total,
-        "columns_inferred": dbt_res.columns_inferred,
-        "untraced_columns": dbt_res.untraced_columns,
-        "dangling_relationships": dbt_res.dangling_relationships,
-    }
-    metabase_version: str | None = None
-    metabase_side = True
-    case_mismatch_count = 0
+    progress = _build_progress()
+    with progress:
+        load_task = progress.add_task("loading artifacts", total=1)
+        try:
+            manifest = load_manifest(target_path)
+            catalog = load_catalog(target_path)
+        except StitchArtifactError as exc:
+            _fail(str(exc))
+        progress.update(load_task, completed=1)
 
-    if no_metabase:
-        # SPEC section 10: reuse the committed baseline's Metabase side; the dbt side
-        # changed, so binding must re-run against the reused mb_field nodes.
-        baseline = read_graph(graph_path) if graph_path.is_file() else None
-        mb_nodes = (
-            [n for n in baseline.nodes if n.node_type in _MB_NODE_TYPES] if baseline else []
+        trace_task = progress.add_task("tracing column lineage", total=None)
+        dbt_res = resolve_dbt(
+            manifest,
+            catalog,
+            fk_meta_keys=cfg.relationships.fk_meta_keys,
+            cardinality_meta_key=cfg.relationships.cardinality_meta_key,
+            on_progress=lambda done, total: progress.update(
+                trace_task, completed=done, total=total
+            ),
         )
-        mb_field_nodes = [n for n in mb_nodes if n.node_type is NodeType.MB_FIELD]
-        if not mb_field_nodes:
-            # a dbt-only baseline is as useless for reuse as no baseline at all
-            metabase_side = False
-            missing = (
-                "no existing graph.json"
-                if baseline is None
-                else f"existing {graph_path} has no Metabase side"
+
+        nodes = list(dbt_res.nodes)
+        edges = list(dbt_res.edges)
+        coverage_fields: dict[str, Any] = {
+            "columns_traced": dbt_res.columns_traced,
+            "columns_total": dbt_res.columns_total,
+            "columns_inferred": dbt_res.columns_inferred,
+            "untraced_columns": dbt_res.untraced_columns,
+            "dangling_relationships": dbt_res.dangling_relationships,
+        }
+        metabase_version: str | None = None
+        metabase_side = True
+        case_mismatch_count = 0
+
+        if no_metabase:
+            # SPEC section 10: reuse the committed baseline's Metabase side; the dbt side
+            # changed, so binding must re-run against the reused mb_field nodes.
+            baseline = read_graph(graph_path) if graph_path.is_file() else None
+            mb_nodes = (
+                [n for n in baseline.nodes if n.node_type in _MB_NODE_TYPES] if baseline else []
             )
-            console.print(
-                f"note: {missing} -- building a dbt-only graph "
-                "(run a full 'stitch build' to add the Metabase side)"
-            )
+            mb_field_nodes = [n for n in mb_nodes if n.node_type is NodeType.MB_FIELD]
+            if not mb_field_nodes:
+                # a dbt-only baseline is as useless for reuse as no baseline at all
+                metabase_side = False
+                missing = (
+                    "no existing graph.json"
+                    if baseline is None
+                    else f"existing {graph_path} has no Metabase side"
+                )
+                console.print(
+                    f"note: {missing} -- building a dbt-only graph "
+                    "(run a full 'stitch build' to add the Metabase side)"
+                )
+            else:
+                bind_task = progress.add_task("binding", total=1)
+                bind_res = bind(nodes, mb_field_nodes, database_map)
+                progress.update(bind_task, completed=1)
+                nodes.extend(mb_nodes)
+                edges.extend(e for e in baseline.edges if e.edge_type in _MB_EDGE_TYPES)
+                edges.extend(bind_res.edges)
+                metabase_version = baseline.metabase_version
+                case_mismatch_count = bind_res.case_mismatch_count
+                coverage_fields.update(
+                    models_bound=bind_res.models_bound,
+                    models_total=bind_res.models_total,
+                    unbound_models=bind_res.unbound_models,
+                    mbql_cards_resolved=baseline.coverage.mbql_cards_resolved,
+                    mbql_cards_total=baseline.coverage.mbql_cards_total,
+                    native_cards_resolved=baseline.coverage.native_cards_resolved,
+                    native_cards_total=baseline.coverage.native_cards_total,
+                    dashboards=baseline.coverage.dashboards,
+                    dashboards_total=baseline.coverage.dashboards_total,
+                    unresolved_cards=baseline.coverage.unresolved_cards,
+                    unresolved_field_refs=baseline.coverage.unresolved_field_refs,
+                )
         else:
-            bind_res = bind(nodes, mb_field_nodes, database_map)
-            nodes.extend(mb_nodes)
-            edges.extend(e for e in baseline.edges if e.edge_type in _MB_EDGE_TYPES)
+            client = _metabase_client(cfg, cache_dir=out_dir / "cache")
+            fetch_task = progress.add_task("fetching Metabase", total=1)
+            try:
+                payload = client.fetch_all([db.metabase_name for db in cfg.metabase.databases])
+            except MetabaseAPIError as exc:
+                _fail(str(exc))
+            progress.update(fetch_task, completed=1)
+
+            cards_task = progress.add_task("resolving cards", total=None)
+            mb_res = resolve_metabase(
+                payload,
+                cfg.metabase.exclude_collections,
+                cfg.metabase.include_schemas,
+                on_progress=lambda done, total: progress.update(
+                    cards_task, completed=done, total=total
+                ),
+            )
+            bind_task = progress.add_task("binding", total=1)
+            bind_res = bind(
+                nodes,
+                [n for n in mb_res.nodes if n.node_type is NodeType.MB_FIELD],
+                database_map,
+            )
+            progress.update(bind_task, completed=1)
+            nodes.extend(mb_res.nodes)
+            edges.extend(mb_res.edges)
             edges.extend(bind_res.edges)
-            metabase_version = baseline.metabase_version
+            metabase_version = payload.metabase_version
             case_mismatch_count = bind_res.case_mismatch_count
             coverage_fields.update(
                 models_bound=bind_res.models_bound,
                 models_total=bind_res.models_total,
                 unbound_models=bind_res.unbound_models,
-                mbql_cards_resolved=baseline.coverage.mbql_cards_resolved,
-                mbql_cards_total=baseline.coverage.mbql_cards_total,
-                native_cards_resolved=baseline.coverage.native_cards_resolved,
-                native_cards_total=baseline.coverage.native_cards_total,
-                dashboards=baseline.coverage.dashboards,
-                dashboards_total=baseline.coverage.dashboards_total,
-                unresolved_cards=baseline.coverage.unresolved_cards,
-                unresolved_field_refs=baseline.coverage.unresolved_field_refs,
+                mbql_cards_resolved=mb_res.mbql_cards_resolved,
+                mbql_cards_total=mb_res.mbql_cards_total,
+                native_cards_resolved=mb_res.native_cards_resolved,
+                native_cards_total=mb_res.native_cards_total,
+                dashboards=mb_res.dashboards,
+                dashboards_total=mb_res.dashboards_total,
+                unresolved_cards=mb_res.unresolved_cards,
+                unresolved_field_refs=mb_res.unresolved_field_refs,
             )
-    else:
-        client = _metabase_client(cfg, cache_dir=out_dir / "cache")
-        try:
-            payload = client.fetch_all([db.metabase_name for db in cfg.metabase.databases])
-        except MetabaseAPIError as exc:
-            _fail(str(exc))
-        mb_res = resolve_metabase(
-            payload, cfg.metabase.exclude_collections, cfg.metabase.include_schemas
-        )
-        bind_res = bind(
-            nodes,
-            [n for n in mb_res.nodes if n.node_type is NodeType.MB_FIELD],
-            database_map,
-        )
-        nodes.extend(mb_res.nodes)
-        edges.extend(mb_res.edges)
-        edges.extend(bind_res.edges)
-        metabase_version = payload.metabase_version
-        case_mismatch_count = bind_res.case_mismatch_count
-        coverage_fields.update(
-            models_bound=bind_res.models_bound,
-            models_total=bind_res.models_total,
-            unbound_models=bind_res.unbound_models,
-            mbql_cards_resolved=mb_res.mbql_cards_resolved,
-            mbql_cards_total=mb_res.mbql_cards_total,
-            native_cards_resolved=mb_res.native_cards_resolved,
-            native_cards_total=mb_res.native_cards_total,
-            dashboards=mb_res.dashboards,
-            dashboards_total=mb_res.dashboards_total,
-            unresolved_cards=mb_res.unresolved_cards,
-            unresolved_field_refs=mb_res.unresolved_field_refs,
+
+        graph = Graph(
+            generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
+            dbt_invocation_id=manifest.get("metadata", {}).get("invocation_id"),
+            metabase_version=metabase_version,
+            coverage=Coverage(**coverage_fields),
+            nodes=nodes,
+            edges=edges,
         )
 
-    graph = Graph(
-        generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
-        dbt_invocation_id=manifest.get("metadata", {}).get("invocation_id"),
-        metabase_version=metabase_version,
-        coverage=Coverage(**coverage_fields),
-        nodes=nodes,
-        edges=edges,
-    )
+        if check:
+            if not graph_path.is_file():
+                _fail(
+                    f"no committed graph at {graph_path} to check against -- run 'stitch build'"
+                )
+            baseline = read_graph(graph_path)
+            if graphs_semantically_equal(baseline, graph):
+                console.print("graph.json is up to date")
+                return
+            console.print(
+                f"[red]drift:[/red] {graph_path} is stale -- "
+                "run 'stitch build' and commit the result"
+            )
+            raise typer.Exit(code=1)
 
-    if check:
-        if not graph_path.is_file():
-            _fail(f"no committed graph at {graph_path} to check against -- run 'stitch build'")
-        baseline = read_graph(graph_path)
-        if graphs_semantically_equal(baseline, graph):
-            console.print("graph.json is up to date")
-            return
-        console.print(
-            f"[red]drift:[/red] {graph_path} is stale -- run 'stitch build' and commit the result"
-        )
-        raise typer.Exit(code=1)
+        write_task = progress.add_task("writing graph", total=1)
+        write_graph(graph, graph_path)
+        progress.update(write_task, completed=1)
 
-    write_graph(graph, graph_path)
     console.print(f"wrote {graph_path} ({len(nodes)} nodes, {len(edges)} edges)")
     _print_coverage(graph.coverage, metabase_side, case_mismatch_count)
 
@@ -320,10 +385,23 @@ def _baseline_graph(base: str, graph_path: Path) -> Graph:
         check=False,
     )
     if result.returncode != 0:
-        _fail(
-            f"could not load the baseline via 'git show {base}:{ref_path}' -- "
-            f"{result.stderr.strip()}"
-        )
+        stderr = result.stderr.strip()
+        # "path missing at ref" gets an actionable message; bad refs / not-a-repo
+        # keep the raw git stderr, which already names the real problem.
+        if "exists on disk, but not in" in stderr or "does not exist in" in stderr:
+            console.print(f"[red]error:[/red] no committed baseline at {base}:{ref_path}")
+            console.print(
+                "  stitch impact diffs the current build against the graph committed "
+                "on the base ref.",
+                soft_wrap=True,
+            )
+            console.print(
+                f"  fix: on the base branch, run 'stitch build' and commit {ref_path} "
+                "-- or pass --base <ref> that has one.",
+                soft_wrap=True,
+            )
+            raise typer.Exit(code=1)
+        _fail(f"could not load the baseline via 'git show {base}:{ref_path}' -- {stderr}")
     return Graph.model_validate_json(result.stdout)
 
 
@@ -337,7 +415,7 @@ def _plain_text(comment: str) -> str:
     return "\n".join(lines)
 
 
-@app.command()
+@app.command(hidden=True)
 def impact(
     base: Annotated[
         str,
@@ -356,7 +434,10 @@ def impact(
     ] = False,
     config: ConfigOpt = None,
 ) -> None:
-    """Diff the candidate graph against the baseline and walk the downstream blast radius."""
+    """Diff the candidate graph against the baseline and walk the downstream blast radius.
+
+    Shelved pending the committed-baseline workflow; invoke directly if you keep your own baselines.
+    """
     config = _resolve_config(config)
     if output_format not in ("text", "github-comment", "slack"):
         _fail(f"unsupported --format '{output_format}' (expected: text, github-comment, slack)")
