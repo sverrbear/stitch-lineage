@@ -3,6 +3,8 @@
 import contextlib
 import json
 import subprocess
+import threading
+import webbrowser
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,8 +23,10 @@ from rich.progress import (
 from rich.table import Table
 
 from stitch_lineage import __version__
+from stitch_lineage.app import StitchAppError
 from stitch_lineage.config import StitchConfig, StitchConfigError, load_config
 from stitch_lineage.export.jsonl import export_jsonl
+from stitch_lineage.export.static_site import export_site
 from stitch_lineage.graph.impact import (
     format_github_comment,
     format_slack_comment,
@@ -102,10 +106,23 @@ def _graph_path(config: Path) -> Path:
     return Path(".stitch") / "graph.json"
 
 
-def _read_graph_or_fail(path: Path) -> Graph:
+def _graph_path_or_fail(path: Path) -> Path:
     if not path.is_file():
         _fail(f"graph not found at {path} -- run 'stitch build' first")
-    return read_graph(path)
+    return path
+
+
+def _read_graph_or_fail(path: Path) -> Graph:
+    return read_graph(_graph_path_or_fail(path))
+
+
+def _metabase_url(config: Path) -> str | None:
+    """Base URL for Metabase deep links -- None when there is no config or the
+    ${VAR} reference did not resolve. The URL is not a secret, so a literal is fine."""
+    if not config.is_file():
+        return None
+    url = _load_config_or_fail(config).metabase.url
+    return url if url and "${" not in url else None
 
 
 def _require_metabase_env(
@@ -675,28 +692,42 @@ def _print_unresolved_cards(graph: Graph) -> None:
             )
 
 
+def _default_out_dir(config: Path, name: str) -> Path:
+    if config.is_file():
+        return _output_dir(config, _load_config_or_fail(config)) / name
+    return Path(".stitch") / name
+
+
 @app.command()
 def export(
     output_format: Annotated[
-        str, typer.Option("--format", help="Export format (jsonl).")
+        str, typer.Option("--format", help="Export format: jsonl or site.")
     ] = "jsonl",
     out: Annotated[
         Path | None,
-        typer.Option("--out", help="Output directory (default: <output.dir>/export)."),
+        typer.Option("--out", help="Output directory (default: <output.dir>/export or /site)."),
     ] = None,
     config: ConfigOpt = None,
 ) -> None:
-    """Export graph.json as flat agent-friendly records."""
-    if output_format != "jsonl":
-        _fail(f"unsupported --format '{output_format}' (expected: jsonl)")
+    """Export graph.json as flat agent-friendly records, or as a static site."""
+    if output_format not in ("jsonl", "site"):
+        _fail(f"unsupported --format '{output_format}' (expected: jsonl, site)")
     config = _resolve_config(config)
-    graph = _read_graph_or_fail(_graph_path(config))
-    if out is None:
-        if config.is_file():
-            out = _output_dir(config, _load_config_or_fail(config)) / "export"
-        else:
-            out = Path(".stitch/export")
-    nodes_path, edges_path = export_jsonl(graph, out)
+    graph_path = _graph_path_or_fail(_graph_path(config))
+
+    if output_format == "site":
+        out = out or _default_out_dir(config, "site")
+        try:
+            site_dir = export_site(graph_path, out, _metabase_url(config))
+        except (StitchAppError, ValueError) as exc:
+            _fail(str(exc))
+        console.print(
+            f"wrote {site_dir / 'index.html'} -- open it or host the directory", soft_wrap=True
+        )
+        return
+
+    out = out or _default_out_dir(config, "export")
+    nodes_path, edges_path = export_jsonl(read_graph(graph_path), out)
     console.print(f"wrote {nodes_path} and {edges_path}")
 
 
@@ -710,8 +741,34 @@ def init() -> None:
     raise typer.Exit(code=2)
 
 
+def _open_browser_soon(url: str) -> None:
+    """uvicorn.run blocks, so the browser opens from a timer thread once it is listening."""
+    threading.Timer(0.5, webbrowser.open, [url]).start()
+
+
 @app.command()
-def serve() -> None:
+def serve(
+    port: Annotated[int, typer.Option("--port", help="Port to bind.")] = 8787,
+    host: Annotated[str, typer.Option("--host", help="Interface to bind.")] = "127.0.0.1",
+    open_browser: Annotated[
+        bool, typer.Option("--open/--no-open", help="Open the app in a browser at startup.")
+    ] = True,
+    config: ConfigOpt = None,
+) -> None:
     """Run the local lineage + ERD app."""
-    console.print("stitch serve is not implemented until Phase 1.")
-    raise typer.Exit(code=2)
+    # deferred: importing FastAPI/uvicorn costs every other command a few hundred ms
+    import uvicorn
+
+    from stitch_lineage.app.server import create_app
+
+    config = _resolve_config(config)
+    graph_path = _graph_path_or_fail(_graph_path(config))
+    try:
+        server = create_app(graph_path, _metabase_url(config))
+    except StitchAppError as exc:
+        _fail(str(exc))
+    url = f"http://{host}:{port}"
+    console.print(f"stitch serve -> {url}   (graph: {graph_path})", soft_wrap=True)
+    if open_browser:
+        _open_browser_soon(url)
+    uvicorn.run(server, host=host, port=port, log_level="warning")
