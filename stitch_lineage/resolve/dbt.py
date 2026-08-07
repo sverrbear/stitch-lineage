@@ -69,7 +69,9 @@ def resolve_dbt(
         (one edge per input column); star-expansion fallback by name-matching ->
         inferred. Unparseable model -> fail soft: keep its `references` edges, add its
         columns to untraced_columns, never blank the graph. Ephemeral hops attribute
-        to the parent model; VARIANT sub-paths land on the VARIANT column.
+        to the parent model; VARIANT sub-paths land on the VARIANT column. A feeds
+        edge never carries a "*" or empty column endpoint: when a star branch cannot
+        resolve to real upstream columns the downstream column goes untraced instead.
       * `relates_to` edges (FK column -> referenced PK column) read from column meta
         (metabase.fk_target_table/field + relationship_type), model-level
         stitch.relationships meta, existing relationships tests, and contract
@@ -316,6 +318,10 @@ def _is_plain_projection(root) -> bool:
     return True
 
 
+def _is_real_column(name: str) -> bool:
+    return bool(name) and name != "*"
+
+
 def _leaf_columns(root, relation_map: dict[tuple, str]) -> list[tuple[str, str]]:
     leaves = []
     for node in root.walk():
@@ -326,7 +332,13 @@ def _leaf_columns(root, relation_map: dict[tuple, str]) -> list[tuple[str, str]]
         upstream_uid = relation_map.get(key)
         if upstream_uid is None:
             continue
-        leaves.append((upstream_uid, node.name.rpartition(".")[2]))
+        column = node.name.rpartition(".")[2]
+        # sqlglot emits a leaf literally named "*" when a `select *` branch reads a
+        # table absent from the catalog schema -- a phantom "{uid}::*" endpoint, not
+        # a real column. Skip it; the downstream column goes untraced instead.
+        if not _is_real_column(column):
+            continue
+        leaves.append((upstream_uid, column))
     return leaves
 
 
@@ -358,6 +370,8 @@ def _feeds_edges(
         ]
 
         for lower, spec in specs.items():
+            if not _is_real_column(spec["name"]):
+                continue
             target_id = column_node_id(uid, spec["name"])
             try:
                 root = _sqlglot_lineage(
