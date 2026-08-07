@@ -87,6 +87,7 @@ source_modules = [
     "stitch_lineage.graph",
     "stitch_lineage.export",
     "stitch_lineage.io.artifacts",
+    "stitch_lineage.io.dbt_runner",
     "stitch_lineage.io.graph_store",
 ]
 forbidden_modules = ["requests"]

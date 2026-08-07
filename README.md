@@ -43,6 +43,7 @@ Drop a `stitch.yml` at your dbt project root:
 dbt:
   project_dir: .
   target_path: target/
+  auto_docs: true                       # run `dbt docs generate` at the start of every build
 
 metabase:
   url: ${STITCH_METABASE_URL}
@@ -58,12 +59,18 @@ output:
   dir: .stitch/
 ```
 
-Then:
+Then, with `auto_docs: true`, one command does everything:
+
+```bash
+stitch build                     # dbt docs generate + resolve dbt + Metabase into .stitch/graph.json
+```
+
+Or keep the two steps explicit (typical in CI, where `dbt docs generate` runs its own way):
 
 ```bash
 dbt docs generate                # produce target/manifest.json + catalog.json
+stitch build --no-docs           # resolve only; --docs/--no-docs overrides auto_docs either way
 
-stitch build                     # resolve dbt + Metabase into .stitch/graph.json
 stitch build --check             # CI: exit 1 if the committed graph.json is stale
 stitch build --no-metabase       # dbt side only; reuses the committed Metabase side
 

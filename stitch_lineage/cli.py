@@ -22,6 +22,7 @@ from stitch_lineage.graph.impact import (
 from stitch_lineage.graph.schema import Coverage, EdgeType, Graph, NodeType
 from stitch_lineage.graph.search import search as search_graph
 from stitch_lineage.io.artifacts import StitchArtifactError, load_catalog, load_manifest
+from stitch_lineage.io.dbt_runner import StitchDbtRunnerError, run_docs_generate
 from stitch_lineage.io.graph_store import graphs_semantically_equal, read_graph, write_graph
 from stitch_lineage.io.metabase_client import MetabaseAPIError, MetabaseClient
 from stitch_lineage.resolve.bind import bind
@@ -166,6 +167,13 @@ def build(
         bool,
         typer.Option("--check", help="Compare against the committed graph.json; exit 1 on drift."),
     ] = False,
+    docs: Annotated[
+        bool | None,
+        typer.Option(
+            "--docs/--no-docs",
+            help="Run 'dbt docs generate' first (overrides dbt.auto_docs either way).",
+        ),
+    ] = None,
 ) -> None:
     """Resolve dbt artifacts and the Metabase API into .stitch/graph.json."""
     config = _resolve_config(config)
@@ -176,6 +184,13 @@ def build(
     database_map = [
         (db.metabase_name, db.dbt_database, db.table_prefix) for db in cfg.metabase.databases
     ]
+
+    if cfg.dbt.auto_docs if docs is None else docs:
+        console.print("running dbt docs generate...")
+        try:
+            run_docs_generate(config.parent / cfg.dbt.project_dir, cfg.dbt.docs_args)
+        except StitchDbtRunnerError as exc:
+            _fail(str(exc))
 
     try:
         manifest = load_manifest(target_path)

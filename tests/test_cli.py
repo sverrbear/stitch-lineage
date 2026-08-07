@@ -1,10 +1,12 @@
 import json
+from pathlib import Path
 
 from typer.testing import CliRunner
 
 from stitch_lineage import __version__
 from stitch_lineage.cli import app
 from stitch_lineage.graph.schema import Graph, Node, NodeType
+from stitch_lineage.io.dbt_runner import StitchDbtRunnerError
 from stitch_lineage.io.graph_store import write_graph
 
 runner = CliRunner()
@@ -135,3 +137,77 @@ def test_export_rejects_unknown_format(tmp_path, monkeypatch):
     result = runner.invoke(app, ["export", "--format", "parquet"])
     assert result.exit_code == 1
     assert "unsupported --format" in result.output
+
+
+# --- build --docs / dbt.auto_docs -------------------------------------------
+
+AUTO_DOCS_CONFIG = (
+    VALID_CONFIG
+    + """
+dbt:
+  auto_docs: true
+  docs_args: ["--target", "prod"]
+"""
+)
+
+
+def _record_docs_calls(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "stitch_lineage.cli.run_docs_generate",
+        lambda project_dir, extra_args: calls.append((project_dir, extra_args)),
+    )
+    return calls
+
+
+def test_build_docs_flag_runs_docs_generate(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
+    calls = _record_docs_calls(monkeypatch)
+    result = runner.invoke(app, ["build", "--docs"])
+    assert len(calls) == 1
+    project_dir, extra_args = calls[0]
+    assert Path(project_dir).resolve() == tmp_path.resolve()
+    assert extra_args == []
+    assert "running dbt docs generate" in result.output
+
+
+def test_build_auto_docs_config_runs_docs_generate_with_docs_args(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(AUTO_DOCS_CONFIG)
+    calls = _record_docs_calls(monkeypatch)
+    result = runner.invoke(app, ["build"])
+    assert len(calls) == 1
+    assert calls[0][1] == ["--target", "prod"]
+    assert "running dbt docs generate" in result.output
+
+
+def test_build_no_docs_flag_overrides_auto_docs(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(AUTO_DOCS_CONFIG)
+    calls = _record_docs_calls(monkeypatch)
+    result = runner.invoke(app, ["build", "--no-docs"])
+    assert calls == []
+    assert "running dbt docs generate" not in result.output
+
+
+def test_build_docs_absent_defaults_to_off(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
+    calls = _record_docs_calls(monkeypatch)
+    result = runner.invoke(app, ["build"])
+    assert calls == []
+    assert "running dbt docs generate" not in result.output
+
+
+def test_build_docs_runner_failure_fails_cleanly(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
+
+    def _boom(project_dir, extra_args):
+        raise StitchDbtRunnerError("dbt executable not found on PATH -- install dbt")
+
+    monkeypatch.setattr("stitch_lineage.cli.run_docs_generate", _boom)
+    result = runner.invoke(app, ["build", "--docs"])
+    assert result.exit_code == 1
+    assert "dbt executable not found on PATH" in result.output
