@@ -224,9 +224,7 @@ def _walk_query(
         if isinstance(join.get("fields"), list):
             _collect_refs(join["fields"], f"{prefix}joins.fields", refs, aliases, upstream_cards)
         if isinstance(join.get("source-query"), dict):
-            _walk_query(
-                join["source-query"], f"{prefix}joins.source-query.", refs, upstream_cards
-            )
+            _walk_query(join["source-query"], f"{prefix}joins.source-query.", refs, upstream_cards)
     if isinstance(query.get("source-query"), dict):
         _walk_query(query["source-query"], f"{prefix}source-query.", refs, upstream_cards)
 

@@ -329,9 +329,10 @@ def test_export_site_inlines_the_configured_erd_scope(tmp_path, monkeypatch):
     _write_graph(tmp_path, [_marts_model()])
     result = runner.invoke(app, ["export", "--format", "site"])
     assert result.exit_code == 0, result.output
-    assert '"erd_default_scope":"schema:MARTS"' in (
-        tmp_path / ".stitch" / "site" / "index.html"
-    ).read_text()
+    assert (
+        '"erd_default_scope":"schema:MARTS"'
+        in (tmp_path / ".stitch" / "site" / "index.html").read_text()
+    )
     assert "warning" not in result.output
 
 
@@ -344,9 +345,10 @@ def test_export_site_warns_about_an_erd_scope_the_graph_does_not_have(tmp_path, 
     assert "tag:nope" in result.output
     assert "schema:MARTS" in result.output  # names what is available
     # still exported, and the app is told what was configured so it can say so too
-    assert '"erd_default_scope":"tag:nope"' in (
-        tmp_path / ".stitch" / "site" / "index.html"
-    ).read_text()
+    assert (
+        '"erd_default_scope":"tag:nope"'
+        in (tmp_path / ".stitch" / "site" / "index.html").read_text()
+    )
 
 
 def test_export_site_skips_an_unresolved_metabase_url(tmp_path, monkeypatch):
