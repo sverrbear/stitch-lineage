@@ -14,14 +14,24 @@ import {
   type Node,
   type NodeProps,
 } from '@xyflow/react'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from 'react'
 import { SystemBadge } from '../components/badges'
 import { GraphLegend } from '../components/bits'
 import { useStitch } from '../data'
-import { defaultScope, erdForScope, listScopes, type ErdModel, type ErdScope } from '../lib/erd'
-import { erdHref, navigate, nodeHref } from '../router'
+import { CLICK_SLOP_PX, isClickNotDrag, type Point } from '../lib/canvas'
+import {
+  defaultScope,
+  erdClickHref,
+  erdColumnNodeId,
+  erdForScope,
+  listScopes,
+  type ErdModel,
+  type ErdScope,
+} from '../lib/erd'
+import { erdHref, navigate } from '../router'
 
 const COLLAPSED_LIMIT = 8
+const OPEN_HINT = 'Open details · ⌘/Ctrl-click for lineage'
 
 type ErdFlowNode = Node<
   {
@@ -34,6 +44,26 @@ type ErdFlowNode = Node<
 
 function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
   const { model, expanded, onToggle } = data
+  const pressedAt = useRef<Point | null>(null)
+
+  const onPointerDown = (event: PointerEvent) => {
+    pressedAt.current = { x: event.clientX, y: event.clientY }
+  }
+
+  const open = (nodeId: string) => (event: MouseEvent) => {
+    const from = pressedAt.current
+    pressedAt.current = null
+    if (!isClickNotDrag(from, { x: event.clientX, y: event.clientY })) return
+    event.stopPropagation()
+    navigate(erdClickHref(nodeId, event))
+  }
+
+  const openOnEnter = (nodeId: string) => (event: KeyboardEvent) => {
+    if (event.key !== 'Enter') return
+    event.stopPropagation()
+    navigate(erdClickHref(nodeId, event))
+  }
+
   const key = [...model.keyColumns]
   const keySet = model.keyColumns
   const keyColumns = model.columns.filter((c) => keySet.has(c.name.toLowerCase()) || keySet.has(c.name))
@@ -44,18 +74,35 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
   const phantomKeys = key.filter((k) => !model.columns.some((c) => c.name === k || c.name.toLowerCase() === k))
 
   return (
-    <div className={`erd-node${model.external ? ' external' : ''}`}>
-      <div className="erd-node-header" onClick={() => navigate(nodeHref(model.node.node_id))}>
-        <SystemBadge nodeType={model.node.node_type} />
-        <span className="erd-node-name">{model.node.name}</span>
-        {model.external && <span className="erd-external-tag">other scope</span>}
+    <div className={`erd-node${model.external ? ' external' : ''}`} onPointerDown={onPointerDown}>
+      <div
+        className="erd-node-title"
+        role="link"
+        tabIndex={0}
+        title={OPEN_HINT}
+        onClick={open(model.node.node_id)}
+        onKeyDown={openOnEnter(model.node.node_id)}
+      >
+        <div className="erd-node-header">
+          <SystemBadge nodeType={model.node.node_type} />
+          <span className="erd-node-name">{model.node.name}</span>
+          {model.external && <span className="erd-external-tag">other scope</span>}
+        </div>
+        <div className="erd-node-schema">{model.node.schema ?? ''}</div>
       </div>
-      <div className="erd-node-schema">{model.node.schema ?? ''}</div>
       <ul className="erd-columns">
         {[...keyColumns, ...visibleRest].map((column) => {
           const isKey = keyColumns.includes(column)
           return (
-            <li key={column.node_id} className={`erd-column${isKey ? ' key' : ''}`}>
+            <li
+              key={column.node_id}
+              className={`erd-column${isKey ? ' key' : ''}`}
+              role="link"
+              tabIndex={0}
+              title={OPEN_HINT}
+              onClick={open(column.node_id)}
+              onKeyDown={openOnEnter(column.node_id)}
+            >
               <Handle
                 type="target"
                 id={column.name}
@@ -73,18 +120,29 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
             </li>
           )
         })}
-        {phantomKeys.map((name) => (
-          <li key={`phantom-${name}`} className="erd-column key">
-            <Handle type="target" id={name} position={Position.Left} className="erd-handle" />
-            <span className="erd-column-name">{name}</span>
-            <Handle type="source" id={name} position={Position.Right} className="erd-handle" />
-          </li>
-        ))}
+        {phantomKeys.map((name) => {
+          const nodeId = erdColumnNodeId(model.node.node_id, name)
+          return (
+            <li
+              key={`phantom-${name}`}
+              className="erd-column key"
+              role="link"
+              tabIndex={0}
+              title={OPEN_HINT}
+              onClick={open(nodeId)}
+              onKeyDown={openOnEnter(nodeId)}
+            >
+              <Handle type="target" id={name} position={Position.Left} className="erd-handle" />
+              <span className="erd-column-name">{name}</span>
+              <Handle type="source" id={name} position={Position.Right} className="erd-handle" />
+            </li>
+          )
+        })}
       </ul>
       {(hidden > 0 || expanded) && rest.length > 0 && (
         <button
           type="button"
-          className="erd-expand"
+          className="erd-expand nodrag"
           onClick={(e) => {
             e.stopPropagation()
             onToggle(model.node.node_id)
@@ -197,6 +255,7 @@ export function ErdPage({
         <span className="muted">
           {erd.models.length} models · {erd.relationships.length} relationships
         </span>
+        <span className="muted graph-toolbar-hint">click a table or column for details</span>
       </div>
       <div className="graph-canvas">
         <ReactFlow
@@ -207,6 +266,7 @@ export function ErdPage({
           minZoom={0.05}
           nodesConnectable={false}
           nodesDraggable
+          nodeClickDistance={CLICK_SLOP_PX}
           proOptions={{ hideAttribution: true }}
         >
           <Background gap={24} />
