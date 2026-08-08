@@ -84,9 +84,7 @@ def _collection_paths(collections: list[dict[str, Any]]) -> dict[Any, dict[str, 
     return indexed
 
 
-def _excluded_collection_ids(
-    collections: list[dict[str, Any]], patterns: list[str]
-) -> set[Any]:
+def _excluded_collection_ids(collections: list[dict[str, Any]], patterns: list[str]) -> set[Any]:
     excluded: set[Any] = set()
     for col_id, info in _collection_paths(collections).items():
         is_personal = info["personal_owner_id"] is not None
@@ -102,7 +100,7 @@ def _excluded_collection_ids(
 
 
 def _card_source_id(value: Any) -> int | None:
-    """"card__123" -> 123, anything else -> None."""
+    """ "card__123" -> 123, anything else -> None."""
     if isinstance(value, str) and value.startswith("card__"):
         suffix = value.removeprefix("card__")
         if suffix.isdigit():
@@ -226,9 +224,7 @@ def _walk_query(
         if isinstance(join.get("fields"), list):
             _collect_refs(join["fields"], f"{prefix}joins.fields", refs, aliases, upstream_cards)
         if isinstance(join.get("source-query"), dict):
-            _walk_query(
-                join["source-query"], f"{prefix}joins.source-query.", refs, upstream_cards
-            )
+            _walk_query(join["source-query"], f"{prefix}joins.source-query.", refs, upstream_cards)
     if isinstance(query.get("source-query"), dict):
         _walk_query(query["source-query"], f"{prefix}source-query.", refs, upstream_cards)
 

@@ -40,9 +40,7 @@ def test_extra_args_appended_to_command(tmp_path, monkeypatch, project):
 
 
 def test_output_streams_through(tmp_path, monkeypatch, project, capfd):
-    _install_fake_dbt(
-        tmp_path, monkeypatch, 'echo "progress line"\necho "warn line" >&2\nexit 0'
-    )
+    _install_fake_dbt(tmp_path, monkeypatch, 'echo "progress line"\necho "warn line" >&2\nexit 0')
     run_docs_generate(project)
     captured = capfd.readouterr()
     assert "progress line" in captured.out
@@ -50,9 +48,7 @@ def test_output_streams_through(tmp_path, monkeypatch, project, capfd):
 
 
 def test_nonzero_exit_raises_with_stderr_tail(tmp_path, monkeypatch, project):
-    _install_fake_dbt(
-        tmp_path, monkeypatch, 'echo "Database Error: boom" >&2\nexit 2'
-    )
+    _install_fake_dbt(tmp_path, monkeypatch, 'echo "Database Error: boom" >&2\nexit 2')
     with pytest.raises(StitchDbtRunnerError, match="exited with code 2") as excinfo:
         run_docs_generate(project)
     assert "Database Error: boom" in str(excinfo.value)

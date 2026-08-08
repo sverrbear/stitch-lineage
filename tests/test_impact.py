@@ -232,9 +232,7 @@ def test_slack_comment_golden():
 def test_slack_comment_empty_diff():
     base, _ = chain_graphs()
     diff, report = impact_from_graphs(base, base)
-    assert format_slack_comment(diff, report, base) == (
-        "✅ no downstream-impacting column changes"
-    )
+    assert format_slack_comment(diff, report, base) == ("✅ no downstream-impacting column changes")
 
 
 def test_slack_comment_no_downstream_impact_block():
