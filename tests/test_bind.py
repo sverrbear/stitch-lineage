@@ -142,6 +142,21 @@ def test_column_case_mismatch_detected_via_column_nodes():
     assert result.case_mismatch_count == 1
 
 
+def test_dbt_cased_column_node_is_not_a_case_mismatch():
+    # resolver shape: the node is named the dbt way and carries the warehouse spelling
+    # in properties, which is the side that has to match Metabase's physical column
+    dbt_cased = Node(
+        node_id=column_node_id(FCT, "user_id"),
+        node_type=NodeType.COLUMN,
+        name="user_id",
+        column="user_id",
+        properties={"warehouse_name": "USER_ID"},
+    )
+    result = bind([make_model(), dbt_cased], [make_field(101, "USER_ID", "FCT_MATCHES")], MAP)
+    assert result.edges[0].evidence == {}
+    assert result.case_mismatch_count == 0
+
+
 def test_fuzzy_underscore_fold():
     dbt_nodes = [make_model(), make_column(FCT, "user_id")]
     result = bind(dbt_nodes, [make_field(101, "USERID", "FCT_MATCHES")], MAP)

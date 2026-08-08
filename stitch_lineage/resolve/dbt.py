@@ -85,7 +85,11 @@ def resolve_dbt(
         unexpandable star over an unknown upstream, or an output whose name sqlglot
         cannot give (an unaliased literal/expression). Never an empty set from a model
         that has columns elsewhere. Sources keep catalog-then-manifest behavior: they
-        have no SQL to derive from.
+        have no SQL to derive from. A column Node is *named* the dbt way -- the model's
+        compiled SQL, else schema.yml, else the upstream's spelling for a `select *`
+        pass-through, else the catalog -- because the warehouse's SCREAMING_CASE is not
+        how anyone refers to the column; the catalog spelling stays on
+        properties.warehouse_name whenever it differs.
       * `references` edges (upstream model -> downstream model) from manifest
         depends_on, confidence exact. Seeds and snapshots are not node types in the
         graph, so those dependencies carry no edge and are counted in
@@ -257,8 +261,10 @@ def _model_order(models: dict[str, Any]) -> list[str]:
     return order
 
 
-def _projected_columns(compiled: str, schema_mapping: MappingSchema) -> list[str] | None:
-    """Output column names of the compiled SQL's outermost projection, or None.
+def _projected_columns(
+    compiled: str, schema_mapping: MappingSchema
+) -> tuple[list[str], dict[str, str]] | None:
+    """(output column names, {lowercased name: spelling as written in the SQL}), or None.
 
     None means "could not be pinned down" and the caller must fall back to the catalog
     set -- never to an empty one. sqlglot's qualify does the work stars need (expanding
@@ -267,6 +273,11 @@ def _projected_columns(compiled: str, schema_mapping: MappingSchema) -> list[str
     Outputs sqlglot can only name `_col_0` or `1` (an unaliased expression or literal)
     have no name to match a catalog column or a schema.yml entry against, so they force
     the fallback rather than inventing one.
+
+    qualify normalizes identifiers for the dialect, so on Snowflake every returned name
+    is upper-cased regardless of how the model spells it -- useless as a display casing.
+    The second element is therefore read off the *unnormalized* parse: the project's own
+    spelling of the outputs it names explicitly (a star's outputs are not in there).
     """
     if not compiled.strip():
         return None
@@ -274,6 +285,7 @@ def _projected_columns(compiled: str, schema_mapping: MappingSchema) -> list[str
         parsed = sqlglot.parse_one(compiled, dialect=_DIALECT)
         if not isinstance(parsed, exp.Query):
             return None
+        spelled = _sql_output_spellings(parsed)
         names = _sqlglot_qualify(
             parsed,
             schema=schema_mapping,
@@ -288,7 +300,20 @@ def _projected_columns(compiled: str, schema_mapping: MappingSchema) -> list[str
     deduped: dict[str, str] = {}
     for name in names:
         deduped.setdefault(name.lower(), name)
-    return list(deduped.values())
+    return list(deduped.values()), spelled
+
+
+def _sql_output_spellings(parsed: exp.Expression) -> dict[str, str]:
+    """{lowercased output name: the spelling the compiled SQL uses}, explicit outputs only."""
+    select = parsed if isinstance(parsed, exp.Select) else parsed.find(exp.Select)
+    if select is None:
+        return {}
+    spellings: dict[str, str] = {}
+    for projection in select.expressions:
+        name = projection.alias_or_name
+        if _is_real_column(name):
+            spellings.setdefault(name.lower(), name)
+    return spellings
 
 
 def _is_usable_output_name(name: str) -> bool:
@@ -299,14 +324,22 @@ def _is_usable_output_name(name: str) -> bool:
 
 def _merge_column_specs(
     projected: list[str],
+    spelled: dict[str, str],
     manifest_columns: dict[str, dict[str, Any]],
     catalog_columns: dict[str, dict[str, Any]],
+    upstream_names: dict[str, str],
 ) -> dict[str, dict[str, Any]]:
     """Projection order first, then schema.yml columns the projection does not name.
 
     A documented column missing from the projection is kept: schema.yml is a claim about
     this model that a build would surface as an error, and silently dropping it would
     read as a deliberate removal in a graph diff.
+
+    `name` is the dbt-side spelling, because that is the one people write and read:
+    the model's own SQL, else its schema.yml, else -- for a column arriving through a
+    `select *` -- the spelling the upstream node already resolved to, else the
+    warehouse's. The warehouse spelling is kept separately as `warehouse_name` (None
+    when the relation is not in the catalog); node ids are lowercased either way.
     """
     specs: dict[str, dict[str, Any]] = {}
     for name in [
@@ -318,13 +351,36 @@ def _merge_column_specs(
             continue
         catalog_column = catalog_columns.get(lower) or {}
         manifest_column = manifest_columns.get(lower) or {}
+        warehouse_name = catalog_column.get("name")
         specs[lower] = {
-            # display casing: the warehouse's, else the project's, else the parser's
-            "name": catalog_column.get("name") or manifest_column.get("name") or name,
+            "name": (
+                spelled.get(lower)
+                or manifest_column.get("name")
+                or upstream_names.get(lower)
+                or warehouse_name
+                or name
+            ),
+            "warehouse_name": warehouse_name,
             "data_type": catalog_column.get("type") or manifest_column.get("data_type"),
             "description": manifest_column.get("description") or None,
         }
     return specs
+
+
+def _upstream_names(
+    model: dict[str, Any], specs: dict[str, dict[str, dict[str, Any]]]
+) -> dict[str, str]:
+    """{lowercased column name: dbt-side spelling} across the model's resolved parents.
+
+    Models resolve in dependency order, so a `select *` can inherit the spelling its
+    upstream settled on instead of falling back to the warehouse's. First parent that
+    has the column wins -- the choice only ever affects casing.
+    """
+    names: dict[str, str] = {}
+    for dep in dict.fromkeys((model.get("depends_on") or {}).get("nodes") or []):
+        for lower, spec in specs.get(dep, {}).items():
+            names.setdefault(lower, spec["name"])
+    return names
 
 
 def _column_specs(
@@ -334,7 +390,7 @@ def _column_specs(
     catalog_specs: dict[str, dict[str, dict[str, Any]]],
     schema_mapping: MappingSchema,
 ) -> dict[str, dict[str, dict[str, Any]]]:
-    """Per entity: {lowercased column name: {name, data_type, description}}.
+    """Per entity: {lowercased column name: {name, warehouse_name, data_type, description}}.
 
     A model's set comes from its compiled SQL (see resolve_dbt) with the catalog
     supplying types; sources, and models whose projection did not resolve, keep the
@@ -348,14 +404,21 @@ def _column_specs(
     for uid in _model_order(models):
         model = models[uid]
         compiled = model.get("compiled_code") or model.get("compiled_sql") or ""
-        projected = _projected_columns(compiled, schema_mapping)
-        if projected is None:
+        projection = _projected_columns(compiled, schema_mapping)
+        if projection is None:
             specs[uid] = catalog_specs.get(uid, {})
             continue
+        projected, spelled = projection
         manifest_columns = {
             str(name).lower(): column for name, column in (model.get("columns") or {}).items()
         }
-        specs[uid] = _merge_column_specs(projected, manifest_columns, catalog_columns.get(uid, {}))
+        specs[uid] = _merge_column_specs(
+            projected,
+            spelled,
+            manifest_columns,
+            catalog_columns.get(uid, {}),
+            _upstream_names(model, specs),
+        )
         _update_relation(schema_mapping, model, specs[uid])
     return specs
 
@@ -390,12 +453,17 @@ def _update_relation(
 def _catalog_column_specs(
     models: dict[str, Any], sources: dict[str, Any], catalog: dict[str, Any]
 ) -> dict[str, dict[str, dict[str, Any]]]:
-    """Per entity: {lowercased column name: {name, data_type, description}}.
+    """Per entity: {lowercased column name: {name, warehouse_name, data_type, description}}.
 
     Catalog is authoritative (column set + data_type) when the entity is present;
     manifest columns fill descriptions and act as full fallback otherwise. This is the
     warehouse's view of a relation: the seed for the sqlglot schema map, the specs for
     sources, and the fallback for models whose SQL does not resolve.
+
+    `name` still prefers the project's spelling from schema.yml over the warehouse's --
+    a source column documented as `user_id` reads as `user_id`, not `USER_ID` -- and
+    the warehouse spelling stays on `warehouse_name` (None when the relation is not in
+    the catalog, which is the only place a warehouse spelling exists).
     """
     catalog_entries = {**(catalog.get("nodes") or {}), **(catalog.get("sources") or {})}
     specs: dict[str, dict[str, dict[str, Any]]] = {}
@@ -410,7 +478,8 @@ def _catalog_column_specs(
                 display = column.get("name") or str(key)
                 manifest_column = manifest_columns.get(display.lower(), {})
                 entity_specs[display.lower()] = {
-                    "name": display,
+                    "name": manifest_column.get("name") or display,
+                    "warehouse_name": display,
                     "data_type": column.get("type"),
                     "description": manifest_column.get("description") or None,
                 }
@@ -418,6 +487,7 @@ def _catalog_column_specs(
             for lower, column in manifest_columns.items():
                 entity_specs[lower] = {
                     "name": column.get("name") or lower,
+                    "warehouse_name": None,
                     "data_type": column.get("data_type"),
                     "description": column.get("description") or None,
                 }
@@ -430,11 +500,17 @@ def _column_nodes(
     sources: dict[str, Any],
     column_specs: dict[str, dict[str, dict[str, Any]]],
 ) -> list[Node]:
+    """Column nodes named the dbt way; `warehouse_name` carries the other spelling.
+
+    The property is set only when the warehouse spells the column differently, so its
+    absence means "same as name" (or "not in the catalog") rather than "unknown".
+    """
     entities = {**models, **sources}
     nodes = []
     for uid, entity_specs in column_specs.items():
         entity = entities[uid]
         for spec in entity_specs.values():
+            warehouse_name = spec.get("warehouse_name")
             nodes.append(
                 Node(
                     node_id=column_node_id(uid, spec["name"]),
@@ -446,6 +522,11 @@ def _column_nodes(
                     column=spec["name"],
                     data_type=spec["data_type"],
                     description=spec["description"],
+                    properties=(
+                        {"warehouse_name": warehouse_name}
+                        if warehouse_name and warehouse_name != spec["name"]
+                        else {}
+                    ),
                 )
             )
     return nodes
@@ -601,11 +682,7 @@ def _is_real_column(name: str) -> bool:
 
 def _explicit_output_names(parsed: exp.Expression) -> set[str]:
     """Lowercased output names the query projects by name (i.e. not via a star)."""
-    select = parsed if isinstance(parsed, exp.Select) else parsed.find(exp.Select)
-    if select is None:
-        return set()
-    names = {projection.alias_or_name for projection in select.expressions}
-    return {name.lower() for name in names if _is_real_column(name)}
+    return set(_sql_output_spellings(parsed))
 
 
 def _leaf_columns(root, relation_map: dict[tuple, str]) -> list[tuple[str, str]]:

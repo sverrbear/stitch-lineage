@@ -126,13 +126,39 @@ def test_ephemeral_model_flagged(resolution):
     assert eph.properties["materialization"] == "ephemeral"
 
 
-def test_column_nodes_from_catalog(resolution):
+def test_column_nodes_take_dbt_casing_and_catalog_types(resolution):
+    # the warehouse spells it ORDER_TOTAL; the project -- and everyone reading the app --
+    # spells it order_total, so that is the name; the catalog only supplies the type
     col = _node(resolution, column_node_id(FCT_ORDERS, "ORDER_TOTAL"))
     assert col.node_id == f"{FCT_ORDERS}::order_total"
-    assert col.name == "ORDER_TOTAL"
+    assert col.name == "order_total"
+    assert col.column == "order_total"
+    assert col.properties["warehouse_name"] == "ORDER_TOTAL"
     assert col.data_type == "FLOAT"
     assert col.description == "Order amount in USD."
     assert col.table == "fct_orders"
+
+
+def test_star_expanded_column_inherits_the_upstream_dbt_casing(resolution):
+    # mart_payments is `select * from stg_payments`: sqlglot expands the star against
+    # the upper-cased schema map, so the spelling has to come from the parent model
+    col = _node(resolution, column_node_id(MART_PAYMENTS, "PAYMENT_ID"))
+    assert col.name == "payment_id"
+    assert col.properties["warehouse_name"] == "PAYMENT_ID"
+
+
+def test_source_columns_take_the_schema_yml_casing(resolution):
+    col = _node(resolution, column_node_id(RAW_USERS, "FULL_NAME"))
+    assert col.name == "full_name"
+    assert col.properties["warehouse_name"] == "FULL_NAME"
+
+
+def test_warehouse_casing_is_the_last_resort(resolution):
+    # mart_pivot's SQL does not parse and it documents no columns: the catalog is all
+    # there is, so its spelling stands -- and needs no warehouse_name to repeat it
+    col = _node(resolution, column_node_id(MART_PIVOT, "PIVOT_A"))
+    assert col.name == "PIVOT_A"
+    assert "warehouse_name" not in col.properties
 
 
 def test_column_nodes_manifest_fallback(resolution):
@@ -841,6 +867,16 @@ def _column_ids(result, uid):
         for node in result.nodes
         if node.node_type == NodeType.COLUMN and node.node_id.startswith(f"{uid}::")
     }
+
+
+def test_model_sql_casing_beats_the_catalog():
+    # sqlglot normalizes every output name to Snowflake's upper case, so the display
+    # spelling has to be read off the unnormalized parse -- here `Amount_USD`
+    manifest = _stg_manifest("select amount as Amount_USD from analytics.raw.raw_payments", {})
+    result = resolve_dbt(manifest, _built_catalog([("AMOUNT_USD", "FLOAT")]))
+    col = _node(result, column_node_id("model.demo.stg_payments", "amount_usd"))
+    assert col.name == "Amount_USD"
+    assert col.properties["warehouse_name"] == "AMOUNT_USD"
 
 
 def test_column_dropped_from_sql_disappears_though_the_warehouse_still_has_it():
