@@ -3,6 +3,7 @@ from stitch_lineage.graph.impact import (
     ImpactReport,
     diff_columns,
     downstream,
+    format_build_summary,
     format_github_comment,
     format_slack_comment,
     impact_from_graphs,
@@ -233,6 +234,53 @@ def test_slack_comment_empty_diff():
     base, _ = chain_graphs()
     diff, report = impact_from_graphs(base, base)
     assert format_slack_comment(diff, report, base) == ("✅ no downstream-impacting column changes")
+
+
+def test_build_summary_counts_the_blast_radius():
+    base, candidate = chain_graphs()
+    diff, report = impact_from_graphs(base, candidate)
+    assert format_build_summary(diff, report) == (
+        "since last build: 1 column removed -> 1 card on 1 dashboard affected "
+        "(run 'stitch impact' for the tree)"
+    )
+
+
+def test_build_summary_is_silent_when_nothing_changed():
+    base, _ = chain_graphs()
+    diff, report = impact_from_graphs(base, base)
+    assert format_build_summary(diff, report) is None
+
+
+def test_build_summary_reports_type_changes_and_additions():
+    base, _ = chain_graphs()
+    changed_id = column_node_id(FCT, "match_intensity")
+    mutated = [
+        n.model_copy(update={"data_type": "FLOAT"}) if n.node_id == changed_id else n
+        for n in base.nodes
+    ]
+    candidate = Graph(nodes=[*mutated, col(FCT, "new_column")], edges=base.edges)
+    diff, report = impact_from_graphs(base, candidate)
+    assert format_build_summary(diff, report) == (
+        "since last build: 1 type-changed, 1 added -> 1 card on 1 dashboard affected "
+        "(run 'stitch impact' for the tree)"
+    )
+
+
+def test_build_summary_for_additions_only_has_no_blast_radius():
+    base, _ = chain_graphs()
+    candidate = Graph(nodes=[*base.nodes, col(FCT, "new_column")], edges=base.edges)
+    diff, report = impact_from_graphs(base, candidate)
+    assert format_build_summary(diff, report) == "since last build: 1 added"
+
+
+def test_build_summary_says_when_nothing_downstream_is_hit():
+    orphan = column_node_id(FCT, "orphan")
+    diff = ColumnDiff(removed=[orphan])
+    report = ImpactReport(impacted={orphan: []})
+    assert format_build_summary(diff, report) == (
+        "since last build: 1 column removed -> no Metabase cards affected "
+        "(run 'stitch impact' for the tree)"
+    )
 
 
 def test_slack_comment_no_downstream_impact_block():

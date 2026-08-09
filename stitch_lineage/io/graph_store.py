@@ -8,6 +8,7 @@ committed graph diffs cleanly.
 """
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,8 @@ from stitch_lineage.graph.schema import Graph
 
 _VOLATILE_FIELDS = ("generated_at", "dbt_invocation_id", "metabase_version")
 _HEADER_FIELDS = ("schema_version", *_VOLATILE_FIELDS)
+
+PREV_FILENAME = "graph.prev.json"
 
 
 def _canonical_payload(graph: Graph) -> dict[str, Any]:
@@ -50,6 +53,27 @@ def write_graph(graph: Graph, path: Path) -> None:
 
 def read_graph(path: Path) -> Graph:
     return Graph.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def previous_graph_path(graph_path: Path) -> Path:
+    """Where the last build's graph is kept -- `stitch impact`'s default baseline."""
+    return graph_path.with_name(PREV_FILENAME)
+
+
+def snapshot_previous(graph_path: Path) -> Graph | None:
+    """Copy the graph about to be overwritten to graph.prev.json and return it.
+
+    None on the first build, and also when the old file does not parse: a rebuild is
+    exactly how you recover from a stale artifact, so it must never fail on one.
+    """
+    if not graph_path.is_file():
+        return None
+    destination = previous_graph_path(graph_path)
+    shutil.copyfile(graph_path, destination)
+    try:
+        return read_graph(destination)
+    except ValueError:
+        return None
 
 
 def graphs_semantically_equal(a: Graph, b: Graph) -> bool:

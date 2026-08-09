@@ -280,6 +280,61 @@ def test_build_no_metabase_without_baseline_is_dbt_only(project, monkeypatch):
     assert "models bound" not in rerun.output
 
 
+# --- local impact: previous-build snapshot + build summary --------------------
+
+
+def test_first_build_takes_no_snapshot_and_a_no_op_rebuild_stays_quiet(project):
+    prev_path = project / ".stitch" / "graph.prev.json"
+    first = _full_build()
+    assert not prev_path.exists()
+    assert "since last build" not in first.output
+
+    written = (project / ".stitch" / "graph.json").read_text()
+    second = _full_build()
+    assert prev_path.read_text() == written
+    assert "since last build" not in second.output  # only the volatile header moved
+
+
+def test_rebuild_after_a_dropped_column_summarizes_the_blast_radius(project):
+    _full_build()
+    _drop_stg_payments_amount_usd(project)
+    with responses.RequestsMock():
+        result = runner.invoke(app, ["build", "--no-metabase"])
+    assert result.exit_code == 0, result.output
+    assert (
+        "since last build: 2 columns removed -> 3 cards on 1 dashboard affected "
+        "(run 'stitch impact' for the tree)"
+    ) in result.output
+
+
+def test_impact_defaults_to_the_previous_build(project, monkeypatch):
+    _full_build()
+    _drop_stg_payments_amount_usd(project)
+    with responses.RequestsMock():
+        assert runner.invoke(app, ["build", "--no-metabase"]).exit_code == 0
+    monkeypatch.delenv("STITCH_METABASE_URL")
+    monkeypatch.delenv("STITCH_METABASE_API_KEY")
+
+    bare = runner.invoke(app, ["impact"])
+    assert bare.exit_code == 0, bare.output
+    assert "2 columns removed or renamed" in bare.output
+    assert "stg_payments.amount_usd" in bare.output
+    assert "#201 Orders overview" in bare.output
+
+    kept = project / "kept-graph.json"
+    shutil.copy(project / ".stitch" / "graph.prev.json", kept)
+    explicit = runner.invoke(app, ["impact", "--base-file", str(kept)])
+    assert explicit.exit_code == 0, explicit.output
+    assert explicit.output == bare.output
+
+    # --base-file wins over the snapshot: against the current graph nothing changed
+    self_diff = runner.invoke(
+        app, ["impact", "--base-file", str(project / ".stitch" / "graph.json")]
+    )
+    assert self_diff.exit_code == 0, self_diff.output
+    assert "no downstream-impacting column changes" in self_diff.output
+
+
 # --- impact -----------------------------------------------------------------
 
 
@@ -355,9 +410,10 @@ def test_impact_baseline_missing_at_ref_names_the_fix(project):
     result = runner.invoke(app, ["impact", "--base", "main"])
     assert result.exit_code == 1
     assert "no committed baseline at main:.stitch/graph.json" in result.output
-    assert "diffs the current build against the graph committed on the base ref" in result.output
+    assert "--base diffs the current build against the graph committed on that ref" in result.output
     assert "run 'stitch build' and commit .stitch/graph.json" in result.output
     assert "--base <ref>" in result.output
+    assert "drop --base to diff against your own previous build" in result.output
 
 
 def test_impact_bad_base_ref_keeps_the_raw_git_error(project):

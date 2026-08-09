@@ -53,6 +53,8 @@ stitch build --no-docs           # resolve only; --docs/--no-docs overrides auto
 
 stitch build --no-metabase       # dbt side only; reuses the existing Metabase side
 
+stitch impact                    # what did my last build change, and what does it hit?
+
 stitch search order_total        # find models, columns, fields, cards, dashboards
 stitch search order_total --json # JSON lines for piping
 
@@ -71,7 +73,7 @@ stitch export --format jsonl     # flat nodes.jsonl/edges.jsonl for agents/wareh
 stitch export --format site      # static build of the app, graph inlined, host anywhere
 ```
 
-Commands that don't call the Metabase API (`build --no-metabase`, `search`, `export`, `doctor --unbound/--untraced`) work without the `STITCH_METABASE_*` env vars set. Add `.stitch/` to your `.gitignore` — the graph is a local artifact.
+Commands that don't call the Metabase API (`build --no-metabase`, `impact`, `search`, `export`, `doctor --unbound/--untraced`) work without the `STITCH_METABASE_*` env vars set. Add `.stitch/` to your `.gitignore` — the graph is a local artifact.
 
 ## The app
 
@@ -124,18 +126,36 @@ dbt column lineage   1842/1901 columns traced   (37 inferred via star-expansion,
 
 Native SQL cards are counted but not resolved in Phase 0 (they are Phase 3); MBQL cards resolve exactly, including card-on-card sources. Both query formats are handled: the legacy `dataset_query.query` shape and the MBQL 5 (`lib/type` + `stages`) shape modern Metabase returns.
 
+## What did my last build change?
+
+Every build first copies the graph it is about to overwrite to `.stitch/graph.prev.json`, then closes with the blast radius of the difference:
+
+```
+since last build: 2 columns removed, 1 type-changed -> 3 cards on 2 dashboards affected (run 'stitch impact' for the tree)
+```
+
+Silent when nothing changed. `stitch impact` prints the tree behind that line — each changed column with the downstream models, Metabase cards and dashboards it reaches — diffing against that snapshot by default, so there is nothing to commit and no git ceremony:
+
+```bash
+stitch impact                              # vs your previous build (.stitch/graph.prev.json)
+stitch impact --base-file path/graph.json  # vs a graph file you kept
+stitch impact --base origin/main           # vs the graph.json committed on a git ref
+```
+
+A rename shows up as a removal plus an addition: ids are name-based, so a rename is indistinguishable from remove + add — and the downstream card breaks either way until it is repointed.
+
 ## Phases
 
 | Phase | Scope | Status |
 |---|---|---|
-| **0** | `build` (dbt column lineage via sqlglot + MBQL cards), deterministic `graph.json` + `--check`, coverage report, recursive `impact` + GitHub Action template (impact shelved by default), `search` CLI, `doctor` | **shipped** |
+| **0** | `build` (dbt column lineage via sqlglot + MBQL cards), deterministic `graph.json` + `--check`, coverage report, recursive `impact` against the previous build + GitHub Action template (the PR-comment workflow is shelved), `search` CLI, `doctor` | **shipped** |
 | **1** | `serve`: search + detail panels, end-to-end lineage view, catalog, read-only ERD; `export --format site` | **shipped** |
 | 2 | Editable ERD canvas: YAML write-back with diff preview, suggestion layer | planned |
 | 3 | Native SQL cards via sqlglot, rename heuristics, `--verify-lineage` | planned |
 
 ## Shelved: PR impact comments
 
-stitch can diff two graphs and walk the downstream blast radius — "this rename breaks 4 cards on 2 dashboards" — as a PR comment (`stitch impact --format github-comment`) or a Slack deploy alert (`--format slack`; templates in [`action/`](action/)). That workflow needs a baseline `graph.json` committed on the base branch, which conflicts with keeping the graph purely local, so it's shelved as the default story for now: the command is hidden from `--help` but fully functional if you keep your own baselines.
+The same blast radius can be posted as a PR comment (`stitch impact --format github-comment`) or a Slack deploy alert (`--format slack`; workflow templates in [`action/`](action/)). Both formats work today, but that CI workflow needs a baseline `graph.json` committed on the base branch — which conflicts with keeping the graph purely local — so it stays shelved as a default story. Locally, `stitch impact` needs none of it.
 
 ## Built on
 

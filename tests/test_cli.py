@@ -37,19 +37,15 @@ def _marts_model():
 def test_help_lists_commands():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    for command in ("build", "search", "doctor", "export", "init", "serve"):
+    for command in ("build", "search", "doctor", "export", "impact", "init", "serve"):
         assert command in result.output
 
 
-def test_impact_is_shelved_hidden_but_invocable():
-    # shelved: hidden from --help, but the command keeps working when invoked directly
-    top_help = runner.invoke(app, ["--help"])
-    assert top_help.exit_code == 0
-    assert "impact" not in top_help.output
-
+def test_impact_help_documents_the_local_default_baseline():
     own_help = runner.invoke(app, ["impact", "--help"])
     assert own_help.exit_code == 0
-    assert "Shelved pending the committed-baseline workflow" in own_help.output
+    assert "--base-file" in own_help.output
+    assert "graph.prev.json" in own_help.output
 
 
 def test_version():
@@ -277,6 +273,26 @@ def test_explicitly_passed_missing_config_is_a_hard_error(tmp_path, monkeypatch)
         result = runner.invoke(app, [*command, "--config", "nope.yml"])
         assert result.exit_code == 1, command
         assert "config file not found" in result.output
+
+
+def test_impact_without_a_baseline_names_both_ways_out(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
+    _write_graph(tmp_path)
+    result = runner.invoke(app, ["impact"])
+    assert result.exit_code == 1
+    assert "no baseline at .stitch/graph.prev.json" in result.output
+    assert "run 'stitch build' twice" in result.output
+    assert "--base-file <path>" in result.output
+
+
+def test_impact_base_file_must_exist(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
+    _write_graph(tmp_path)
+    result = runner.invoke(app, ["impact", "--base-file", "nope.json"])
+    assert result.exit_code == 1
+    assert "baseline file not found: nope.json" in result.output
 
 
 def test_impact_rejects_unknown_format(tmp_path, monkeypatch):

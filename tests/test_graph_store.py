@@ -1,7 +1,13 @@
 import json
 
 from stitch_lineage.graph.schema import Graph
-from stitch_lineage.io.graph_store import graphs_semantically_equal, read_graph, write_graph
+from stitch_lineage.io.graph_store import (
+    graphs_semantically_equal,
+    previous_graph_path,
+    read_graph,
+    snapshot_previous,
+    write_graph,
+)
 
 
 def test_round_trip(tmp_path, sample_graph):
@@ -108,3 +114,32 @@ def test_write_creates_parent_dirs(tmp_path):
     path = tmp_path / ".stitch" / "graph.json"
     write_graph(Graph(), path)
     assert path.is_file()
+
+
+def test_snapshot_previous_is_none_on_the_first_build(tmp_path):
+    path = tmp_path / ".stitch" / "graph.json"
+    assert snapshot_previous(path) is None
+    assert not previous_graph_path(path).exists()
+
+
+def test_snapshot_previous_copies_the_old_graph_aside(tmp_path, sample_graph):
+    path = tmp_path / ".stitch" / "graph.json"
+    write_graph(sample_graph, path)
+    before = path.read_bytes()
+    snapshot = snapshot_previous(path)
+    write_graph(Graph(), path)
+
+    previous = previous_graph_path(path)
+    assert previous.name == "graph.prev.json"
+    assert previous.read_bytes() == before  # the new build did not overwrite it
+    assert snapshot is not None
+    assert graphs_semantically_equal(snapshot, sample_graph)
+
+
+def test_snapshot_previous_tolerates_an_unparseable_graph(tmp_path):
+    # a rebuild is how you recover from a stale artifact -- it must not fail on one
+    path = tmp_path / ".stitch" / "graph.json"
+    path.parent.mkdir()
+    path.write_text("{not json")
+    assert snapshot_previous(path) is None
+    assert previous_graph_path(path).read_text() == "{not json"
