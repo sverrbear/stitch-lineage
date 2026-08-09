@@ -120,6 +120,8 @@ source_modules = [
     "stitch_lineage.io.artifacts",
     "stitch_lineage.io.dbt_runner",
     "stitch_lineage.io.graph_store",
+    "stitch_lineage.io.staged_store",
+    "stitch_lineage.write",
 ]
 forbidden_modules = ["requests"]
 
@@ -138,5 +140,33 @@ type = "forbidden"
 source_modules = ["stitch_lineage.app"]
 forbidden_modules = [
     "stitch_lineage.resolve",
+    "stitch_lineage.io.metabase_client",
+]
+
+[[tool.importlinter.contracts]]
+name = "only write/ touches model YAML, and only the CLI drives it"
+type = "forbidden"
+# `stitch serve` and the static export must not be able to write the repo: every model-YAML
+# mutation goes through `stitch apply` (SPEC.md section 8.2)
+source_modules = [
+    "stitch_lineage.app",
+    "stitch_lineage.resolve",
+    "stitch_lineage.graph",
+    "stitch_lineage.export",
+    "stitch_lineage.io",
+]
+forbidden_modules = ["stitch_lineage.write"]
+
+[[tool.importlinter.contracts]]
+name = "write depends on the staged store and config only"
+type = "forbidden"
+source_modules = ["stitch_lineage.write"]
+forbidden_modules = [
+    "stitch_lineage.resolve",
+    "stitch_lineage.app",
+    "stitch_lineage.graph",
+    "stitch_lineage.io.artifacts",
+    "stitch_lineage.io.dbt_runner",
+    "stitch_lineage.io.graph_store",
     "stitch_lineage.io.metabase_client",
 ]

@@ -1,0 +1,36 @@
+version: 2
+
+models:
+  # grain: one row per order line. Owned by the revenue pod.
+  - name: fct_orders
+    description: >
+      Orders, one row per line item.
+      Rebuilt nightly by the core pipeline.
+    config:
+      tags: ['core', "revenue"]
+    columns:
+      - name: order_id
+        description: "Primary key"
+        data_tests:
+          - unique
+          - not_null
+
+      - name: customer_id   # FK -- declared below, no test yet
+        description: 'Who placed the order'
+
+      - name: order_total
+        description: |
+          Gross total in USD.
+          Excludes tax.
+        data_tests: [not_null]
+
+  - name: dim_customers
+    description: "Customer dimension (SCD1)"
+    columns:
+      - name: customer_id
+        description: "Primary key"
+        data_tests:
+          - unique
+          - not_null
+      - name: home_store_id
+        description: "Where they usually shop"
