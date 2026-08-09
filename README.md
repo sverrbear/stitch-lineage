@@ -75,11 +75,13 @@ Commands that don't call the Metabase API (`build --no-metabase`, `search`, `exp
 
 ## The app
 
-`stitch serve` opens a local, read-only browser app over the same `graph.json`: search everything (models, columns, Metabase fields, cards, dashboards) with `/` and `⌘K`, per-node detail panels, the end-to-end column lineage view from source column to dashboard, and a scoped ERD of declared relationships. Every node carries the badge of the system it lives in — Snowflake on the warehouse side, Metabase on the BI side — so a glance shows where one ends and the other begins. Cards deep-link back into Metabase.
+`stitch serve` opens a local browser app over the same `graph.json`: search everything (models, columns, Metabase fields, cards, dashboards) with `/` and `⌘K`, per-node detail panels, the end-to-end column lineage view from source column to dashboard, and a scoped ERD where you can also **draw** relationships (below). Every node carries the badge of the system it lives in — Snowflake on the warehouse side, Metabase on the BI side — so a glance shows where one ends and the other begins. Cards deep-link back into Metabase.
 
-`stitch export --format site` writes the same app as a static directory with the graph inlined into `index.html` — no server, no API. Drop it on any static host for people who will never run a CLI.
+`stitch export --format site` writes the same app as a static directory with the graph inlined into `index.html` — no server, no API, and so **read-only**: the drawing affordances are simply absent. Drop it on any static host for people who will never run a CLI.
 
 ## Declaring relationships: plan, then apply
+
+In the ERD, drag one column's handle onto another's. A dialog names both endpoints, asks for the cardinality, and stages the declaration — the edge then draws dashed until it is applied, and a bar above the canvas lists everything staged so far with a way to drop any of it.
 
 Relationships you declare in the app never touch your repo directly. They are staged to `.stitch/staged_relationships.yml` (local, like the rest of `.stitch/`), and `stitch apply` materializes them into your model YAML as a separate, reviewable step:
 
