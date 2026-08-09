@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import uvicorn
@@ -25,6 +26,15 @@ metabase:
 SCOPED_CONFIG = VALID_CONFIG + 'serve:\n  erd_default_scope: "schema:MARTS"\n'
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _uncoloured(output: str) -> str:
+    """CI sets GITHUB_ACTIONS, which makes typer force-colour its help -- and rich's
+    option highlighter then splits '--base-file' across style codes mid-token."""
+    return _ANSI.sub("", output)
+
+
 def _write_graph(tmp_path, nodes=()):
     graph = Graph(generated_at="2026-08-06T00:00:00+00:00", nodes=list(nodes))
     write_graph(graph, tmp_path / ".stitch" / "graph.json")
@@ -37,15 +47,17 @@ def _marts_model():
 def test_help_lists_commands():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
+    output = _uncoloured(result.output)
     for command in ("build", "search", "doctor", "export", "impact", "init", "serve"):
-        assert command in result.output
+        assert command in output
 
 
 def test_impact_help_documents_the_local_default_baseline():
     own_help = runner.invoke(app, ["impact", "--help"])
     assert own_help.exit_code == 0
-    assert "--base-file" in own_help.output
-    assert "graph.prev.json" in own_help.output
+    output = _uncoloured(own_help.output)
+    assert "--base-file" in output
+    assert "graph.prev.json" in output
 
 
 def test_version():
