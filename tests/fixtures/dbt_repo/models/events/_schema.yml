@@ -1,0 +1,12 @@
+version: 2
+
+# this file uses the other dbt convention: dashes flush with their key
+models:
+- name: fct_events
+  description: "Raw-ish event stream"
+  columns:
+  - name: event_id
+    tests:
+    - unique
+  - name: user_id
+    description: 'Actor'
