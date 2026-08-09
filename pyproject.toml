@@ -170,3 +170,8 @@ forbidden_modules = [
     "stitch_lineage.io.graph_store",
     "stitch_lineage.io.metabase_client",
 ]
+# graph/schema.py is the data contract every layer codes against, and it owns the
+# endpoint hash the staged store and the suggestion engine must agree on. This one
+# chain (write -> staged_store -> schema) is the contract, not graph analysis leaking
+# into the writer; any other write -> graph import still fails.
+ignore_imports = ["stitch_lineage.io.staged_store -> stitch_lineage.graph.schema"]
