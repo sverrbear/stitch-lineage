@@ -42,6 +42,7 @@ def test_marker_is_replaced_by_parseable_globals(tmp_path, graph_path, sample_gr
         "generated_at": sample_graph.generated_at,
         "schema_version": sample_graph.schema_version,
         "erd_default_scope": None,
+        "staging_enabled": False,
     }
 
 
