@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  MAX_DRAWN_SUGGESTIONS,
   resolveStaged,
   defaultScope,
   erdClickHref,
@@ -299,5 +300,43 @@ describe('suggested relationships on the canvas', () => {
 
   it('leaves suggested empty when there are none', () => {
     expect(erdForScope(index, marts()).suggested).toEqual([])
+  })
+})
+
+describe('the suggestion cap', () => {
+  const marts = () => listScopes(index).find((s) => s.kind === 'schema' && s.value === 'marts')!
+  // every marts column paired with itself across the two marts models
+  const many = Array.from({ length: 5 }, (_, i) => ({
+    id: `many-${i}`,
+    from_model: 'fct_revenue',
+    from_column: i % 2 === 0 ? 'net_revenue' : 'user_id',
+    to_model: 'mart_board',
+    to_column: 'net_revenue',
+  }))
+
+  it('draws only the strongest, and counts what it left off the canvas', () => {
+    const drawable = resolveStaged(index, many).drawable
+    const erd = erdForScope(index, marts(), [], drawable, 2)
+    expect(erd.suggested.map((r) => r.id)).toEqual(['many-0', 'many-1'])
+    expect(erd.suggestedHidden).toBe(3)
+  })
+
+  it('hides nothing when everything fits', () => {
+    const drawable = resolveStaged(index, many).drawable
+    const erd = erdForScope(index, marts(), [], drawable)
+    expect(erd.suggested).toHaveLength(drawable.length)
+    expect(erd.suggestedHidden).toBe(0)
+    expect(MAX_DRAWN_SUGGESTIONS).toBeGreaterThan(drawable.length)
+  })
+
+  it('pins only the columns it actually draws', () => {
+    const drawable = resolveStaged(index, [
+      { id: 'a', from_model: 'fct_revenue', from_column: 'user_id', to_model: 'mart_board', to_column: 'net_revenue' },
+      { id: 'b', from_model: 'fct_revenue', from_column: 'net_revenue', to_model: 'mart_board', to_column: 'net_revenue' },
+    ]).drawable
+    const erd = erdForScope(index, marts(), [], drawable, 1)
+    const fct = erd.models.find((m) => m.node.name === 'fct_revenue')!
+    expect(fct.columns.find((c) => c.key === 'user_id')?.isKey).toBe(true)
+    expect(fct.columns.find((c) => c.key === 'net_revenue')?.isKey).toBe(false)
   })
 })

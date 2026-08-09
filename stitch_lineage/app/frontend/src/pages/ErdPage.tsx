@@ -441,7 +441,9 @@ export function ErdPage({
         <span className="muted">
           {erd.models.length} models · {erd.relationships.length} relationships
           {erd.staged.length > 0 ? ` · ${erd.staged.length} staged` : ''}
-          {erd.suggested.length > 0 ? ` · ${erd.suggested.length} suggested` : ''}
+          {erd.suggested.length > 0
+            ? ` · ${erd.suggested.length} suggested drawn${erd.suggestedHidden > 0 ? ` of ${erd.suggested.length + erd.suggestedHidden}` : ''}`
+            : ''}
         </span>
         {active.internal && (
           <span className="muted">tooling schema — not part of the analytics model</span>
@@ -529,6 +531,11 @@ export function ErdPage({
           <aside className="suggest-panel" aria-label="Suggested relationships">
             <div className="suggest-panel-head">
               <span className="suggest-panel-title">Suggested ({suggestions.length})</span>
+              {erd.suggestedHidden > 0 && (
+                <span className="muted suggest-cap" title="the panel lists them all; the canvas draws the strongest">
+                  {erd.suggestedHidden} not drawn
+                </span>
+              )}
               <button
                 type="button"
                 className="ghost-button"
@@ -547,7 +554,7 @@ export function ErdPage({
               <ul className="suggest-list">
                 {suggestions.map((entry) => {
                   const offCanvas = resolvedSuggestions.unresolvedIds.includes(entry.id)
-                  const outOfScope =
+                  const notDrawn =
                     !offCanvas && !erd.suggested.some((rel) => rel.id === entry.id)
                   return (
                     <li key={entry.id} className="suggest-entry">
@@ -560,9 +567,9 @@ export function ErdPage({
                         </span>
                         <span className="muted">{scoreLabel(entry)}</span>
                         <span className="muted">{entry.cardinality_guess}</span>
-                        {(offCanvas || outOfScope) && (
-                          <span className="muted" title="not drawn in the current scope">
-                            {offCanvas ? 'not in this graph' : 'other scope'}
+                        {(offCanvas || notDrawn) && (
+                          <span className="muted" title="listed here, but not drawn on this canvas">
+                            {offCanvas ? 'not in this graph' : 'not drawn'}
                           </span>
                         )}
                       </div>

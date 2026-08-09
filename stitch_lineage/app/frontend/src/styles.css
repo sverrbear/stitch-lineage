@@ -927,6 +927,10 @@ kbd {
   font-size: 13px;
 }
 
+.suggest-cap {
+  font-size: 11px;
+}
+
 .suggest-empty {
   padding: 14px 12px;
   font-size: 12px;

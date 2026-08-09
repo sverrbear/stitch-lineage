@@ -71,8 +71,10 @@ export interface ErdData {
   relationships: ErdRelationship[]
   /** Staged (not yet applied) declarations touching this scope. */
   staged: ErdStagedRelationship[]
-  /** Suggested (not yet accepted) candidates touching this scope. */
+  /** Suggested candidates DRAWN for this scope — the strongest, capped. */
   suggested: ErdStagedRelationship[]
+  /** In scope but not drawn, because the canvas would stop being readable. */
+  suggestedHidden: number
 }
 
 function isErdModel(node: GraphNode): boolean {
@@ -245,11 +247,21 @@ export function initialScope(scopes: ErdScope[], configured?: string | null): In
  * ERD for one scope: its models, plus any model a scoped relationship points
  * at (marked `external` — FK targets usually live in another schema).
  */
+/**
+ * Candidate edges the canvas will draw at once. The naming heuristic alone
+ * proposes hundreds on a real graph, and a hundred dotted lines is not a
+ * suggestion, it is a hairball — the panel keeps the full list, and what is not
+ * drawn is counted rather than hidden.
+ */
+export const MAX_DRAWN_SUGGESTIONS = 30
+
 export function erdForScope(
   index: GraphIndex,
   scope: ErdScope,
   staged: ErdStagedRelationship[] = [],
+  /** Strongest first — the cap keeps the head of this list. */
   suggested: ErdStagedRelationship[] = [],
+  maxSuggested: number = MAX_DRAWN_SUGGESTIONS,
 ): ErdData {
   const inScope = new Set<string>()
   for (const node of index.nodes) {
@@ -264,7 +276,9 @@ export function erdForScope(
   const scopedStaged = staged.filter(touchesScope)
   // a suggestion already staged is no longer a suggestion, whatever the server said
   const stagedIds = new Set(scopedStaged.map((rel) => rel.id))
-  const scopedSuggested = suggested.filter((rel) => touchesScope(rel) && !stagedIds.has(rel.id))
+  const inScopeSuggested = suggested.filter((rel) => touchesScope(rel) && !stagedIds.has(rel.id))
+  const scopedSuggested = inScopeSuggested.slice(0, Math.max(0, maxSuggested))
+  const suggestedHidden = inScopeSuggested.length - scopedSuggested.length
 
   const externalIds = new Set<string>()
   for (const rel of [...rels, ...scopedStaged, ...scopedSuggested]) {
@@ -304,7 +318,14 @@ export function erdForScope(
     return aRel - bRel || a.node.name.localeCompare(b.node.name)
   })
 
-  return { scope, models, relationships: rels, staged: scopedStaged, suggested: scopedSuggested }
+  return {
+    scope,
+    models,
+    relationships: rels,
+    staged: scopedStaged,
+    suggested: scopedSuggested,
+    suggestedHidden,
+  }
 }
 
 /**
