@@ -39,9 +39,16 @@ from stitch_lineage.io.artifacts import StitchArtifactError, load_catalog, load_
 from stitch_lineage.io.dbt_runner import StitchDbtRunnerError, run_docs_generate
 from stitch_lineage.io.graph_store import graphs_semantically_equal, read_graph, write_graph
 from stitch_lineage.io.metabase_client import MetabaseAPIError, MetabaseClient
+from stitch_lineage.io.staged_store import (
+    STAGED_FILENAME,
+    StagedStoreError,
+    drop_staged,
+    read_staged,
+)
 from stitch_lineage.resolve.bind import bind
 from stitch_lineage.resolve.dbt import resolve_dbt
 from stitch_lineage.resolve.metabase import resolve_metabase
+from stitch_lineage.write.yaml_writer import WritePlan, apply_plan, plan_writes
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -792,6 +799,169 @@ def export(
     console.print(f"wrote {nodes_path} and {edges_path}")
 
 
+def _print_diff(diff: str) -> None:
+    """Colourize a unified diff without letting rich interpret its contents as markup."""
+    for line in diff.splitlines():
+        if line.startswith(("+++", "---")):
+            style = "bold"
+        elif line.startswith("+"):
+            style = "green"
+        elif line.startswith("-"):
+            style = "red"
+        elif line.startswith("@@"):
+            style = "cyan"
+        else:
+            style = ""
+        console.print(line, style=style, highlight=False, soft_wrap=True, markup=False)
+
+
+def _git_dirty(path: Path) -> bool:
+    """Whether `path` has uncommitted changes (untracked counts). Not a repo -> nothing to guard."""
+    result = subprocess.run(
+        ["git", "status", "--porcelain", "--", path.name],
+        cwd=path.parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+    return bool(result.stdout.strip())
+
+
+def _report_plan(plan: WritePlan, root: Path) -> None:
+    for result in plan.unchanged:
+        console.print(f"skip  {result.entry.label} -- {result.message}", soft_wrap=True)
+    for result in plan.failures:
+        console.print(
+            f"[red]cannot apply[/red] {result.entry.label}\n  {result.message}", soft_wrap=True
+        )
+    diff = plan.diff(root)
+    if diff:
+        console.print()
+        _print_diff(diff)
+        console.print()
+
+
+@app.command()
+def apply(
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Show the diff and stop without writing.")
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt.")] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Write even when a target schema file has uncommitted edits."),
+    ] = False,
+    config: ConfigOpt = None,
+) -> None:
+    """Materialize staged relationships into model YAML (diff preview, then confirm).
+
+    Reads .stitch/staged_relationships.yml -- the declarations drawn in `stitch serve` --
+    and writes each one onto the FK column in the owning model's schema file, in the form
+    chosen by relationships.write_to. Applied entries clear from the store; entries that
+    could not be applied stay staged and are reported.
+
+    Exit codes: 0 applied or nothing to do, 1 on any refusal or error.
+    """
+    config = _resolve_config(config)
+    cfg = _load_config_or_fail(config)
+    staged = _default_out_dir(config, STAGED_FILENAME)
+    try:
+        entries = read_staged(staged)
+    except StagedStoreError as exc:
+        _fail(str(exc))
+    if not entries:
+        console.print(
+            f"nothing staged in {staged} -- draw relationships in 'stitch serve' first",
+            soft_wrap=True,
+        )
+        return
+
+    project_dir = config.parent / cfg.dbt.project_dir
+    try:
+        manifest = load_manifest(_target_path(config, cfg))
+    except StitchArtifactError as exc:
+        _fail(str(exc))
+    try:
+        plan = plan_writes(entries, manifest, project_dir, cfg.relationships)
+    except NotImplementedError as exc:
+        _fail(str(exc))
+
+    console.print(
+        f"{len(entries)} staged relationship{'s' if len(entries) != 1 else ''} "
+        f"-> {cfg.relationships.write_to}",
+        soft_wrap=True,
+    )
+    root = project_dir.resolve()
+    _report_plan(plan, root)
+    if cfg.relationships.write_to == "relationships_test":
+        dropped = {
+            result.entry.cardinality
+            for result in plan.planned
+            if result.entry.cardinality != "many-to-one"
+        }
+        if dropped:
+            console.print(
+                f"[yellow]warning:[/] a relationships test cannot carry cardinality "
+                f"({', '.join(sorted(dropped))}) -- set relationships.write_to: meta to keep it",
+                soft_wrap=True,
+            )
+
+    if dry_run:
+        console.print(
+            f"--dry-run: nothing written ({len(plan.edits)} file"
+            f"{'s' if len(plan.edits) != 1 else ''} would change)",
+            soft_wrap=True,
+        )
+        if plan.failures:
+            raise typer.Exit(code=1)
+        return
+
+    edits = plan.edits
+    if not force:
+        dirty = [edit for edit in edits if _git_dirty(edit.path)]
+        for edit in dirty:
+            console.print(
+                f"[red]refusing[/red] {edit.path} has uncommitted changes -- "
+                "commit or stash it, or re-run with --force",
+                soft_wrap=True,
+            )
+        edits = [edit for edit in edits if edit not in dirty]
+        if dirty and not edits:
+            raise typer.Exit(code=1)
+
+    cleared = plan.ids_for({edit.path for edit in edits})
+    if not edits:
+        if cleared:
+            drop_staged(cleared, staged)
+            console.print(
+                f"cleared {len(cleared)} already-declared entr"
+                f"{'ies' if len(cleared) != 1 else 'y'} from {staged}",
+                soft_wrap=True,
+            )
+        if plan.failures:
+            raise typer.Exit(code=1)
+        console.print("nothing to write")
+        return
+
+    if not yes and not typer.confirm(f"apply to {len(edits)} file(s)?", default=False):
+        console.print("aborted -- nothing written")
+        raise typer.Exit(code=1)
+
+    written = apply_plan(edits)
+    drop_staged(cleared, staged)
+    for path in written:
+        console.print(f"wrote {path}", soft_wrap=True)
+    console.print(
+        f"applied {len(cleared)} relationship{'s' if len(cleared) != 1 else ''}; "
+        f"{len(read_staged(staged))} still staged",
+        soft_wrap=True,
+    )
+    if plan.failures or len(edits) != len(plan.edits):
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def init() -> None:
     """Set up stitch.yml interactively."""
@@ -826,8 +996,9 @@ def serve(
     graph_path = _graph_path_or_fail(_graph_path(config))
     scope = _erd_default_scope(config)
     _warn_unknown_erd_scope(scope, graph_path)
+    staged = _default_out_dir(config, STAGED_FILENAME)
     try:
-        server = create_app(graph_path, _metabase_url(config), scope)
+        server = create_app(graph_path, _metabase_url(config), scope, staged)
     except StitchAppError as exc:
         _fail(str(exc))
     url = f"http://{host}:{port}"

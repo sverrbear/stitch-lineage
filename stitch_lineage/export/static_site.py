@@ -40,6 +40,8 @@ def export_site(
         "generated_at": graph.get("generated_at"),
         "schema_version": graph.get("schema_version", 1),
         "erd_default_scope": erd_default_scope,
+        # a hosted export has no server to stage against: the SPA hides drawing entirely
+        "staging_enabled": False,
     }
     inlined = index.replace(
         _MARKER,

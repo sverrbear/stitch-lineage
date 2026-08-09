@@ -58,6 +58,10 @@ stitch search order_total --json # JSON lines for piping
 
 stitch serve                     # local lineage + ERD app on http://127.0.0.1:8787
 
+stitch apply                     # write staged relationships into model YAML (diff, then confirm)
+stitch apply --dry-run           # show the diff and stop
+stitch apply --yes               # skip the confirmation prompt
+
 stitch doctor                    # config, artifacts, graph, Metabase connectivity
 stitch doctor --list-databases   # database names visible to the API key
 stitch doctor --unbound          # dbt models with no bound Metabase table
@@ -74,6 +78,37 @@ Commands that don't call the Metabase API (`build --no-metabase`, `search`, `exp
 `stitch serve` opens a local, read-only browser app over the same `graph.json`: search everything (models, columns, Metabase fields, cards, dashboards) with `/` and `⌘K`, per-node detail panels, the end-to-end column lineage view from source column to dashboard, and a scoped ERD of declared relationships. Every node carries the badge of the system it lives in — Snowflake on the warehouse side, Metabase on the BI side — so a glance shows where one ends and the other begins. Cards deep-link back into Metabase.
 
 `stitch export --format site` writes the same app as a static directory with the graph inlined into `index.html` — no server, no API. Drop it on any static host for people who will never run a CLI.
+
+## Declaring relationships: plan, then apply
+
+Relationships you declare in the app never touch your repo directly. They are staged to `.stitch/staged_relationships.yml` (local, like the rest of `.stitch/`), and `stitch apply` materializes them into your model YAML as a separate, reviewable step:
+
+```bash
+stitch apply --dry-run           # exactly what would change, and nothing else
+stitch apply                     # same diff, then a confirmation prompt
+```
+
+```diff
+--- a/models/marts/_schema.yml
++++ b/models/marts/_schema.yml
+       - name: customer_id
+         description: 'Who placed the order'
++        data_tests:
++          - relationships:
++              to: ref('dim_customers')
++              field: customer_id
++              config:
++                severity: warn
+```
+
+The write is deliberately conservative:
+
+- **Insert-only.** Comments, quoting, key order and blank lines survive byte-identically — the diff contains the declaration and nothing else. A file stitch cannot reproduce exactly is reported as unappliable instead of being reformatted.
+- **Never invents files.** The target comes from the manifest's `patch_path`; a model with no schema YAML is reported, not scaffolded.
+- **Respects your edits.** A target file with uncommitted changes is refused unless you pass `--force`.
+- **`relationships.write_to`** picks the written form: `relationships_test` (a dbt `relationships` test on the FK column) or `meta` (dbt-metabase interop keys, so FK sync into Metabase keeps working).
+
+Applied entries clear from the staging store; anything that could not be applied stays staged and is reported with the reason.
 
 ## Coverage report
 

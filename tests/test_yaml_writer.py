@@ -1,0 +1,406 @@
+"""The round-trip writer (SPEC.md section 8.2).
+
+The load-bearing test here is `test_the_edit_is_insert_only`: a `stitch apply` diff must
+contain the inserted declaration and nothing else. A PR that reformats a hand-maintained
+schema file gets the tool banned, so the guarantee is asserted structurally (difflib
+opcodes) rather than by eyeballing a golden string.
+"""
+
+import difflib
+import shutil
+from pathlib import Path
+
+import pytest
+
+from stitch_lineage.config import RelationshipsConfig
+from stitch_lineage.io.staged_store import StagedRelationship
+from stitch_lineage.write.yaml_writer import apply_plan, plan_writes
+
+FIXTURES = Path(__file__).parent / "fixtures" / "dbt_repo"
+MARTS = "models/marts/_schema.yml"
+EVENTS = "models/events/_schema.yml"
+
+
+def _node(name, schema="marts", patch=MARTS):
+    return {
+        "resource_type": "model",
+        "name": name,
+        "schema": schema,
+        "patch_path": f"demo://{patch}" if patch else None,
+    }
+
+
+MANIFEST = {
+    "nodes": {
+        "model.demo.fct_orders": _node("fct_orders"),
+        "model.demo.dim_customers": _node("dim_customers"),
+        "model.demo.fct_events": _node("fct_events", "events", EVENTS),
+        "model.demo.dim_users": _node("dim_users", "events", EVENTS),
+        # in the manifest but with no YAML of its own -- stitch must not invent one
+        "model.demo.dim_stores": _node("dim_stores", patch=None),
+        # patch_path points at a file that is not in the repo
+        "model.demo.dim_regions": _node("dim_regions", patch="models/gone/_schema.yml"),
+        "seed.demo.country_codes": {"resource_type": "seed", "name": "country_codes"},
+    }
+}
+
+
+@pytest.fixture
+def repo(tmp_path):
+    shutil.copytree(FIXTURES, tmp_path / "repo")
+    return tmp_path / "repo"
+
+
+def _entry(
+    from_model="fct_orders",
+    from_column="customer_id",
+    to_model="dim_customers",
+    to_column="customer_id",
+    **kwargs,
+):
+    return StagedRelationship(
+        from_model=from_model,
+        from_column=from_column,
+        to_model=to_model,
+        to_column=to_column,
+        **kwargs,
+    )
+
+
+def _plan(repo, entries, write_to="relationships_test", **config):
+    return plan_writes(entries, MANIFEST, repo, RelationshipsConfig(write_to=write_to, **config))
+
+
+def _added(edit):
+    return [
+        line[1:]
+        for line in edit.diff().splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    ]
+
+
+# --- the non-negotiable guarantee ------------------------------------------------------
+
+
+def test_the_edit_is_insert_only(repo):
+    """Nothing is removed or rewritten -- every original line survives, in order."""
+    (edit,) = _plan(repo, [_entry()]).edits
+    opcodes = difflib.SequenceMatcher(
+        None, edit.original.splitlines(), edit.updated.splitlines()
+    ).get_opcodes()
+    assert {tag for tag, *_ in opcodes} <= {"equal", "insert"}
+
+
+def test_comments_odd_quoting_and_block_scalars_all_survive(repo):
+    (edit,) = _plan(repo, [_entry()]).edits
+    for fragment in (
+        "# grain: one row per order line. Owned by the revenue pod.",
+        "# FK -- declared below, no test yet",
+        "tags: ['core', \"revenue\"]",
+        "description: 'Who placed the order'",
+        "description: >",
+        "description: |",
+        "data_tests: [not_null]",
+        'description: "Customer dimension (SCD1)"',
+    ):
+        assert fragment in edit.updated, fragment
+
+
+def test_a_file_with_no_staged_entry_is_never_touched(repo):
+    plan = _plan(repo, [_entry()])
+    assert [edit.path.name for edit in plan.edits] == ["_schema.yml"]
+    assert plan.edits[0].path.parent.name == "marts"
+    assert (repo / EVENTS).read_text() == (FIXTURES / EVENTS).read_text()
+
+
+def test_applying_twice_is_a_no_op(repo):
+    apply_plan(_plan(repo, [_entry()]).edits)
+    after_first = (repo / MARTS).read_text()
+
+    second = _plan(repo, [_entry()])
+    assert second.edits == []
+    assert [result.status for result in second.results] == ["unchanged"]
+    assert (repo / MARTS).read_text() == after_first
+
+
+# --- relationships_test form -----------------------------------------------------------
+
+
+def test_writes_a_relationships_test_on_the_fk_column(repo):
+    (edit,) = _plan(repo, [_entry()]).edits
+    assert _added(edit) == [
+        "        data_tests:",
+        "          - relationships:",
+        "              to: ref('dim_customers')",
+        "              field: customer_id",
+        "              config:",
+        "                severity: warn",
+    ]
+
+
+def test_the_test_lands_on_the_declaring_column(repo):
+    (edit,) = _plan(repo, [_entry()]).edits
+    lines = edit.updated.splitlines()
+    fk = lines.index("      - name: customer_id   # FK -- declared below, no test yet")
+    total = lines.index("      - name: order_total")
+    assert fk < lines.index("              to: ref('dim_customers')") < total
+
+
+def test_severity_is_configurable(repo):
+    (edit,) = _plan(repo, [_entry()], validated_test_severity="error").edits
+    assert "                severity: error" in _added(edit)
+
+
+def test_no_severity_config_writes_a_bare_test(repo):
+    (edit,) = _plan(repo, [_entry()], validated_test_severity="").edits
+    assert _added(edit) == [
+        "        data_tests:",
+        "          - relationships:",
+        "              to: ref('dim_customers')",
+        "              field: customer_id",
+    ]
+
+
+def test_an_existing_tests_list_is_appended_to_not_replaced(repo):
+    (edit,) = _plan(repo, [_entry(from_column="order_id")]).edits
+    assert "          - unique" in edit.updated
+    assert "          - not_null" in edit.updated
+    assert "          - relationships:" in edit.updated
+
+
+def test_the_files_own_tests_key_is_reused(repo):
+    """The events file predates dbt 1.8 and says `tests:` -- do not mix in `data_tests:`."""
+    entry = _entry(from_model="fct_events", from_column="user_id", to_model="dim_users")
+    (edit,) = _plan(repo, [entry]).edits
+    assert "    tests:" in _added(edit)
+    assert not any("data_tests" in line for line in _added(edit))
+
+
+def test_the_flush_dash_convention_round_trips(repo):
+    entry = _entry(from_model="fct_events", from_column="user_id", to_model="dim_users")
+    (edit,) = _plan(repo, [entry]).edits
+    opcodes = difflib.SequenceMatcher(
+        None, edit.original.splitlines(), edit.updated.splitlines()
+    ).get_opcodes()
+    assert {tag for tag, *_ in opcodes} <= {"equal", "insert"}
+    assert "- name: user_id" in edit.updated
+
+
+def test_a_hand_written_test_is_detected_however_the_ref_is_spelled(repo):
+    """A relationship someone already wrote by hand is never duplicated."""
+    target = repo / MARTS
+    target.write_text(
+        target.read_text().replace(
+            "        description: 'Who placed the order'",
+            "        description: 'Who placed the order'\n"
+            "        data_tests:\n"
+            "          - relationships:\n"
+            '              to: ref( "demo", "dim_customers" )\n'
+            "              field: customer_id\n",
+        )
+    )
+    plan = _plan(repo, [_entry()])
+    assert plan.edits == []
+    assert [result.status for result in plan.results] == ["unchanged"]
+
+
+# --- meta form -------------------------------------------------------------------------
+
+
+def test_meta_form_writes_the_dbt_metabase_interop_keys(repo):
+    (edit,) = _plan(repo, [_entry()], write_to="meta").edits
+    assert _added(edit) == [
+        "        config:",
+        "          meta:",
+        "            metabase.fk_target_table: marts.dim_customers",
+        "            metabase.fk_target_field: customer_id",
+        "            relationship_type: many-to-one",
+    ]
+
+
+def test_meta_form_records_the_drawn_cardinality(repo):
+    (edit,) = _plan(repo, [_entry(cardinality="one-to-one")], write_to="meta").edits
+    assert "            relationship_type: one-to-one" in _added(edit)
+
+
+def test_meta_form_is_insert_only_too(repo):
+    (edit,) = _plan(repo, [_entry()], write_to="meta").edits
+    opcodes = difflib.SequenceMatcher(
+        None, edit.original.splitlines(), edit.updated.splitlines()
+    ).get_opcodes()
+    assert {tag for tag, *_ in opcodes} <= {"equal", "insert"}
+
+
+def test_meta_form_refuses_to_overwrite_a_conflicting_declaration(repo):
+    apply_plan(_plan(repo, [_entry()], write_to="meta").edits)
+    conflicting = _entry(to_model="dim_users")
+    plan = _plan(repo, [conflicting], write_to="meta")
+    assert plan.edits == []
+    assert "already declares" in plan.failures[0].message
+
+
+def test_contract_constraint_is_not_implemented(repo):
+    with pytest.raises(NotImplementedError, match="contract_constraint"):
+        _plan(repo, [_entry()], write_to="contract_constraint")
+
+
+# --- inserting a column that has no YAML entry -----------------------------------------
+
+
+def test_a_column_with_no_yaml_entry_is_inserted(repo):
+    (edit,) = _plan(repo, [_entry(from_column="store_id", to_model="dim_customers")]).edits
+    added = _added(edit)
+    assert "      - name: store_id" in added
+    assert "          - relationships:" in added
+
+
+def test_an_inserted_column_lands_inside_its_own_model(repo):
+    (edit,) = _plan(repo, [_entry(from_column="store_id")]).edits
+    lines = edit.updated.splitlines()
+    assert lines.index("      - name: store_id") < lines.index("  - name: dim_customers")
+
+
+def test_inserting_a_column_is_still_insert_only(repo):
+    (edit,) = _plan(repo, [_entry(from_column="store_id")]).edits
+    opcodes = difflib.SequenceMatcher(
+        None, edit.original.splitlines(), edit.updated.splitlines()
+    ).get_opcodes()
+    assert {tag for tag, *_ in opcodes} <= {"equal", "insert"}
+
+
+# --- refusals ---------------------------------------------------------------------------
+
+
+def test_a_model_with_no_schema_file_is_unappliable(repo):
+    plan = _plan(repo, [_entry(from_model="dim_stores", from_column="region_id")])
+    assert plan.edits == []
+    (failure,) = plan.failures
+    assert "has no schema YAML file" in failure.message
+    assert "stitch does not invent" in failure.message
+
+
+def test_a_patch_path_pointing_nowhere_is_unappliable(repo):
+    plan = _plan(repo, [_entry(from_model="dim_regions", from_column="country_id")])
+    assert plan.edits == []
+    assert "does not exist" in plan.failures[0].message
+
+
+def test_an_unknown_source_model_is_unappliable(repo):
+    plan = _plan(repo, [_entry(from_model="fct_ghost")])
+    assert "not in the manifest" in plan.failures[0].message
+
+
+def test_an_unknown_target_model_is_unappliable(repo):
+    plan = _plan(repo, [_entry(to_model="dim_ghost")])
+    assert plan.edits == []
+    assert "not in the manifest" in plan.failures[0].message
+
+
+def test_a_model_absent_from_its_schema_file_is_unappliable(repo):
+    """dim_users is in the manifest and shares the events file, but has no models: entry."""
+    plan = _plan(repo, [_entry(from_model="dim_users", from_column="user_id")])
+    assert plan.edits == []
+    assert "has no entry in its schema file" in plan.failures[0].message
+
+
+def test_a_failure_does_not_block_the_other_entries(repo):
+    plan = _plan(repo, [_entry(from_model="fct_ghost"), _entry()])
+    assert len(plan.edits) == 1
+    assert len(plan.failures) == 1
+    assert len(plan.planned) == 1
+
+
+def test_a_seed_is_not_a_relationship_target(repo):
+    plan = _plan(repo, [_entry(to_model="country_codes")])
+    assert "not in the manifest" in plan.failures[0].message
+
+
+# --- planning and applying --------------------------------------------------------------
+
+
+def test_several_entries_in_one_file_accumulate_into_one_edit(repo):
+    plan = _plan(
+        repo,
+        [_entry(), _entry(from_column="order_id", to_column="customer_id")],
+    )
+    assert len(plan.edits) == 1
+    assert len(plan.planned) == 2
+    assert plan.edits[0].updated.count("- relationships:") == 2
+
+
+def test_entries_in_different_files_produce_one_edit_each(repo):
+    plan = _plan(
+        repo,
+        [_entry(), _entry(from_model="fct_events", from_column="user_id", to_model="dim_users")],
+    )
+    assert {edit.path.parent.name for edit in plan.edits} == {"marts", "events"}
+
+
+def test_planning_never_touches_disk(repo):
+    before = (repo / MARTS).read_text()
+    _plan(repo, [_entry()])
+    assert (repo / MARTS).read_text() == before
+
+
+def test_apply_plan_writes_and_reports_the_paths(repo):
+    plan = _plan(repo, [_entry()])
+    written = apply_plan(plan.edits)
+    assert written == [repo / MARTS]
+    assert (repo / MARTS).read_text() == plan.edits[0].updated
+
+
+def test_apply_plan_leaves_no_temp_files(repo):
+    apply_plan(_plan(repo, [_entry()]).edits)
+    assert sorted(p.name for p in (repo / MARTS).parent.iterdir()) == ["_schema.yml"]
+
+
+def test_the_written_file_still_parses_as_dbt_yaml(repo):
+    from ruamel.yaml import YAML
+
+    apply_plan(_plan(repo, [_entry()]).edits)
+    document = YAML(typ="safe").load((repo / MARTS).read_text())
+    orders = next(m for m in document["models"] if m["name"] == "fct_orders")
+    customer_id = next(c for c in orders["columns"] if c["name"] == "customer_id")
+    assert customer_id["data_tests"][0]["relationships"] == {
+        "to": "ref('dim_customers')",
+        "field": "customer_id",
+        "config": {"severity": "warn"},
+    }
+
+
+def test_ids_clear_only_for_the_files_that_were_written(repo):
+    marts = _entry()
+    events = _entry(from_model="fct_events", from_column="user_id", to_model="dim_users")
+    plan = _plan(repo, [marts, events])
+    cleared = plan.ids_for({repo / MARTS})
+    assert cleared == {marts.id}
+
+
+def test_already_declared_entries_clear_even_when_nothing_is_written(repo):
+    apply_plan(_plan(repo, [_entry()]).edits)
+    plan = _plan(repo, [_entry()])
+    assert plan.ids_for(set()) == {_entry().id}
+
+
+def test_the_diff_is_labelled_relative_to_the_project_root(repo):
+    # the CLI passes a resolved root, so the label is repo-relative like a git diff
+    diff = _plan(repo, [_entry()]).diff(repo.resolve())
+    assert f"a/{MARTS}" in diff
+    assert f"b/{MARTS}" in diff
+    assert str(repo.resolve()) not in diff
+
+
+def test_a_diff_outside_the_root_falls_back_to_the_full_path(repo):
+    diff = _plan(repo, [_entry()]).diff(repo.parent / "elsewhere")
+    assert MARTS in diff
+
+
+def test_a_file_that_cannot_be_reproduced_is_refused_not_reformatted(repo):
+    """A layout stitch cannot round-trip is reported, never silently rewritten."""
+    target = repo / MARTS
+    target.write_text(target.read_text().replace("version: 2", "version:    2"))
+    before = target.read_text()
+    plan = _plan(repo, [_entry()])
+    assert plan.edits == []
+    assert "cannot be edited without reformatting" in plan.failures[0].message
+    assert target.read_text() == before
