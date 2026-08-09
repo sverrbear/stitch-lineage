@@ -16,29 +16,34 @@ import {
   type NodeProps,
 } from '@xyflow/react'
 import { useMemo, useState } from 'react'
-import { NODE_TYPE_NAME, SystemBadge } from '../components/badges'
+import { SystemBadge } from '../components/badges'
 import { GraphLegend } from '../components/bits'
 import { useStitch } from '../data'
 import { CLICK_SLOP_PX } from '../lib/canvas'
 import { lineageFor, layoutLineage } from '../lib/lineage'
+import { CONFIDENCE_HELP, NODE_TYPE_NAME, displayName, nodeContext } from '../lib/present'
 import { navigate, nodeHref } from '../router'
 import type { Confidence, GraphNode } from '../types'
 
-type LineageFlowNode = Node<{ node: GraphNode; isRoot: boolean }, 'lineage'>
+/** One card shape for all six node types: badge + name + type · context. */
+type LineageFlowNode = Node<{ node: GraphNode; context: string | null; isRoot: boolean }, 'lineage'>
 
 function LineageNode({ data }: NodeProps<LineageFlowNode>) {
-  const { node, isRoot } = data
+  const { node, context, isRoot } = data
+  const name = displayName(node)
   return (
     <div className={`flow-node system-${node.node_type.startsWith('mb_') ? 'mb' : 'dbt'}${isRoot ? ' root' : ''}`}>
       <Handle type="target" position={Position.Left} className="flow-handle" />
       <div className="flow-node-title">
         <SystemBadge nodeType={node.node_type} />
-        <span className="flow-node-name">{node.name}</span>
+        <span className="flow-node-name" title={name}>
+          {name}
+        </span>
       </div>
-      <div className="flow-node-sub">
-        {NODE_TYPE_NAME[node.node_type]}
-        {node.node_type === 'column' && node.table ? ` · ${node.table}` : ''}
-        {node.properties?.archived === true ? ' · archived' : ''}
+      <div className="flow-node-sub" title={context ?? undefined}>
+        <span className="flow-node-kind">{NODE_TYPE_NAME[node.node_type]}</span>
+        {context ? <span className="flow-node-context">{context}</span> : null}
+        {node.properties?.archived === true ? <span className="flow-node-flag">archived</span> : null}
       </div>
       <Handle type="source" position={Position.Right} className="flow-handle" />
     </div>
@@ -60,6 +65,7 @@ export function LineagePage({ nodeId }: { nodeId: string }) {
   const [tip, setTip] = useState<EdgeTip | null>(null)
 
   const root = index.nodesById.get(nodeId)
+  const rootContext = root ? nodeContext(index, root) : null
 
   const { nodes, edges, truncated } = useMemo(() => {
     if (!root) return { nodes: [] as LineageFlowNode[], edges: [] as Edge[], truncated: false }
@@ -69,7 +75,7 @@ export function LineagePage({ nodeId }: { nodeId: string }) {
       id: node.node_id,
       type: 'lineage',
       position: positions.get(node.node_id) ?? { x: 0, y: 0 },
-      data: { node, isRoot: node.node_id === nodeId },
+      data: { node, context: nodeContext(index, node), isRoot: node.node_id === nodeId },
     }))
     const flowEdges: Edge[] = lineage.edges.map((edge) => {
       const dashed = DASHED.has(edge.confidence)
@@ -83,7 +89,7 @@ export function LineagePage({ nodeId }: { nodeId: string }) {
         className: `lineage-edge conf-${edge.confidence}`,
         style: dashed ? { strokeDasharray: '6 4' } : undefined,
         data: {
-          tooltip: `${edge.edge_type} · confidence: ${edge.confidence}${evidence ? `\n${evidence}` : ''}`,
+          tooltip: `${edge.edge_type} · ${edge.confidence}\n${CONFIDENCE_HELP[edge.confidence]}${evidence ? `\n${evidence}` : ''}`,
         },
       }
     })
@@ -102,8 +108,12 @@ export function LineagePage({ nodeId }: { nodeId: string }) {
     <main className="graph-page">
       <div className="graph-toolbar">
         <span className="graph-toolbar-title">
-          <SystemBadge nodeType={root.node_type} /> Lineage of <strong>{root.name}</strong>
-          <span className="muted"> ({NODE_TYPE_NAME[root.node_type]})</span>
+          <SystemBadge nodeType={root.node_type} /> Lineage of <strong>{displayName(root)}</strong>
+          <span className="muted">
+            {' '}
+            ({NODE_TYPE_NAME[root.node_type]}
+            {rootContext ? ` · ${rootContext}` : ''})
+          </span>
         </span>
         <a className="button" href={nodeHref(nodeId)}>
           Details

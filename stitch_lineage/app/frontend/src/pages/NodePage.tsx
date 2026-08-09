@@ -1,12 +1,24 @@
 // Routed detail panels (spec §9): column / card / dashboard / model / source /
 // field. Every panel links to the lineage view and carries system badges.
+// Naming follows lib/present: dbt entities read as dbt names, Metabase entities
+// as their Metabase display name, and the physical warehouse relation is only
+// ever a secondary fact row.
 
-import { NODE_TYPE_NAME, SystemBadge } from '../components/badges'
-import { ChipList, NodeChip, Section } from '../components/bits'
+import { SystemBadge } from '../components/badges'
+import { ChipList, ConfidenceTag, Fact, NodeChip, Section } from '../components/bits'
 import { useStitch } from '../data'
-import { biDetail, columnDetail, modelDetail } from '../lib/details'
+import { biDetail, columnDetail, modelDetail, type RelationshipRef } from '../lib/details'
 import { metabaseLink } from '../lib/graph'
 import type { Reach } from '../lib/graph'
+import {
+  NODE_TYPE_NAME,
+  displayName,
+  isPlaceholder,
+  metabaseRelation,
+  nodeContext,
+  warehouseColumn,
+  warehouseRelation,
+} from '../lib/present'
 import { lineageHref } from '../router'
 import type { GraphNode } from '../types'
 
@@ -19,19 +31,26 @@ function reachChips(reaches: Reach[]) {
 }
 
 function PanelHeader({ node, subtitle }: { node: GraphNode; subtitle?: string | null }) {
-  const { meta } = useStitch()
+  const { meta, index } = useStitch()
   const link = metabaseLink(meta.metabase_url, node)
   const archived = node.properties?.archived === true
+  // undefined means "use the shared rule"; an explicit null suppresses the line.
+  const shown = subtitle === undefined ? nodeContext(index, node) : subtitle
   return (
     <div className="panel-header">
       <div className="panel-title">
         <SystemBadge nodeType={node.node_type} size={20} />
-        <h2>{node.name}</h2>
+        <h2>{displayName(node)}</h2>
         <span className="panel-type">{NODE_TYPE_NAME[node.node_type]}</span>
         {archived && <span className="archived-tag">archived</span>}
       </div>
-      {subtitle && <p className="panel-subtitle">{subtitle}</p>}
+      {shown && <p className="panel-subtitle">{shown}</p>}
       {node.description && <p className="panel-description">{node.description}</p>}
+      {isPlaceholder(node) && (
+        <p className="muted panel-placeholder">
+          Only referenced by an edge — this build never resolved a definition for it.
+        </p>
+      )}
       <div className="panel-actions">
         <a className="button" href={lineageHref(node.node_id)}>
           View lineage →
@@ -43,29 +62,6 @@ function PanelHeader({ node, subtitle }: { node: GraphNode; subtitle?: string | 
         )}
       </div>
     </div>
-  )
-}
-
-function MbFacts({ node }: { node: GraphNode }) {
-  const creator = node.properties?.creator ?? node.properties?.creator_name
-  const collection = node.properties?.collection_name ?? node.properties?.collection
-  return (
-    <dl className="fact-list">
-      {typeof creator === 'string' && creator && (
-        <>
-          <dt>creator</dt>
-          <dd>{creator}</dd>
-        </>
-      )}
-      {typeof collection === 'string' && collection && (
-        <>
-          <dt>collection</dt>
-          <dd>{collection}</dd>
-        </>
-      )}
-      <dt>archived</dt>
-      <dd>{node.properties?.archived === true ? 'yes' : 'no'}</dd>
-    </dl>
   )
 }
 
@@ -81,20 +77,22 @@ function ColumnPanel({ nodeId }: { nodeId: string }) {
 
   return (
     <article className="panel">
-      <PanelHeader node={node} subtitle={detail.model ? `column of ${detail.model.name}` : null} />
+      <PanelHeader
+        node={node}
+        subtitle={detail.model ? `column of ${displayName(detail.model)}` : nodeContext(index, node)}
+      />
       <dl className="fact-list">
-        <dt>data type</dt>
-        <dd>{node.data_type ?? 'unknown'}</dd>
-        <dt>model</dt>
-        <dd>{detail.model ? <NodeChip node={detail.model} /> : '—'}</dd>
-        {node.schema && (
-          <>
-            <dt>relation</dt>
-            <dd>
-              {node.schema}.{node.table}
-            </dd>
-          </>
-        )}
+        <Fact label={detail.model?.node_type === 'source' ? 'source' : 'model'}>
+          {detail.model ? <NodeChip node={detail.model} /> : '—'}
+        </Fact>
+        <Fact label="data type">{node.data_type ?? 'unknown'}</Fact>
+        <Fact label="in the warehouse">
+          {warehouseRelation(node) && (
+            <code>
+              {warehouseRelation(node)}.{warehouseColumn(node) ?? displayName(node)}
+            </code>
+          )}
+        </Fact>
       </dl>
 
       <Section title={`Upstream — ${plural(detail.upstreamColumns.length, 'column')}, ${plural(detail.upstreamSources.length, 'source')}`}>
@@ -122,18 +120,39 @@ function ColumnPanel({ nodeId }: { nodeId: string }) {
 
       {detail.relationships.length > 0 && (
         <Section title="Declared relationships">
-          <ul className="rel-list">
-            {detail.relationships.map((rel, i) => (
-              <li key={i}>
-                {rel.direction === 'outgoing' ? '→' : '←'}{' '}
-                {rel.other ? <NodeChip node={rel.other} /> : rel.edge.to}{' '}
-                {rel.validated && <span className="validated-badge" title="validated by a relationships test">✓</span>}
-              </li>
-            ))}
-          </ul>
+          <RelationshipList relationships={detail.relationships} />
         </Section>
       )}
     </article>
+  )
+}
+
+/** Metabase-side facts. A field has none of a card's, so each gets its own set. */
+function FieldFacts({ node }: { node: GraphNode }) {
+  const semantic = node.properties?.semantic_type
+  const visibility = node.properties?.visibility
+  return (
+    <dl className="fact-list">
+      <Fact label="Metabase table">{node.table ? <code>{node.table}</code> : null}</Fact>
+      <Fact label="in Metabase">{metabaseRelation(node)}</Fact>
+      <Fact label="data type">{node.data_type ?? null}</Fact>
+      <Fact label="semantic type">{typeof semantic === 'string' ? semantic : null}</Fact>
+      <Fact label="visibility">{typeof visibility === 'string' ? visibility : null}</Fact>
+    </dl>
+  )
+}
+
+function CardFacts({ node }: { node: GraphNode }) {
+  const creator = node.properties?.creator ?? node.properties?.creator_name
+  const collection = node.properties?.collection_name ?? node.properties?.collection
+  const display = node.properties?.display
+  return (
+    <dl className="fact-list">
+      <Fact label="collection">{typeof collection === 'string' ? collection : null}</Fact>
+      <Fact label="creator">{typeof creator === 'string' ? creator : null}</Fact>
+      <Fact label="visualization">{typeof display === 'string' ? display : null}</Fact>
+      <Fact label="archived">{node.properties?.archived === true ? 'yes' : 'no'}</Fact>
+    </dl>
   )
 }
 
@@ -143,11 +162,12 @@ function BiPanel({ nodeId }: { nodeId: string }) {
   if (!detail) return <NotFound nodeId={nodeId} />
   const { node } = detail
   const isDashboard = node.node_type === 'mb_dashboard'
+  const isField = node.node_type === 'mb_field'
 
   return (
     <article className="panel">
       <PanelHeader node={node} />
-      <MbFacts node={node} />
+      {isField ? <FieldFacts node={node} /> : <CardFacts node={node} />}
 
       {isDashboard ? (
         <Section title={`Cards on this dashboard — ${detail.cards.length}`}>{reachChips(detail.cards)}</Section>
@@ -159,7 +179,7 @@ function BiPanel({ nodeId }: { nodeId: string }) {
         )
       )}
 
-      {node.node_type === 'mb_field' && detail.cards.length > 0 && !isDashboard && (
+      {isField && detail.cards.length > 0 && (
         <Section title={`Consumed by ${plural(detail.cards.length, 'card')}`}>{reachChips(detail.cards)}</Section>
       )}
 
@@ -168,8 +188,12 @@ function BiPanel({ nodeId }: { nodeId: string }) {
       >
         <p className="muted">
           The reverse view: every dbt column this {NODE_TYPE_NAME[node.node_type]} ultimately
-          depends on. Non-exact chains are flagged with their weakest hop.
+          depends on, named the dbt way with the model it comes from. Non-exact chains carry
+          their weakest hop — hover it for what that means.
         </p>
+        <h4 className="subhead">models</h4>
+        <ChipList nodes={detail.dependsOnModels.map((node) => ({ node }))} />
+        <h4 className="subhead">columns</h4>
         {reachChips(detail.dependsOnColumns)}
       </Section>
     </article>
@@ -182,16 +206,24 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
   if (!detail) return <NotFound nodeId={nodeId} />
   const { node } = detail
   const materialization = node.properties?.materialization
+  const path = node.properties?.path
   const tags = Array.isArray(node.properties?.tags) ? (node.properties.tags as unknown[]).map(String) : []
 
   return (
     <article className="panel">
-      <PanelHeader
-        node={node}
-        subtitle={[node.schema && node.table ? `${node.schema}.${node.table}` : null, typeof materialization === 'string' ? materialization : null]
-          .filter(Boolean)
-          .join(' · ')}
-      />
+      <PanelHeader node={node} />
+      <dl className="fact-list">
+        <Fact label={node.node_type === 'source' ? 'dbt source' : 'schema'}>
+          {nodeContext(index, node)}
+        </Fact>
+        <Fact label="materialization">
+          {typeof materialization === 'string' ? materialization : null}
+        </Fact>
+        <Fact label="in the warehouse">
+          {warehouseRelation(node) ? <code>{warehouseRelation(node)}</code> : null}
+        </Fact>
+        <Fact label="defined in">{typeof path === 'string' ? <code>{path}</code> : null}</Fact>
+      </dl>
       {tags.length > 0 && (
         <div className="tag-row">
           {tags.map((tag) => (
@@ -221,16 +253,7 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
 
       {detail.relationships.length > 0 && (
         <Section title={`Declared relationships — ${detail.relationships.length}`}>
-          <ul className="rel-list">
-            {detail.relationships.map((rel, i) => (
-              <li key={i}>
-                <code>{rel.direction === 'outgoing' ? rel.edge.from : rel.edge.to}</code>{' '}
-                {rel.direction === 'outgoing' ? '→' : '←'}{' '}
-                {rel.other ? <NodeChip node={rel.other} /> : <code>{rel.edge.to}</code>}{' '}
-                {rel.validated && <span className="validated-badge" title="validated by a relationships test">✓</span>}
-              </li>
-            ))}
-          </ul>
+          <RelationshipList relationships={detail.relationships} />
         </Section>
       )}
 
@@ -247,7 +270,7 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
             {detail.columns.map((column) => (
               <tr key={column.node_id}>
                 <td>
-                  <NodeChip node={column} />
+                  <NodeChip node={column} context={null} />
                 </td>
                 <td>
                   <code>{column.data_type ?? ''}</code>
@@ -259,6 +282,41 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
         </table>
       </Section>
     </article>
+  )
+}
+
+/**
+ * Declared relationships read as `model.column → model.column`, both sides in
+ * dbt names, with the direction spelled out rather than implied by an arrow.
+ */
+function RelationshipList({ relationships }: { relationships: RelationshipRef[] }) {
+  const { index } = useStitch()
+  return (
+    <ul className="rel-list">
+      {relationships.map((rel, i) => {
+        const ownId = rel.direction === 'outgoing' ? rel.edge.from : rel.edge.to
+        const own = index.nodesById.get(ownId)
+        const ownLabel = own
+          ? `${nodeContext(index, own) ?? ''}.${displayName(own)}`.replace(/^\./, '')
+          : ownId
+        return (
+          <li key={i}>
+            <span className="rel-own">{ownLabel}</span>
+            <span className="rel-arrow" title={rel.direction === 'outgoing' ? 'references' : 'referenced by'}>
+              {rel.direction === 'outgoing' ? '→' : '←'}
+            </span>
+            {rel.other ? <NodeChip node={rel.other} /> : <code>{rel.edge.to}</code>}
+            {rel.validated ? (
+              <span className="validated-badge" title="validated by a dbt relationships test">
+                ✓
+              </span>
+            ) : (
+              <ConfidenceTag confidence={rel.edge.confidence} />
+            )}
+          </li>
+        )
+      })}
+    </ul>
   )
 }
 

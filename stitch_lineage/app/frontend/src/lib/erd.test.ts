@@ -7,11 +7,13 @@ import {
   findScope,
   initialScope,
   listScopes,
+  visibleColumns,
 } from './erd'
 import { buildIndex } from './graph'
 import { fixtureGraph } from './fixture'
 
 const index = buildIndex(fixtureGraph())
+const erd0Columns = (model: { columns: Array<{ key: string }> }) => model.columns.map((c) => c.key)
 
 describe('listScopes / defaultScope', () => {
   it('lists schema scopes first, most-connected schema leading', () => {
@@ -29,6 +31,22 @@ describe('listScopes / defaultScope', () => {
     const scopes = listScopes(index)
     const tags = scopes.filter((s) => s.kind === 'tag').map((s) => s.value)
     expect(tags).toEqual(expect.arrayContaining(['core', 'finance', 'reporting']))
+    expect(scopes.filter((s) => s.kind === 'tag').every((s) => !s.internal)).toBe(true)
+  })
+
+  it('flags package and warehouse-internal schemas, and sorts them last', () => {
+    const schemas = listScopes(index).filter((s) => s.kind === 'schema')
+    const internal = schemas.filter((s) => s.internal).map((s) => s.value)
+    // elementary: an installed package's own schema. artifacts: tooling bookkeeping.
+    expect(internal).toEqual(expect.arrayContaining(['elementary', 'artifacts']))
+    expect(internal).not.toContain('marts')
+    expect(internal).not.toContain('staging')
+    const firstInternal = schemas.findIndex((s) => s.internal)
+    expect(schemas.slice(firstInternal).every((s) => s.internal)).toBe(true)
+  })
+
+  it('never auto-opens an internal schema', () => {
+    expect(defaultScope(listScopes(index))?.internal).toBe(false)
   })
 })
 
@@ -53,12 +71,57 @@ describe('erdForScope', () => {
     expect(rel.validated).toBe(true)
   })
 
-  it('marks relationship columns as key columns (always visible)', () => {
+  it('marks relationship columns as key columns and sorts them first', () => {
     const marts = listScopes(index).find((s) => s.kind === 'schema' && s.value === 'marts')!
     const erd = erdForScope(index, marts)
     const fct = erd.models.find((m) => m.node.name === 'fct_revenue')!
-    expect(fct.keyColumns.has('user_id')).toBe(true)
+    expect(fct.columns[0].key).toBe('user_id')
+    expect(fct.columns[0].isKey).toBe(true)
+    expect(fct.columns.find((c) => c.key === 'net_revenue')?.isKey).toBe(false)
     expect(fct.external).toBe(false)
+  })
+
+  it('keys columns on the dbt id tail, not the display name', () => {
+    // ALERT_ID is the warehouse spelling; edges and handles speak alert_id.
+    const internal = listScopes(index).find((s) => s.kind === 'schema' && s.value === 'elementary')!
+    const erd = erdForScope(index, internal)
+    const column = erd.models[0].columns[0]
+    expect(column.key).toBe('alert_id')
+    expect(column.name).toBe('ALERT_ID')
+    expect(column.nodeId).toBe('model.elementary.alerts_anomaly_detection::alert_id')
+  })
+
+  it('gives a relationship column the catalog never had a row of its own', () => {
+    const graph = fixtureGraph()
+    graph.edges.push({
+      from: 'model.demo.fct_revenue::account_id',
+      to: 'model.demo.dim_users::user_id',
+      edge_type: 'relates_to',
+      confidence: 'declared',
+      evidence: {},
+    })
+    const phantomIndex = buildIndex(graph)
+    const marts = listScopes(phantomIndex).find((s) => s.kind === 'schema' && s.value === 'marts')!
+    const fct = erdForScope(phantomIndex, marts).models.find((m) => m.node.name === 'fct_revenue')!
+    const account = fct.columns.find((c) => c.key === 'account_id')!
+    // buildIndex synthesized the endpoint, so the edge still lands somewhere
+    expect(account.isKey).toBe(true)
+    expect(account.phantom).toBe(true)
+    expect(erd0Columns(fct)).toContain('account_id')
+  })
+})
+
+describe('visibleColumns', () => {
+  const marts = listScopes(index).find((s) => s.kind === 'schema' && s.value === 'marts')!
+  const fct = erdForScope(index, marts).models.find((m) => m.node.name === 'fct_revenue')!
+
+  it('never hides a key column, even under the budget', () => {
+    const shown = visibleColumns(fct, false, 1)
+    expect(shown.map((c) => c.key)).toEqual(['user_id'])
+  })
+
+  it('shows everything when expanded', () => {
+    expect(visibleColumns(fct, true, 1)).toHaveLength(fct.columns.length)
   })
 
   it('scopes by dbt tag', () => {
@@ -123,19 +186,19 @@ describe('erdClickHref', () => {
   const marts = listScopes(index).find((s) => s.kind === 'schema' && s.value === 'marts')!
   const erd = erdForScope(index, marts)
   const fct = erd.models.find((m) => m.node.name === 'fct_revenue')!
-  const userId = fct.columns.find((c) => c.name === 'user_id')!
+  const userId = fct.columns.find((c) => c.key === 'user_id')!
 
   it('routes a table header click to the model detail panel', () => {
     expect(erdClickHref(fct.node.node_id)).toBe('#/node/model.demo.fct_revenue')
   })
 
   it('routes a column row click to the column detail panel', () => {
-    expect(erdClickHref(userId.node_id)).toBe('#/node/model.demo.fct_revenue%3A%3Auser_id')
+    expect(erdClickHref(userId.nodeId)).toBe('#/node/model.demo.fct_revenue%3A%3Auser_id')
   })
 
   it('routes a modifier-click straight to the lineage view', () => {
     expect(erdClickHref(fct.node.node_id, { metaKey: true })).toBe('#/lineage/model.demo.fct_revenue')
-    expect(erdClickHref(userId.node_id, { ctrlKey: true })).toBe('#/lineage/model.demo.fct_revenue%3A%3Auser_id')
+    expect(erdClickHref(userId.nodeId, { ctrlKey: true })).toBe('#/lineage/model.demo.fct_revenue%3A%3Auser_id')
   })
 
   it('builds ids for relationship columns missing from the catalog', () => {

@@ -126,13 +126,46 @@ def test_ephemeral_model_flagged(resolution):
     assert eph.properties["materialization"] == "ephemeral"
 
 
-def test_column_nodes_from_catalog(resolution):
+def test_column_nodes_take_dbt_casing_and_catalog_types(resolution):
+    # the warehouse spells it ORDER_TOTAL; the project -- and everyone reading the app --
+    # spells it order_total, so that is the name; the catalog only supplies the type
     col = _node(resolution, column_node_id(FCT_ORDERS, "ORDER_TOTAL"))
     assert col.node_id == f"{FCT_ORDERS}::order_total"
-    assert col.name == "ORDER_TOTAL"
+    assert col.name == "order_total"
+    assert col.column == "order_total"
+    assert col.properties["warehouse_name"] == "ORDER_TOTAL"
     assert col.data_type == "FLOAT"
     assert col.description == "Order amount in USD."
     assert col.table == "fct_orders"
+
+
+def test_star_expanded_column_inherits_the_upstream_dbt_casing(resolution):
+    # mart_payments is `select * from stg_payments`: sqlglot expands the star against
+    # the upper-cased schema map, so the spelling has to come from the parent model
+    col = _node(resolution, column_node_id(MART_PAYMENTS, "PAYMENT_ID"))
+    assert col.name == "payment_id"
+    assert col.properties["warehouse_name"] == "PAYMENT_ID"
+
+
+def test_source_columns_take_the_schema_yml_casing(resolution):
+    col = _node(resolution, column_node_id(RAW_USERS, "FULL_NAME"))
+    assert col.name == "full_name"
+    assert col.properties["warehouse_name"] == "FULL_NAME"
+
+
+def test_catalog_fallback_undoes_the_dialect_case_folding(resolution):
+    # mart_pivot's SQL does not parse and it documents no columns, so the catalog is all
+    # there is -- and Snowflake's PIVOT_A is a storage artefact, not a chosen spelling
+    col = _node(resolution, column_node_id(MART_PIVOT, "PIVOT_A"))
+    assert col.name == "pivot_a"
+    assert col.properties["warehouse_name"] == "PIVOT_A"
+
+
+def test_a_deliberately_quoted_identifier_keeps_its_casing(resolution):
+    # mixed case can only come from a quoted identifier: that IS somebody's choice
+    col = _node(resolution, column_node_id(MART_PIVOT, "quotedCase"))
+    assert col.name == "quotedCase"
+    assert "warehouse_name" not in col.properties
 
 
 def test_column_nodes_manifest_fallback(resolution):
@@ -234,7 +267,9 @@ def test_ephemeral_models_own_columns_are_traced(resolution):
 
 
 def test_unparseable_model_fails_soft(resolution):
-    pivot_columns = {column_node_id(MART_PIVOT, "PIVOT_A"), column_node_id(MART_PIVOT, "PIVOT_B")}
+    pivot_columns = {
+        column_node_id(MART_PIVOT, name) for name in ("PIVOT_A", "PIVOT_B", "quotedCase")
+    }
     feeds = _edges(resolution, EdgeType.FEEDS)
     assert not any(e.to in pivot_columns or e.from_ in pivot_columns for e in feeds)
     assert set(resolution.untraced_columns) == pivot_columns
@@ -318,12 +353,13 @@ def test_dangling_declaration_recorded_not_emitted(resolution):
 
 
 def test_coverage_numbers(resolution):
-    assert resolution.columns_total == 26
+    assert resolution.columns_total == 27
     assert resolution.columns_traced == 24
     assert resolution.columns_inferred == 5
     assert resolution.untraced_columns == [
         f"{MART_PIVOT}::pivot_a",
         f"{MART_PIVOT}::pivot_b",
+        f"{MART_PIVOT}::quotedcase",
     ]
 
 
@@ -339,7 +375,7 @@ def test_source_columns_excluded_from_coverage(resolution):
         for n in resolution.nodes
         if n.node_type == NodeType.COLUMN and n.node_id.startswith("model.")
     ]
-    assert resolution.columns_total == len(model_columns) == 26
+    assert resolution.columns_total == len(model_columns) == 27
 
 
 def test_output_is_deterministic(tmp_path):
@@ -841,6 +877,16 @@ def _column_ids(result, uid):
         for node in result.nodes
         if node.node_type == NodeType.COLUMN and node.node_id.startswith(f"{uid}::")
     }
+
+
+def test_model_sql_casing_beats_the_catalog():
+    # sqlglot normalizes every output name to Snowflake's upper case, so the display
+    # spelling has to be read off the unnormalized parse -- here `Amount_USD`
+    manifest = _stg_manifest("select amount as Amount_USD from analytics.raw.raw_payments", {})
+    result = resolve_dbt(manifest, _built_catalog([("AMOUNT_USD", "FLOAT")]))
+    col = _node(result, column_node_id("model.demo.stg_payments", "amount_usd"))
+    assert col.name == "Amount_USD"
+    assert col.properties["warehouse_name"] == "AMOUNT_USD"
 
 
 def test_column_dropped_from_sql_disappears_though_the_warehouse_still_has_it():

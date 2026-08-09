@@ -137,7 +137,13 @@ def bind(
         exact_col = model_columns.get(_fold(field.column))
         if exact_col is not None:
             from_id = exact_col.node_id
-            if (exact_col.column or exact_col.name) != field.column:
+            # column Nodes are named the dbt way, so the comparison that means anything
+            # here is warehouse spelling vs warehouse spelling -- otherwise every
+            # Snowflake column would read as a mismatch
+            dbt_column = (
+                exact_col.properties.get("warehouse_name") or exact_col.column or exact_col.name
+            )
+            if dbt_column != field.column:
                 case_mismatch = True
         else:
             squashed = _squash(field.column)

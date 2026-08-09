@@ -130,7 +130,7 @@ def test_full_build_produces_unbroken_end_to_end_chain(project):
     assert (cov.mbql_cards_resolved, cov.mbql_cards_total) == (7, 8)
     assert (cov.native_cards_resolved, cov.native_cards_total) == (0, 1)
     assert (cov.dashboards, cov.dashboards_total) == (2, 2)
-    assert (cov.columns_traced, cov.columns_total) == (24, 26)
+    assert (cov.columns_traced, cov.columns_total) == (24, 27)
     assert set(cov.unresolved_cards) == {205, 208}
     ghost = [r for r in cov.unresolved_field_refs if r.get("card_id") == 208]
     assert ghost and ghost[0]["reason"] == "unresolvable field name"

@@ -5,8 +5,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStitch } from '../data'
 import { groupHits, type SearchHit } from '../lib/search'
+import { NODE_TYPE_NAME, displayName } from '../lib/present'
 import { navigate, nodeHref } from '../router'
-import { NODE_TYPE_NAME, SystemBadge } from './badges'
+import { SystemBadge } from './badges'
 
 export interface SearchPanelProps {
   autoFocus?: boolean
@@ -90,7 +91,7 @@ export function SearchPanel({ autoFocus, placeholder, onNavigate, inputRef }: Se
                     title={hit.node.node_id}
                   >
                     <SystemBadge nodeType={hit.node.node_type} />
-                    <span className="search-hit-name">{hit.node.name}</span>
+                    <span className="search-hit-name">{displayName(hit.node)}</span>
                     <span className="search-hit-type">{NODE_TYPE_NAME[hit.node.node_type]}</span>
                     {hit.context && <span className="search-hit-context">{hit.context}</span>}
                     {hit.matchedField !== 'name' && (

@@ -36,17 +36,19 @@ export function fixtureGraph(): StitchGraph {
     }),
     node({ node_id: `${M}.stg_payments::amount`, node_type: 'column', name: 'amount', column: 'amount', data_type: 'number', schema: 'staging', table: 'stg_payments' }),
 
+    // Physical table carries a dev USER_PREFIX, as dev-target artifacts do: no
+    // surface may ever label this model or its columns `sis_fct_revenue`.
     node({
       node_id: `${M}.fct_revenue`,
       node_type: 'model',
       name: 'fct_revenue',
       schema: 'marts',
-      table: 'fct_revenue',
+      table: 'sis_fct_revenue',
       description: 'Daily net revenue facts',
       properties: { tags: ['core', 'finance'], materialization: 'incremental' },
     }),
-    node({ node_id: `${M}.fct_revenue::net_revenue`, node_type: 'column', name: 'net_revenue', column: 'net_revenue', data_type: 'number', schema: 'marts', table: 'fct_revenue', description: 'Net of refunds' }),
-    node({ node_id: `${M}.fct_revenue::user_id`, node_type: 'column', name: 'user_id', column: 'user_id', data_type: 'varchar', schema: 'marts', table: 'fct_revenue' }),
+    node({ node_id: `${M}.fct_revenue::net_revenue`, node_type: 'column', name: 'net_revenue', column: 'net_revenue', data_type: 'number', schema: 'marts', table: 'sis_fct_revenue', description: 'Net of refunds', properties: { warehouse_name: 'NET_REVENUE' } }),
+    node({ node_id: `${M}.fct_revenue::user_id`, node_type: 'column', name: 'user_id', column: 'user_id', data_type: 'varchar', schema: 'marts', table: 'sis_fct_revenue' }),
 
     node({
       node_id: `${M}.dim_users`,
@@ -69,7 +71,38 @@ export function fixtureGraph(): StitchGraph {
     }),
     node({ node_id: `${M}.mart_board::net_revenue`, node_type: 'column', name: 'net_revenue', column: 'net_revenue', data_type: 'number', schema: 'marts', table: 'mart_board' }),
 
-    node({ node_id: 'mb_field::101', node_type: 'mb_field', name: 'Net Revenue', column: 'net_revenue', table: 'fct_revenue' }),
+    // Models shipped by an installed dbt package, in a schema nobody browses:
+    // the ERD scope picker must not offer these ahead of the analytics schemas.
+    node({
+      node_id: 'model.elementary.alerts_anomaly_detection',
+      node_type: 'model',
+      name: 'alerts_anomaly_detection',
+      schema: 'elementary',
+      table: 'sis_alerts_anomaly_detection',
+      properties: { tags: [], materialization: 'view' },
+    }),
+    node({ node_id: 'model.elementary.alerts_anomaly_detection::alert_id', node_type: 'column', name: 'ALERT_ID', column: 'ALERT_ID', data_type: 'varchar', schema: 'elementary', table: 'sis_alerts_anomaly_detection' }),
+    node({
+      node_id: 'source.demo.artifacts.dbt_runs',
+      node_type: 'source',
+      name: 'dbt_runs',
+      schema: 'artifacts',
+      table: 'dbt_runs',
+      properties: { source_name: 'artifacts' },
+    }),
+
+    node({
+      node_id: 'mb_field::101',
+      node_type: 'mb_field',
+      name: 'Net Revenue',
+      column: 'NET_REVENUE',
+      table: 'FCT_REVENUE',
+      schema: 'MARTS',
+      database: 'Analytics',
+      data_type: 'type/Float',
+      description: 'Net of refunds, as Metabase sees it',
+      properties: { semantic_type: 'type/Currency', visibility: 'normal' },
+    }),
     node({
       node_id: 'mb_card::412',
       node_type: 'mb_card',
@@ -108,6 +141,9 @@ export function fixtureGraph(): StitchGraph {
     edge({ from: `${M}.fct_revenue::net_revenue`, to: `${M}.mart_board::net_revenue`, edge_type: 'feeds', confidence: 'exact' }),
 
     edge({ from: `${M}.fct_revenue::net_revenue`, to: 'mb_field::101', edge_type: 'binds_to', confidence: 'exact' }),
+    // Field the Metabase pull never returned a definition for: the only thing
+    // known about it is its id, which must still not render as `mb_field::902`.
+    edge({ from: `${M}.fct_revenue::user_id`, to: 'mb_field::902', edge_type: 'binds_to', confidence: 'fuzzy' }),
     edge({ from: 'mb_field::101', to: 'mb_card::412', edge_type: 'consumed_by', confidence: 'exact' }),
     edge({ from: 'mb_field::101', to: 'mb_card::418', edge_type: 'consumed_by', confidence: 'parsed' }),
     edge({ from: 'mb_card::412', to: 'mb_dash::7', edge_type: 'appears_on', confidence: 'exact' }),

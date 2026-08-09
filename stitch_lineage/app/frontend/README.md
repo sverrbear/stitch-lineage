@@ -62,7 +62,7 @@ against `dev-public/dev-graph.json` when present and skips silently otherwise.
 src/
   lib/        pure TS, no DOM (unit-tested): graph index + traversal, lineage
               extraction + layered layout, ERD scoping, search ranking, detail
-              computations, data loading
+              computations, naming/presentation rules, data loading
   components/ badges (inline Snowflake/Metabase SVG marks), search panel,
               command palette, header, shared bits
   pages/      Home (search-first), Node (detail panels), Lineage, ERD
@@ -70,3 +70,19 @@ src/
 scripts/      make-dev-graph.mjs
 dev-public/   dev-only static dir (never bundled into dist/)
 ```
+
+## Naming rules
+
+Every surface — panels, chips, canvases, search — takes a node's label and its
+context from `src/lib/present.ts`. Nothing renders `node.name` directly.
+
+- dbt entities read as **dbt names**. A column's context is the dbt **model** it
+  belongs to, derived from the node id (always the dbt `unique_id`) — never
+  `Node.table`, which is the physical alias and on dev artifacts carries the
+  `USER_PREFIX` (`sis_stg_…`).
+- The physical relation and the warehouse's own spelling of a column
+  (`properties.warehouse_name`) are secondary detail rows, never labels.
+- Metabase entities read as their Metabase display name, with the Metabase
+  table (fields) or the collection (cards, dashboards) as context.
+- A node synthesized for a dangling edge endpoint says what it is
+  (`field 902`), never its raw id.
