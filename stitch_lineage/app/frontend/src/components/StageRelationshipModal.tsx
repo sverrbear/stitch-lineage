@@ -14,6 +14,10 @@ export interface StageTarget {
   fromColumn: string
   toModel: string
   toColumn: string
+  /** Prefilled when the pair came from a suggestion rather than a drag. */
+  cardinality?: string
+  /** Why stitch proposed it — shown so accepting is a judgement, not a reflex. */
+  provenance?: string
 }
 
 export function StageRelationshipModal({
@@ -25,7 +29,8 @@ export function StageRelationshipModal({
   onCancel: () => void
   onConfirm: (cardinality: Cardinality) => Promise<string | null>
 }) {
-  const [cardinality, setCardinality] = useState<Cardinality>('many-to-one')
+  const initial = CARDINALITIES.find((value) => value === target.cardinality) ?? 'many-to-one'
+  const [cardinality, setCardinality] = useState<Cardinality>(initial)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -54,7 +59,9 @@ export function StageRelationshipModal({
         aria-labelledby="stage-modal-title"
         onClick={(event) => event.stopPropagation()}
       >
-        <h2 id="stage-modal-title">Stage a relationship</h2>
+        <h2 id="stage-modal-title">
+          {target.provenance ? 'Accept this relationship' : 'Stage a relationship'}
+        </h2>
         <p className="modal-endpoints">
           <code>
             {target.fromModel}.{target.fromColumn}
@@ -64,6 +71,8 @@ export function StageRelationshipModal({
             {target.toModel}.{target.toColumn}
           </code>
         </p>
+
+        {target.provenance && <p className="modal-provenance">{target.provenance}</p>}
 
         <label className="modal-field" htmlFor="stage-cardinality">
           Cardinality

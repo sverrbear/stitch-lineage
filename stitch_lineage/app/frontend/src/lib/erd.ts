@@ -55,7 +55,7 @@ export interface ErdModel {
   external: boolean
 }
 
-/** A staged declaration resolved onto this graph's node ids, ready to draw. */
+/** A pending declaration (staged, or merely suggested) on this graph's node ids. */
 export interface ErdStagedRelationship {
   id: string
   fromModelId: string
@@ -71,6 +71,8 @@ export interface ErdData {
   relationships: ErdRelationship[]
   /** Staged (not yet applied) declarations touching this scope. */
   staged: ErdStagedRelationship[]
+  /** Suggested (not yet accepted) candidates touching this scope. */
+  suggested: ErdStagedRelationship[]
 }
 
 function isErdModel(node: GraphNode): boolean {
@@ -247,6 +249,7 @@ export function erdForScope(
   index: GraphIndex,
   scope: ErdScope,
   staged: ErdStagedRelationship[] = [],
+  suggested: ErdStagedRelationship[] = [],
 ): ErdData {
   const inScope = new Set<string>()
   for (const node of index.nodes) {
@@ -256,20 +259,24 @@ export function erdForScope(
   const rels = relationships(index).filter(
     (rel) => inScope.has(rel.fromModelId) || inScope.has(rel.toModelId),
   )
-  const scopedStaged = staged.filter(
-    (rel) => inScope.has(rel.fromModelId) || inScope.has(rel.toModelId),
-  )
+  const touchesScope = (rel: ErdStagedRelationship) =>
+    inScope.has(rel.fromModelId) || inScope.has(rel.toModelId)
+  const scopedStaged = staged.filter(touchesScope)
+  // a suggestion already staged is no longer a suggestion, whatever the server said
+  const stagedIds = new Set(scopedStaged.map((rel) => rel.id))
+  const scopedSuggested = suggested.filter((rel) => touchesScope(rel) && !stagedIds.has(rel.id))
 
   const externalIds = new Set<string>()
-  for (const rel of [...rels, ...scopedStaged]) {
+  for (const rel of [...rels, ...scopedStaged, ...scopedSuggested]) {
     for (const id of [rel.fromModelId, rel.toModelId]) {
       if (!inScope.has(id) && index.nodesById.has(id)) externalIds.add(id)
     }
   }
 
-  // A staged endpoint has to stay visible too, or its edge has no handle to land on.
+  // A staged or suggested endpoint has to stay visible too, or its edge has no
+  // handle to land on.
   const keyColumnsByModel = new Map<string, Set<string>>()
-  for (const rel of [...rels, ...scopedStaged]) {
+  for (const rel of [...rels, ...scopedStaged, ...scopedSuggested]) {
     for (const [modelId, column] of [
       [rel.fromModelId, rel.fromColumn],
       [rel.toModelId, rel.toColumn],
@@ -297,7 +304,7 @@ export function erdForScope(
     return aRel - bRel || a.node.name.localeCompare(b.node.name)
   })
 
-  return { scope, models, relationships: rels, staged: scopedStaged }
+  return { scope, models, relationships: rels, staged: scopedStaged, suggested: scopedSuggested }
 }
 
 /**
@@ -314,7 +321,7 @@ export function resolveStaged(
     from_column: string
     to_model: string
     to_column: string
-    cardinality: string
+    cardinality?: string
   }>,
 ): { drawable: ErdStagedRelationship[]; unresolvedIds: string[] } {
   const byName = new Map<string, string>()
@@ -339,7 +346,7 @@ export function resolveStaged(
       toModelId,
       fromColumn: entry.from_column.toLowerCase(),
       toColumn: entry.to_column.toLowerCase(),
-      cardinality: entry.cardinality,
+      cardinality: entry.cardinality ?? 'many-to-one',
     })
   }
   return { drawable, unresolvedIds }
