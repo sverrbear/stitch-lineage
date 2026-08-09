@@ -322,6 +322,21 @@ def _is_usable_output_name(name: str) -> bool:
     )
 
 
+def _dbt_spelling(warehouse_name: str | None) -> str | None:
+    """The warehouse spelling as dbt would write it, when it says nothing about case.
+
+    Snowflake folds an unquoted identifier to upper case on the way in, so a catalog
+    entry of DOWNLOADS is a storage artefact, not somebody's choice -- and rendering it
+    that way is exactly what #44 reports. An all-caps identifier therefore reads back
+    lower-cased (the spelling every dbt model and every `ref` uses); anything with a
+    lower-case letter in it was quoted deliberately and is left alone. The original
+    always survives on `warehouse_name`.
+    """
+    if not warehouse_name or warehouse_name.lower() == warehouse_name:
+        return warehouse_name
+    return warehouse_name.lower() if warehouse_name.isupper() else warehouse_name
+
+
 def _merge_column_specs(
     projected: list[str],
     spelled: dict[str, str],
@@ -337,9 +352,10 @@ def _merge_column_specs(
 
     `name` is the dbt-side spelling, because that is the one people write and read:
     the model's own SQL, else its schema.yml, else -- for a column arriving through a
-    `select *` -- the spelling the upstream node already resolved to, else the
-    warehouse's. The warehouse spelling is kept separately as `warehouse_name` (None
-    when the relation is not in the catalog); node ids are lowercased either way.
+    `select *` -- the spelling the upstream node already resolved to, else the catalog's
+    or the parser's with the dialect case-folding undone (see `_dbt_spelling`). The
+    warehouse spelling is kept separately as `warehouse_name` (None when the relation is
+    not in the catalog); node ids are lowercased either way.
     """
     specs: dict[str, dict[str, Any]] = {}
     for name in [
@@ -356,9 +372,9 @@ def _merge_column_specs(
             "name": (
                 spelled.get(lower)
                 or manifest_column.get("name")
-                or upstream_names.get(lower)
-                or warehouse_name
-                or name
+                # the parser's own output is dialect-normalized too, so it gets the
+                # same treatment as the catalog's -- neither is an authored spelling
+                or _dbt_spelling(warehouse_name or str(name))
             ),
             "warehouse_name": warehouse_name,
             "data_type": catalog_column.get("type") or manifest_column.get("data_type"),
@@ -461,9 +477,10 @@ def _catalog_column_specs(
     sources, and the fallback for models whose SQL does not resolve.
 
     `name` still prefers the project's spelling from schema.yml over the warehouse's --
-    a source column documented as `user_id` reads as `user_id`, not `USER_ID` -- and
-    the warehouse spelling stays on `warehouse_name` (None when the relation is not in
-    the catalog, which is the only place a warehouse spelling exists).
+    a source column documented as `user_id` reads as `user_id`, not `USER_ID` -- and an
+    undocumented one falls back to `_dbt_spelling`, since a source has no SQL to derive
+    a spelling from. The warehouse spelling stays on `warehouse_name` (None when the
+    relation is not in the catalog, which is the only place a warehouse spelling exists).
     """
     catalog_entries = {**(catalog.get("nodes") or {}), **(catalog.get("sources") or {})}
     specs: dict[str, dict[str, dict[str, Any]]] = {}
@@ -478,7 +495,7 @@ def _catalog_column_specs(
                 display = column.get("name") or str(key)
                 manifest_column = manifest_columns.get(display.lower(), {})
                 entity_specs[display.lower()] = {
-                    "name": manifest_column.get("name") or display,
+                    "name": manifest_column.get("name") or _dbt_spelling(display),
                     "warehouse_name": display,
                     "data_type": column.get("type"),
                     "description": manifest_column.get("description") or None,

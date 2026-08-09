@@ -153,11 +153,18 @@ def test_source_columns_take_the_schema_yml_casing(resolution):
     assert col.properties["warehouse_name"] == "FULL_NAME"
 
 
-def test_warehouse_casing_is_the_last_resort(resolution):
-    # mart_pivot's SQL does not parse and it documents no columns: the catalog is all
-    # there is, so its spelling stands -- and needs no warehouse_name to repeat it
+def test_catalog_fallback_undoes_the_dialect_case_folding(resolution):
+    # mart_pivot's SQL does not parse and it documents no columns, so the catalog is all
+    # there is -- and Snowflake's PIVOT_A is a storage artefact, not a chosen spelling
     col = _node(resolution, column_node_id(MART_PIVOT, "PIVOT_A"))
-    assert col.name == "PIVOT_A"
+    assert col.name == "pivot_a"
+    assert col.properties["warehouse_name"] == "PIVOT_A"
+
+
+def test_a_deliberately_quoted_identifier_keeps_its_casing(resolution):
+    # mixed case can only come from a quoted identifier: that IS somebody's choice
+    col = _node(resolution, column_node_id(MART_PIVOT, "quotedCase"))
+    assert col.name == "quotedCase"
     assert "warehouse_name" not in col.properties
 
 
@@ -260,7 +267,9 @@ def test_ephemeral_models_own_columns_are_traced(resolution):
 
 
 def test_unparseable_model_fails_soft(resolution):
-    pivot_columns = {column_node_id(MART_PIVOT, "PIVOT_A"), column_node_id(MART_PIVOT, "PIVOT_B")}
+    pivot_columns = {
+        column_node_id(MART_PIVOT, name) for name in ("PIVOT_A", "PIVOT_B", "quotedCase")
+    }
     feeds = _edges(resolution, EdgeType.FEEDS)
     assert not any(e.to in pivot_columns or e.from_ in pivot_columns for e in feeds)
     assert set(resolution.untraced_columns) == pivot_columns
@@ -344,12 +353,13 @@ def test_dangling_declaration_recorded_not_emitted(resolution):
 
 
 def test_coverage_numbers(resolution):
-    assert resolution.columns_total == 26
+    assert resolution.columns_total == 27
     assert resolution.columns_traced == 24
     assert resolution.columns_inferred == 5
     assert resolution.untraced_columns == [
         f"{MART_PIVOT}::pivot_a",
         f"{MART_PIVOT}::pivot_b",
+        f"{MART_PIVOT}::quotedcase",
     ]
 
 
@@ -365,7 +375,7 @@ def test_source_columns_excluded_from_coverage(resolution):
         for n in resolution.nodes
         if n.node_type == NodeType.COLUMN and n.node_id.startswith("model.")
     ]
-    assert resolution.columns_total == len(model_columns) == 26
+    assert resolution.columns_total == len(model_columns) == 27
 
 
 def test_output_is_deterministic(tmp_path):
