@@ -67,11 +67,4 @@ export function SystemBadge({ nodeType, size = 14 }: { nodeType: NodeType; size?
   )
 }
 
-export const NODE_TYPE_NAME: Record<NodeType, string> = {
-  source: 'source',
-  model: 'model',
-  column: 'column',
-  mb_field: 'field',
-  mb_card: 'card',
-  mb_dashboard: 'dashboard',
-}
+// NODE_TYPE_NAME lives in lib/present with the rest of the naming rules.

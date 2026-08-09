@@ -21,13 +21,14 @@ import { useStitch } from '../data'
 import { CLICK_SLOP_PX, isClickNotDrag, type Point } from '../lib/canvas'
 import {
   erdClickHref,
-  erdColumnNodeId,
   erdForScope,
   initialScope,
   listScopes,
+  visibleColumns,
   type ErdModel,
   type ErdScope,
 } from '../lib/erd'
+import { NODE_TYPE_NAME, displayName } from '../lib/present'
 import { erdHref, navigate } from '../router'
 
 const COLLAPSED_LIMIT = 8
@@ -64,14 +65,12 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
     navigate(erdClickHref(nodeId, event))
   }
 
-  const key = [...model.keyColumns]
-  const keySet = model.keyColumns
-  const keyColumns = model.columns.filter((c) => keySet.has(c.name.toLowerCase()) || keySet.has(c.name))
-  const rest = model.columns.filter((c) => !keyColumns.includes(c))
-  const visibleRest = expanded ? rest : rest.slice(0, Math.max(0, COLLAPSED_LIMIT - keyColumns.length))
-  const hidden = rest.length - visibleRest.length
-  // Relationship columns missing from the catalog still need handles.
-  const phantomKeys = key.filter((k) => !model.columns.some((c) => c.name === k || c.name.toLowerCase() === k))
+  const visible = visibleColumns(model, expanded, COLLAPSED_LIMIT)
+  const hidden = model.columns.length - visible.length
+  const collapsible = model.columns.some((column) => !column.isKey)
+  // The dbt model name is the header; the physical table is a subtitle at most, and
+  // only when it says something the schema line does not already say.
+  const table = model.node.table
 
   return (
     <div className={`erd-node${model.external ? ' external' : ''}`} onPointerDown={onPointerDown}>
@@ -85,61 +84,38 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
       >
         <div className="erd-node-header">
           <SystemBadge nodeType={model.node.node_type} />
-          <span className="erd-node-name">{model.node.name}</span>
+          <span className="erd-node-name">{displayName(model.node)}</span>
+          <span className="erd-node-kind">{NODE_TYPE_NAME[model.node.node_type]}</span>
           {model.external && <span className="erd-external-tag">other scope</span>}
         </div>
-        <div className="erd-node-schema">{model.node.schema ?? ''}</div>
+        <div className="erd-node-schema">
+          {model.node.schema ?? ''}
+          {table && table !== displayName(model.node) ? (
+            <span className="erd-node-relation" title="physical table in the warehouse">
+              {table}
+            </span>
+          ) : null}
+        </div>
       </div>
       <ul className="erd-columns">
-        {[...keyColumns, ...visibleRest].map((column) => {
-          const isKey = keyColumns.includes(column)
-          return (
-            <li
-              key={column.node_id}
-              className={`erd-column${isKey ? ' key' : ''}`}
-              role="link"
-              tabIndex={0}
-              title={OPEN_HINT}
-              onClick={open(column.node_id)}
-              onKeyDown={openOnEnter(column.node_id)}
-            >
-              <Handle
-                type="target"
-                id={column.name}
-                position={Position.Left}
-                className="erd-handle"
-              />
-              <span className="erd-column-name">{column.name}</span>
-              <span className="erd-column-type">{column.data_type ?? ''}</span>
-              <Handle
-                type="source"
-                id={column.name}
-                position={Position.Right}
-                className="erd-handle"
-              />
-            </li>
-          )
-        })}
-        {phantomKeys.map((name) => {
-          const nodeId = erdColumnNodeId(model.node.node_id, name)
-          return (
-            <li
-              key={`phantom-${name}`}
-              className="erd-column key"
-              role="link"
-              tabIndex={0}
-              title={OPEN_HINT}
-              onClick={open(nodeId)}
-              onKeyDown={openOnEnter(nodeId)}
-            >
-              <Handle type="target" id={name} position={Position.Left} className="erd-handle" />
-              <span className="erd-column-name">{name}</span>
-              <Handle type="source" id={name} position={Position.Right} className="erd-handle" />
-            </li>
-          )
-        })}
+        {visible.map((column) => (
+          <li
+            key={column.nodeId}
+            className={`erd-column${column.isKey ? ' key' : ''}${column.phantom ? ' phantom' : ''}`}
+            role="link"
+            tabIndex={0}
+            title={column.phantom ? `${OPEN_HINT} · declared by a relationship, not in the catalog` : OPEN_HINT}
+            onClick={open(column.nodeId)}
+            onKeyDown={openOnEnter(column.nodeId)}
+          >
+            <Handle type="target" id={column.key} position={Position.Left} className="erd-handle" />
+            <span className="erd-column-name">{column.name}</span>
+            <span className="erd-column-type">{column.dataType ?? ''}</span>
+            <Handle type="source" id={column.key} position={Position.Right} className="erd-handle" />
+          </li>
+        ))}
       </ul>
-      {(hidden > 0 || expanded) && rest.length > 0 && (
+      {collapsible && (hidden > 0 || expanded) && (
         <button
           type="button"
           className="erd-expand nodrag"
@@ -160,6 +136,23 @@ const nodeTypes = { erdModel: ErdModelNode }
 function scopeKey(scope: ErdScope): string {
   return `${scope.kind}:${scope.value}`
 }
+
+function scopeLabel(scope: ErdScope): string {
+  const models = `${scope.modelCount} model${scope.modelCount === 1 ? '' : 's'}`
+  const rels = scope.relationshipCount > 0 ? `, ${scope.relationshipCount} rels` : ''
+  return `${scope.value} (${models}${rels})`
+}
+
+/**
+ * The picker leads with what a human models: analytics schemas, then dbt tags.
+ * Package/warehouse-internal schemas (elementary, artifacts, …) stay reachable
+ * but sit last, so browsing the ERD never starts in somebody else's plumbing.
+ */
+const SCOPE_GROUPS: Array<{ label: string; match: (scope: ErdScope) => boolean }> = [
+  { label: 'Schemas', match: (s) => s.kind === 'schema' && !s.internal },
+  { label: 'dbt tags', match: (s) => s.kind === 'tag' },
+  { label: 'Tooling & internal schemas', match: (s) => s.kind === 'schema' && s.internal },
+]
 
 export function ErdPage({
   scopeKind,
@@ -207,7 +200,9 @@ export function ErdPage({
       targetHandle: rel.toColumn,
       type: 'smoothstep',
       className: 'erd-edge',
-      label: rel.validated ? '✓' : undefined,
+      // "user_id → user_id ✓" beats a bare tick nobody can decode
+      label: `${rel.fromColumn} → ${rel.toColumn}${rel.validated ? ' ✓' : ''}`,
+      labelShowBg: true,
     }))
     return { nodes, edges }
   }, [erd, expanded])
@@ -235,30 +230,26 @@ export function ErdPage({
             if (next) navigate(erdHref(next.kind, next.value))
           }}
         >
-          <optgroup label="Schemas">
-            {scopes
-              .filter((s) => s.kind === 'schema')
-              .map((s) => (
-                <option key={scopeKey(s)} value={scopeKey(s)}>
-                  {s.value} ({s.modelCount} models{s.relationshipCount > 0 ? `, ${s.relationshipCount} rels` : ''})
-                </option>
-              ))}
-          </optgroup>
-          {scopes.some((s) => s.kind === 'tag') && (
-            <optgroup label="dbt tags">
-              {scopes
-                .filter((s) => s.kind === 'tag')
-                .map((s) => (
+          {SCOPE_GROUPS.map(({ label, match }) => {
+            const group = scopes.filter(match)
+            if (group.length === 0) return null
+            return (
+              <optgroup key={label} label={label}>
+                {group.map((s) => (
                   <option key={scopeKey(s)} value={scopeKey(s)}>
-                    {s.value} ({s.modelCount} models{s.relationshipCount > 0 ? `, ${s.relationshipCount} rels` : ''})
+                    {scopeLabel(s)}
                   </option>
                 ))}
-            </optgroup>
-          )}
+              </optgroup>
+            )
+          })}
         </select>
         <span className="muted">
           {erd.models.length} models · {erd.relationships.length} relationships
         </span>
+        {active.internal && (
+          <span className="muted">tooling schema — not part of the analytics model</span>
+        )}
         {unknownConfigured && (
           <span className="scope-warning" title="serve.erd_default_scope in stitch.yml">
             configured scope <code>{unknownConfigured}</code> is not in this graph

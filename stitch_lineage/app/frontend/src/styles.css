@@ -436,6 +436,11 @@ kbd {
   white-space: pre-wrap;
 }
 
+.panel-placeholder {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
 .panel-actions {
   display: flex;
   gap: 10px;
@@ -554,6 +559,22 @@ kbd {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.rel-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rel-own {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.rel-arrow {
+  color: var(--text-muted);
 }
 
 .columns-table {
@@ -748,9 +769,31 @@ kbd {
 }
 
 .flow-node-sub {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   font-size: 11px;
   color: var(--text-muted);
   margin-top: 2px;
+  overflow: hidden;
+}
+
+.flow-node-kind,
+.flow-node-flag {
+  flex: none;
+}
+
+.flow-node-flag::before,
+.flow-node-context::before {
+  content: '·';
+  margin-right: 6px;
+}
+
+/* the context (a column's dbt model) is the part worth truncating */
+.flow-node-context {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .flow-handle {
@@ -799,6 +842,12 @@ kbd {
   font-weight: 650;
 }
 
+.erd-node-kind {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
 .erd-external-tag {
   margin-left: auto;
   font-size: 10px;
@@ -810,10 +859,24 @@ kbd {
 }
 
 .erd-node-schema {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   padding: 0 12px 7px;
   font-size: 11px;
   color: var(--text-muted);
   border-bottom: 1px solid var(--border);
+}
+
+/* physical relation: present, but visibly subordinate to the dbt name */
+.erd-node-relation {
+  margin-left: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .erd-columns {
@@ -844,6 +907,11 @@ kbd {
 
 .erd-column.key .erd-column-name {
   font-weight: 650;
+}
+
+.erd-column.phantom .erd-column-name {
+  font-style: italic;
+  color: var(--text-muted);
 }
 
 .erd-column-name {

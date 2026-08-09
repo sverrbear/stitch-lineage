@@ -1,16 +1,33 @@
 // Small shared presentational pieces: node chips, confidence tags, section
-// headers, the graph-view legend.
+// headers, the graph-view legend. Names and context come from lib/present, so a
+// node reads identically here, in the canvases and in search results.
 
 import type { ReactNode } from 'react'
 import type { Confidence, GraphNode } from '../types'
+import { useStitch } from '../data'
+import {
+  CONFIDENCE_HELP,
+  CONFIDENCE_LABEL,
+  NODE_TYPE_NAME,
+  displayName,
+  nodeContext,
+} from '../lib/present'
 import { nodeHref } from '../router'
-import { NODE_TYPE_NAME, SystemBadge, MetabaseMark, SnowflakeMark } from './badges'
+import { SystemBadge, MetabaseMark, SnowflakeMark } from './badges'
 
 export function ConfidenceTag({ confidence }: { confidence: Confidence }) {
-  return <span className={`conf-tag conf-${confidence}`}>{confidence}</span>
+  return (
+    <span className={`conf-tag conf-${confidence}`} title={CONFIDENCE_HELP[confidence]}>
+      {CONFIDENCE_LABEL[confidence]}
+    </span>
+  )
 }
 
-/** Inline, linked reference to a node: badge + name (+ optional context). */
+/**
+ * Inline, linked reference to a node: badge + name + what it belongs to.
+ * Context defaults to the shared rule (a column shows its dbt model, a Metabase
+ * field its table); pass `context={null}` to suppress it.
+ */
 export function NodeChip({
   node,
   context,
@@ -20,12 +37,14 @@ export function NodeChip({
   context?: string | null
   confidence?: Confidence
 }) {
+  const { index } = useStitch()
+  const shown = context === undefined ? nodeContext(index, node) : context
   return (
     <a className="node-chip" href={nodeHref(node.node_id)} title={node.node_id}>
       <SystemBadge nodeType={node.node_type} />
-      <span className="node-chip-name">{node.name}</span>
+      <span className="node-chip-name">{displayName(node)}</span>
       <span className="node-chip-type">{NODE_TYPE_NAME[node.node_type]}</span>
-      {context ? <span className="node-chip-context">{context}</span> : null}
+      {shown ? <span className="node-chip-context">{shown}</span> : null}
       {confidence && confidence !== 'exact' ? <ConfidenceTag confidence={confidence} /> : null}
     </a>
   )
@@ -51,6 +70,17 @@ export function Section({ title, children }: { title: ReactNode; children: React
   )
 }
 
+/** A `dt`/`dd` pair that renders nothing when there is no value to show. */
+export function Fact({ label, children }: { label: string; children?: ReactNode }) {
+  if (children === null || children === undefined || children === '') return null
+  return (
+    <>
+      <dt>{label}</dt>
+      <dd>{children}</dd>
+    </>
+  )
+}
+
 /** Footer legend for the lineage / ERD canvases (spec §9 + confidence styling). */
 export function GraphLegend({ erd = false }: { erd?: boolean }) {
   return (
@@ -67,7 +97,7 @@ export function GraphLegend({ erd = false }: { erd?: boolean }) {
             <svg width="26" height="8">
               <line x1="0" y1="4" x2="26" y2="4" className="legend-line-solid" />
             </svg>
-            declared relationship
+            declared relationship — labelled <code>from → to</code>
           </span>
           <span className="legend-item">
             <span className="validated-badge">✓</span> validated (relationships test)
@@ -85,7 +115,7 @@ export function GraphLegend({ erd = false }: { erd?: boolean }) {
             <svg width="26" height="8">
               <line x1="0" y1="4" x2="26" y2="4" className="legend-line-dashed" />
             </svg>
-            parsed / inferred / fuzzy — hover an edge for evidence
+            parsed / inferred / name match — hover an edge for evidence
           </span>
         </>
       )}

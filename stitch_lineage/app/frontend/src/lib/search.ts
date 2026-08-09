@@ -5,7 +5,8 @@
 
 import Fuse from 'fuse.js'
 import type { GraphNode, NodeType } from '../types'
-import { type GraphIndex, idTail, modelIdOfColumn } from './graph'
+import { type GraphIndex, idTail } from './graph'
+import { nodeContext } from './present'
 
 export interface SearchHit {
   node: GraphNode
@@ -13,7 +14,7 @@ export interface SearchHit {
   tier: number
   score: number
   matchedField: string
-  /** Compact locator: model name for a column, collection for cards, schema.table otherwise. */
+  /** Compact locator, same rule the panels use (lib/present.nodeContext). */
   context: string | null
 }
 
@@ -54,23 +55,6 @@ function extrasOf(node: GraphNode): Array<[string, string]> {
     extras.push(['properties.tags', tags.map(String).join(' ').toLowerCase()])
   }
   return extras
-}
-
-function contextOf(node: GraphNode, index: GraphIndex): string | null {
-  if (node.node_type === 'column') {
-    const modelId = modelIdOfColumn(node.node_id)
-    if (!modelId) return null
-    return index.nodesById.get(modelId)?.name ?? idTail(modelId)
-  }
-  if (node.node_type === 'mb_card' || node.node_type === 'mb_dashboard') {
-    for (const key of ['collection_name', 'collection'] as const) {
-      const value = node.properties?.[key]
-      if (typeof value === 'string' && value) return value
-    }
-    return null
-  }
-  if (node.table) return node.schema ? `${node.schema}.${node.table}` : node.table
-  return null
 }
 
 function startsWord(text: string, query: string): boolean {
@@ -131,7 +115,7 @@ export class GraphSearch {
         tier: 1,
         score: 1 - (result.score ?? 1),
         matchedField: 'name',
-        context: contextOf(doc.node, this.index),
+        context: nodeContext(this.index, doc.node),
       })
     }
 
@@ -146,7 +130,7 @@ export class GraphSearch {
   }
 
   private matchDoc(doc: SearchDoc, needle: string): SearchHit | null {
-    const base = { node: doc.node, context: contextOf(doc.node, this.index) }
+    const base = { node: doc.node, context: nodeContext(this.index, doc.node) }
     if (doc.name === needle || doc.tail === needle) {
       return { ...base, tier: 5, score: 5, matchedField: 'name' }
     }
