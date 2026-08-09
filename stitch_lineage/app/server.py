@@ -1,12 +1,14 @@
-"""FastAPI app behind `stitch serve`: the built SPA, the read-only graph API, and staging.
+"""FastAPI app behind `stitch serve`: the built SPA, the read-only graph API, staging
+and suggestions.
 
 The SPA fetches the relative paths `api/graph` and `api/meta` and routes on the hash
 fragment, so serving dist/ statically needs no SPA fallback route.
 
 Staging (SPEC.md section 8.2) is the only write surface, and it writes local state only --
-`.stitch/staged_relationships.yml`, never the dbt repo. It is registered only when a
-staged_path is passed (i.e. by `stitch serve`); the static export has no server at all, so
-it stays read-only by construction. All repo writes live in `stitch apply`.
+`.stitch/staged_relationships.yml` and `.stitch/layout.yml`, never the dbt repo. Those
+routes register only when a staged_path is passed (i.e. by `stitch serve`); the static
+export has no server at all, so it stays read-only by construction. All repo writes live
+in `stitch apply`.
 """
 
 from datetime import UTC, datetime
@@ -19,7 +21,14 @@ from pydantic import BaseModel, ConfigDict
 
 from stitch_lineage.app import StitchAppError, frontend_dist
 from stitch_lineage.graph.schema import Graph, NodeType, column_node_id
+from stitch_lineage.graph.suggest import Suggestion, suggest
 from stitch_lineage.io.graph_store import read_graph
+from stitch_lineage.io.layout_store import (
+    LAYOUT_FILENAME,
+    LayoutStoreError,
+    add_dismissed,
+    read_dismissed,
+)
 from stitch_lineage.io.staged_store import (
     StagedRelationship,
     StagedStoreError,
@@ -67,6 +76,21 @@ def _read_staged_or_503(staged_path: Path) -> list[StagedRelationship]:
         return read_staged(staged_path)
     except StagedStoreError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def _suggestions(graph_path: Path, staged_path: Path, layout: Path) -> list[Suggestion]:
+    """Rank suggestions with the local exclusions applied -- the API never returns a pair
+    that is already staged or was dismissed."""
+    graph = _load_graph(graph_path)
+    staged = [
+        (entry.from_model, entry.from_column, entry.to_model, entry.to_column)
+        for entry in _read_staged_or_503(staged_path)
+    ]
+    try:
+        dismissed = read_dismissed(layout)
+    except LayoutStoreError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return suggest(graph, staged, dismissed)
 
 
 def _model_uid(graph: Graph, name: str) -> str:
@@ -127,6 +151,7 @@ def create_app(
     metabase_url: str | None,
     erd_default_scope: str | None = None,
     staged_path: Path | None = None,
+    layout_path: Path | None = None,
 ) -> FastAPI:
     """Build the local app serving `graph_path`; `metabase_url` powers card deep links.
 
@@ -137,8 +162,13 @@ def create_app(
     `staged_path` enables the staging API (`stitch serve` passes it). Without it the app
     is read-only and /api/meta reports staging_enabled: false, which is how the SPA knows
     not to offer drawing.
+
+    The suggestion API rides on the same switch: suggestions exist to be accepted or
+    dismissed, and both write local state, so a read-only export has neither. Dismissals
+    land in `layout_path`, defaulting to layout.yml beside the staged store.
     """
     dist = frontend_dist()
+    layout = layout_path or (staged_path.parent / LAYOUT_FILENAME if staged_path else None)
     api = FastAPI(title="stitch", docs_url=None, redoc_url=None, openapi_url=None)
 
     @api.get("/api/graph")
@@ -158,6 +188,30 @@ def create_app(
                 "staging_enabled": staged_path is not None,
             }
         )
+
+    if staged_path is not None and layout is not None:
+
+        @api.get("/api/suggestions")
+        def api_suggestions() -> JSONResponse:
+            entries = _suggestions(graph_path, staged_path, layout)
+            return JSONResponse(
+                {"suggestions": [entry.model_dump(mode="json") for entry in entries]}
+            )
+
+        @api.post("/api/suggestions/{suggestion_id}/dismiss")
+        def api_suggestion_dismiss(suggestion_id: str) -> Response:
+            # only a live suggestion can be dismissed: an unknown id means the pair was
+            # already dismissed, staged, declared or has left the graph entirely
+            known = {entry.id for entry in _suggestions(graph_path, staged_path, layout)}
+            if suggestion_id not in known:
+                raise HTTPException(
+                    status_code=404, detail=f"no suggestion with id '{suggestion_id}'"
+                )
+            try:
+                add_dismissed(suggestion_id, layout)
+            except LayoutStoreError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            return Response(status_code=204)
 
     if staged_path is not None:
 
