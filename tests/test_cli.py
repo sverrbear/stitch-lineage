@@ -6,9 +6,17 @@ from typer.testing import CliRunner
 
 from stitch_lineage import __version__
 from stitch_lineage.cli import _print_coverage, app, console
-from stitch_lineage.graph.schema import Coverage, Graph, Node, NodeType
+from stitch_lineage.graph.schema import (
+    Coverage,
+    Graph,
+    Node,
+    NodeType,
+    column_node_id,
+    relationship_id,
+)
 from stitch_lineage.io.dbt_runner import StitchDbtRunnerError
 from stitch_lineage.io.graph_store import write_graph
+from stitch_lineage.io.layout_store import LAYOUT_FILENAME, add_dismissed
 
 runner = CliRunner()
 
@@ -37,7 +45,7 @@ def _marts_model():
 def test_help_lists_commands():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    for command in ("build", "search", "doctor", "export", "init", "serve"):
+    for command in ("build", "search", "suggest", "doctor", "export", "init", "serve"):
         assert command in result.output
 
 
@@ -260,6 +268,82 @@ def test_search_works_without_metabase_env(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     rows = [json.loads(line) for line in result.output.splitlines() if line.strip()]
     assert rows[0]["node_id"] == "model.demo.fct_orders"
+
+
+def _suggestible_graph(tmp_path):
+    """fct_orders.customer_id names dim_customers' grain -- one naming suggestion."""
+    orders, customers = "model.demo.fct_orders", "model.demo.dim_customers"
+    _write_graph(
+        tmp_path,
+        [
+            Node(node_id=orders, node_type=NodeType.MODEL, name="fct_orders"),
+            Node(
+                node_id=column_node_id(orders, "customer_id"),
+                node_type=NodeType.COLUMN,
+                name="customer_id",
+            ),
+            Node(node_id=customers, node_type=NodeType.MODEL, name="dim_customers"),
+            Node(
+                node_id=column_node_id(customers, "customer_id"),
+                node_type=NodeType.COLUMN,
+                name="customer_id",
+            ),
+        ],
+    )
+
+
+def test_suggest_prints_a_table(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
+    _suggestible_graph(tmp_path)
+    result = runner.invoke(app, ["suggest"])
+    assert result.exit_code == 0, result.output
+    for expected in ("source", "score", "naming", "fct_orders", "dim_customers", "grain"):
+        assert expected in result.output, result.output
+
+
+def test_suggest_json_carries_the_same_rows(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
+    _suggestible_graph(tmp_path)
+    result = runner.invoke(app, ["suggest", "--json"])
+    assert result.exit_code == 0, result.output
+    rows = [json.loads(line) for line in result.output.splitlines() if line.strip()]
+    assert len(rows) == 1
+    assert rows[0]["from_model"] == "fct_orders"
+    assert rows[0]["to_column"] == "customer_id"
+    assert rows[0]["source"] == "naming"
+    assert rows[0]["id"] == relationship_id(
+        "fct_orders", "customer_id", "dim_customers", "customer_id"
+    )
+
+
+def test_suggest_honours_dismissals_from_layout_yml(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
+    _suggestible_graph(tmp_path)
+    dismissed = relationship_id("fct_orders", "customer_id", "dim_customers", "customer_id")
+    add_dismissed(dismissed, tmp_path / ".stitch" / LAYOUT_FILENAME)
+    result = runner.invoke(app, ["suggest"])
+    assert result.exit_code == 0, result.output
+    assert "no suggestions" in result.output
+
+
+def test_suggest_limit_caps_the_list(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
+    _suggestible_graph(tmp_path)
+    result = runner.invoke(app, ["suggest", "--json", "--limit", "0"])
+    assert len([line for line in result.output.splitlines() if line.strip()]) == 1
+    capped = runner.invoke(app, ["suggest", "--json", "--limit", "1"])
+    assert len([line for line in capped.output.splitlines() if line.strip()]) == 1
+
+
+def test_suggest_without_graph_points_at_build(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["suggest"])
+    assert result.exit_code == 1
+    assert "stitch build" in result.output
 
 
 def test_impact_without_candidate_graph_fails(tmp_path, monkeypatch):
