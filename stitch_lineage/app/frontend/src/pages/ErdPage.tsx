@@ -14,9 +14,19 @@ import {
   type Node,
   type NodeProps,
 } from '@xyflow/react'
-import { useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type PointerEvent,
+} from 'react'
 import { SystemBadge } from '../components/badges'
 import { GraphLegend } from '../components/bits'
+import { StageRelationshipModal, type StageTarget } from '../components/StageRelationshipModal'
 import { useStitch } from '../data'
 import { CLICK_SLOP_PX, isClickNotDrag, type Point } from '../lib/canvas'
 import {
@@ -24,11 +34,20 @@ import {
   erdForScope,
   initialScope,
   listScopes,
+  resolveStaged,
   visibleColumns,
   type ErdModel,
   type ErdScope,
 } from '../lib/erd'
 import { NODE_TYPE_NAME, displayName } from '../lib/present'
+import {
+  listStaged,
+  probeStaging,
+  stageRelationship,
+  unstageRelationship,
+  type Cardinality,
+  type StagedRelationship,
+} from '../lib/staging'
 import { erdHref, navigate } from '../router'
 
 const COLLAPSED_LIMIT = 8
@@ -39,12 +58,14 @@ type ErdFlowNode = Node<
     model: ErdModel
     expanded: boolean
     onToggle: (id: string) => void
+    /** Handles are inert (and invisible) unless this build can stage. */
+    connectable: boolean
   },
   'erdModel'
 >
 
 function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
-  const { model, expanded, onToggle } = data
+  const { model, expanded, onToggle, connectable } = data
   const pressedAt = useRef<Point | null>(null)
 
   const onPointerDown = (event: PointerEvent) => {
@@ -108,10 +129,22 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
             onClick={open(column.nodeId)}
             onKeyDown={openOnEnter(column.nodeId)}
           >
-            <Handle type="target" id={column.key} position={Position.Left} className="erd-handle" />
+            <Handle
+              type="target"
+              id={column.key}
+              position={Position.Left}
+              className={`erd-handle${connectable ? ' drawable' : ''}`}
+              isConnectable={connectable}
+            />
             <span className="erd-column-name">{column.name}</span>
             <span className="erd-column-type">{column.dataType ?? ''}</span>
-            <Handle type="source" id={column.key} position={Position.Right} className="erd-handle" />
+            <Handle
+              type="source"
+              id={column.key}
+              position={Position.Right}
+              className={`erd-handle${connectable ? ' drawable' : ''}`}
+              isConnectable={connectable}
+            />
           </li>
         ))}
       </ul>
@@ -172,7 +205,77 @@ export function ErdPage({
   const unknownConfigured = routed ? null : landing.unknownConfigured
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
-  const erd = useMemo(() => (active ? erdForScope(index, active) : null), [index, active])
+  // Staging exists only under `stitch serve`. A static export, or an older serve
+  // without the endpoint, must read as a plain read-only ERD -- not as a broken one.
+  const [canStage, setCanStage] = useState(false)
+  const [staged, setStaged] = useState<StagedRelationship[]>([])
+  const [draft, setDraft] = useState<StageTarget | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  const refreshStaged = useCallback(async () => {
+    try {
+      setStaged(await listStaged())
+    } catch {
+      setStaged([])
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    void probeStaging(meta.staging_enabled).then(async (enabled) => {
+      if (cancelled || !enabled) return
+      setCanStage(true)
+      await refreshStaged()
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [meta.staging_enabled, refreshStaged])
+
+  const resolved = useMemo(() => resolveStaged(index, staged), [index, staged])
+
+  const erd = useMemo(
+    () => (active ? erdForScope(index, active, resolved.drawable) : null),
+    [index, active, resolved],
+  )
+
+  /** node id -> dbt model name, which is what the staging API speaks. */
+  const modelNameOf = useCallback(
+    (nodeId: string | null | undefined): string | null => {
+      const node = nodeId ? index.nodesById.get(nodeId) : null
+      return node ? displayName(node) : null
+    },
+    [index],
+  )
+
+  const confirmStage = async (cardinality: Cardinality): Promise<string | null> => {
+    if (!draft) return null
+    try {
+      const result = await stageRelationship({
+        from_model: draft.fromModel,
+        from_column: draft.fromColumn,
+        to_model: draft.toModel,
+        to_column: draft.toColumn,
+        cardinality,
+      })
+      await refreshStaged()
+      setDraft(null)
+      setNotice(
+        result.created
+          ? `staged ${result.relationship.from_model}.${result.relationship.from_column} → ${result.relationship.to_model}.${result.relationship.to_column}`
+          : 'that column pair was already staged',
+      )
+      return null
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+  }
+
+  const removeStaged = async (id: string) => {
+    await unstageRelationship(id)
+    await refreshStaged()
+    setNotice(null)
+  }
 
   const { nodes, edges } = useMemo(() => {
     if (!erd) return { nodes: [] as ErdFlowNode[], edges: [] as Edge[] }
@@ -189,7 +292,7 @@ export function ErdPage({
       id: model.node.node_id,
       type: 'erdModel',
       position: { x: (i % columns) * 340, y: Math.floor(i / columns) * 320 },
-      data: { model, expanded: expanded.has(model.node.node_id), onToggle },
+      data: { model, expanded: expanded.has(model.node.node_id), onToggle, connectable: canStage },
     }))
 
     const edges: Edge[] = erd.relationships.map((rel, i) => ({
@@ -204,8 +307,24 @@ export function ErdPage({
       label: `${rel.fromColumn} → ${rel.toColumn}${rel.validated ? ' ✓' : ''}`,
       labelShowBg: true,
     }))
+
+    // Staged edges are visibly provisional: nothing is in the repo until `stitch apply`.
+    for (const rel of erd.staged) {
+      edges.push({
+        id: `staged-${rel.id}`,
+        source: rel.fromModelId,
+        sourceHandle: rel.fromColumn,
+        target: rel.toModelId,
+        targetHandle: rel.toColumn,
+        type: 'smoothstep',
+        className: 'erd-edge staged',
+        style: { strokeDasharray: '5 4' },
+        label: `${rel.fromColumn} → ${rel.toColumn} · staged`,
+        labelShowBg: true,
+      })
+    }
     return { nodes, edges }
-  }, [erd, expanded])
+  }, [erd, expanded, canStage])
 
   if (!active || !erd) {
     return (
@@ -255,8 +374,47 @@ export function ErdPage({
             configured scope <code>{unknownConfigured}</code> is not in this graph
           </span>
         )}
-        <span className="muted graph-toolbar-hint">click a table or column for details</span>
+        {canStage ? (
+          <span className="muted graph-toolbar-hint">
+            drag a column handle onto another to declare a relationship · click for details
+          </span>
+        ) : (
+          <span className="muted graph-toolbar-hint">click a table or column for details</span>
+        )}
       </div>
+      {canStage && (staged.length > 0 || notice) && (
+        <div className="staged-bar">
+          <span className="staged-count">staged ({staged.length})</span>
+          <ul className="staged-list">
+            {staged.map((entry) => (
+              <li key={entry.id} className="staged-entry">
+                <code>
+                  {entry.from_model}.{entry.from_column} → {entry.to_model}.{entry.to_column}
+                </code>
+                <span className="muted">{entry.cardinality}</span>
+                {resolved.unresolvedIds.includes(entry.id) && (
+                  <span className="muted" title="its model is not in this graph">
+                    not in this graph
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="ghost-button staged-remove"
+                  onClick={() => void removeStaged(entry.id)}
+                  title="remove this staged relationship"
+                  aria-label={`Remove staged relationship ${entry.from_model}.${entry.from_column}`}
+                >
+                  ✕
+                </button>
+              </li>
+            ))}
+          </ul>
+          <span className="muted staged-hint">
+            run <code>stitch apply</code> to write these into the dbt repo
+          </span>
+          {notice && <span className="muted">{notice}</span>}
+        </div>
+      )}
       <div className="graph-canvas">
         <ReactFlow
           nodes={nodes}
@@ -264,17 +422,36 @@ export function ErdPage({
           nodeTypes={nodeTypes}
           fitView
           minZoom={0.05}
-          nodesConnectable={false}
+          nodesConnectable={canStage}
           nodesDraggable
           nodeClickDistance={CLICK_SLOP_PX}
           proOptions={{ hideAttribution: true }}
+          onConnect={(connection) => {
+            const fromModel = modelNameOf(connection.source)
+            const toModel = modelNameOf(connection.target)
+            if (!fromModel || !toModel || !connection.sourceHandle || !connection.targetHandle) return
+            setNotice(null)
+            setDraft({
+              fromModel,
+              fromColumn: connection.sourceHandle,
+              toModel,
+              toColumn: connection.targetHandle,
+            })
+          }}
         >
           <Background gap={24} />
           <Controls showInteractive={false} />
           <MiniMap pannable zoomable />
         </ReactFlow>
       </div>
-      <GraphLegend erd />
+      <GraphLegend erd staged={canStage && erd.staged.length > 0} />
+      {draft && (
+        <StageRelationshipModal
+          target={draft}
+          onCancel={() => setDraft(null)}
+          onConfirm={confirmStage}
+        />
+      )}
     </main>
   )
 }

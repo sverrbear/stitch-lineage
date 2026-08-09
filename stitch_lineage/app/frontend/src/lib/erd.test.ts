@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  resolveStaged,
   defaultScope,
   erdClickHref,
   erdColumnNodeId,
@@ -203,5 +204,62 @@ describe('erdClickHref', () => {
 
   it('builds ids for relationship columns missing from the catalog', () => {
     expect(erdColumnNodeId('model.demo.fct_revenue', 'account_id')).toBe('model.demo.fct_revenue::account_id')
+  })
+})
+
+describe('staged relationships on the canvas', () => {
+  const staged = [
+    {
+      id: 'staged-1',
+      from_model: 'fct_revenue',
+      from_column: 'user_id',
+      to_model: 'dim_users',
+      to_column: 'user_id',
+      cardinality: 'many-to-one',
+    },
+    {
+      id: 'staged-2',
+      from_model: 'stg_payments',
+      from_column: 'amount',
+      to_model: 'gone_model',
+      to_column: 'amount',
+      cardinality: 'one-to-one',
+    },
+  ]
+
+  it('resolves dbt model names onto node ids, reporting the ones it cannot place', () => {
+    const { drawable, unresolvedIds } = resolveStaged(index, staged)
+    expect(drawable).toHaveLength(1)
+    expect(drawable[0]).toMatchObject({
+      id: 'staged-1',
+      fromModelId: 'model.demo.fct_revenue',
+      toModelId: 'model.demo.dim_users',
+      fromColumn: 'user_id',
+    })
+    // never silently dropped: the user would meet it again at `stitch apply`
+    expect(unresolvedIds).toEqual(['staged-2'])
+  })
+
+  it('pins a staged endpoint as a key column so its edge has a handle to land on', () => {
+    const drawable = resolveStaged(index, [
+      {
+        id: 'staged-3',
+        from_model: 'fct_revenue',
+        from_column: 'net_revenue',
+        to_model: 'mart_board',
+        to_column: 'net_revenue',
+        cardinality: 'one-to-one',
+      },
+    ]).drawable
+    const marts = listScopes(index).find((s) => s.kind === 'schema' && s.value === 'marts')!
+    const erd = erdForScope(index, marts, drawable)
+    const fct = erd.models.find((m) => m.node.name === 'fct_revenue')!
+    expect(fct.columns.find((c) => c.key === 'net_revenue')?.isKey).toBe(true)
+    expect(erd.staged.map((r) => r.id)).toEqual(['staged-3'])
+  })
+
+  it('leaves the scope untouched when nothing is staged', () => {
+    const marts = listScopes(index).find((s) => s.kind === 'schema' && s.value === 'marts')!
+    expect(erdForScope(index, marts).staged).toEqual([])
   })
 })

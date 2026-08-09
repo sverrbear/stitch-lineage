@@ -55,10 +55,22 @@ export interface ErdModel {
   external: boolean
 }
 
+/** A staged declaration resolved onto this graph's node ids, ready to draw. */
+export interface ErdStagedRelationship {
+  id: string
+  fromModelId: string
+  toModelId: string
+  fromColumn: string
+  toColumn: string
+  cardinality: string
+}
+
 export interface ErdData {
   scope: ErdScope
   models: ErdModel[]
   relationships: ErdRelationship[]
+  /** Staged (not yet applied) declarations touching this scope. */
+  staged: ErdStagedRelationship[]
 }
 
 function isErdModel(node: GraphNode): boolean {
@@ -231,7 +243,11 @@ export function initialScope(scopes: ErdScope[], configured?: string | null): In
  * ERD for one scope: its models, plus any model a scoped relationship points
  * at (marked `external` — FK targets usually live in another schema).
  */
-export function erdForScope(index: GraphIndex, scope: ErdScope): ErdData {
+export function erdForScope(
+  index: GraphIndex,
+  scope: ErdScope,
+  staged: ErdStagedRelationship[] = [],
+): ErdData {
   const inScope = new Set<string>()
   for (const node of index.nodes) {
     if (isErdModel(node) && modelInScope(node, scope)) inScope.add(node.node_id)
@@ -240,16 +256,20 @@ export function erdForScope(index: GraphIndex, scope: ErdScope): ErdData {
   const rels = relationships(index).filter(
     (rel) => inScope.has(rel.fromModelId) || inScope.has(rel.toModelId),
   )
+  const scopedStaged = staged.filter(
+    (rel) => inScope.has(rel.fromModelId) || inScope.has(rel.toModelId),
+  )
 
   const externalIds = new Set<string>()
-  for (const rel of rels) {
+  for (const rel of [...rels, ...scopedStaged]) {
     for (const id of [rel.fromModelId, rel.toModelId]) {
       if (!inScope.has(id) && index.nodesById.has(id)) externalIds.add(id)
     }
   }
 
+  // A staged endpoint has to stay visible too, or its edge has no handle to land on.
   const keyColumnsByModel = new Map<string, Set<string>>()
-  for (const rel of rels) {
+  for (const rel of [...rels, ...scopedStaged]) {
     for (const [modelId, column] of [
       [rel.fromModelId, rel.fromColumn],
       [rel.toModelId, rel.toColumn],
@@ -277,7 +297,52 @@ export function erdForScope(index: GraphIndex, scope: ErdScope): ErdData {
     return aRel - bRel || a.node.name.localeCompare(b.node.name)
   })
 
-  return { scope, models, relationships: rels }
+  return { scope, models, relationships: rels, staged: scopedStaged }
+}
+
+/**
+ * Staged entries speak dbt model NAMES; the canvas speaks node ids. Entries whose
+ * model is not in this graph come back as `unresolved` rather than vanishing —
+ * a staged declaration the user cannot see is a staged declaration they will be
+ * surprised by at `stitch apply`.
+ */
+export function resolveStaged(
+  index: GraphIndex,
+  entries: Array<{
+    id: string
+    from_model: string
+    from_column: string
+    to_model: string
+    to_column: string
+    cardinality: string
+  }>,
+): { drawable: ErdStagedRelationship[]; unresolvedIds: string[] } {
+  const byName = new Map<string, string>()
+  for (const node of index.nodes) {
+    if (!isErdModel(node)) continue
+    const key = displayName(node).toLowerCase()
+    // a model wins over a source of the same name, and the first model wins over later ones
+    if (!byName.has(key) || node.node_type === 'model') byName.set(key, node.node_id)
+  }
+  const drawable: ErdStagedRelationship[] = []
+  const unresolvedIds: string[] = []
+  for (const entry of entries) {
+    const fromModelId = byName.get(entry.from_model.toLowerCase())
+    const toModelId = byName.get(entry.to_model.toLowerCase())
+    if (!fromModelId || !toModelId) {
+      unresolvedIds.push(entry.id)
+      continue
+    }
+    drawable.push({
+      id: entry.id,
+      fromModelId,
+      toModelId,
+      fromColumn: entry.from_column.toLowerCase(),
+      toColumn: entry.to_column.toLowerCase(),
+      cardinality: entry.cardinality,
+    })
+  }
+  return { drawable, unresolvedIds }
 }
 
 /**
