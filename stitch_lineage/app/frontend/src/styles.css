@@ -931,6 +931,35 @@ kbd {
   font-size: 11px;
 }
 
+.suggest-filter {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.suggest-filter-option {
+  flex: 1;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text-muted);
+  border-radius: 7px;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.suggest-filter-option:hover {
+  background: var(--bg-hover);
+}
+
+.suggest-filter-option.active {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
 .suggest-empty {
   padding: 14px 12px;
   font-size: 12px;

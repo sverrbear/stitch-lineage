@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  countBySource,
   dismissSuggestion,
+  filterBySource,
   listSuggestions,
   probeSuggestions,
   rankSuggestions,
@@ -109,5 +111,35 @@ describe('presentation', () => {
     const input = [suggestion({ id: 'b', score: 1 }), suggestion({ id: 'a', score: 5 })]
     rankSuggestions(input)
     expect(input.map((s) => s.id)).toEqual(['b', 'a'])
+  })
+})
+
+describe('source filter', () => {
+  // the real graph's shape: a handful of evidenced joins, hundreds of name guesses
+  const many = [
+    suggestion({ id: 'j1', source: 'implicit_join', score: 204 }),
+    suggestion({ id: 'j2', source: 'implicit_join', score: 12 }),
+    ...Array.from({ length: 20 }, (_, i) =>
+      suggestion({ id: `n${i}`, source: 'naming', score: 0.5 }),
+    ),
+  ]
+
+  it('counts each source and the total', () => {
+    expect(countBySource(many)).toEqual({ implicit_join: 2, naming: 20, all: 22 })
+  })
+
+  it('counts zero sources without inventing keys', () => {
+    expect(countBySource([])).toEqual({ implicit_join: 0, naming: 0, all: 0 })
+  })
+
+  it('filters to one source, or lets everything through', () => {
+    expect(filterBySource(many, 'implicit_join').map((s) => s.id)).toEqual(['j1', 'j2'])
+    expect(filterBySource(many, 'naming')).toHaveLength(20)
+    expect(filterBySource(many, 'all')).toHaveLength(22)
+  })
+
+  it('keeps rank order inside a filtered source', () => {
+    const ranked = rankSuggestions(filterBySource(many, 'implicit_join'))
+    expect(ranked.map((s) => s.score)).toEqual([204, 12])
   })
 })

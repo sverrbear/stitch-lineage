@@ -96,6 +96,30 @@ export function scoreLabel(suggestion: Suggestion): string {
   return 'matched on name'
 }
 
+export type SourceFilter = SuggestionSource | 'all'
+
+export interface SourceCounts {
+  implicit_join: number
+  naming: number
+  all: number
+}
+
+export function countBySource(suggestions: Suggestion[]): SourceCounts {
+  const counts: SourceCounts = { implicit_join: 0, naming: 0, all: suggestions.length }
+  for (const entry of suggestions) counts[entry.source] += 1
+  return counts
+}
+
+/**
+ * The panel opens on implicit joins, because those are the ones with evidence:
+ * on a real graph the naming heuristic proposes an order of magnitude more
+ * candidates at a constant score, and 325 maybes would bury 15 knowns. The
+ * filter shows both counts, so nothing is hidden without saying so.
+ */
+export function filterBySource(suggestions: Suggestion[], filter: SourceFilter): Suggestion[] {
+  return filter === 'all' ? suggestions : suggestions.filter((entry) => entry.source === filter)
+}
+
 /** Strongest first, then stable by id so the panel never reshuffles on refresh. */
 export function rankSuggestions(suggestions: Suggestion[]): Suggestion[] {
   return [...suggestions].sort(

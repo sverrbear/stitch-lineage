@@ -49,13 +49,16 @@ import {
   type StagedRelationship,
 } from '../lib/staging'
 import {
+  countBySource,
   dismissSuggestion,
+  filterBySource,
   listSuggestions,
   probeSuggestions,
   rankSuggestions,
   scoreLabel,
   SOURCE_HELP,
   SOURCE_LABEL,
+  type SourceFilter,
   type Suggestion,
 } from '../lib/suggestions'
 import { erdHref, navigate } from '../router'
@@ -224,6 +227,7 @@ export function ErdPage({
   const [suggestions, setSuggestions] = useState<Suggestion[]>([])
   const [canSuggest, setCanSuggest] = useState(false)
   const [panelOpen, setPanelOpen] = useState(true)
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('implicit_join')
 
   const refreshStaged = useCallback(async () => {
     try {
@@ -260,13 +264,19 @@ export function ErdPage({
   }, [meta.staging_enabled, refreshStaged, refreshSuggestions])
 
   const resolved = useMemo(() => resolveStaged(index, staged), [index, staged])
+  const sourceCounts = useMemo(() => countBySource(suggestions), [suggestions])
+  // the canvas draws what the panel lists: one filter, both surfaces
+  const shownSuggestions = useMemo(
+    () => filterBySource(suggestions, sourceFilter),
+    [suggestions, sourceFilter],
+  )
   const resolvedSuggestions = useMemo(
     () =>
       resolveStaged(
         index,
-        suggestions.map((entry) => ({ ...entry, cardinality: entry.cardinality_guess })),
+        shownSuggestions.map((entry) => ({ ...entry, cardinality: entry.cardinality_guess })),
       ),
-    [index, suggestions],
+    [index, shownSuggestions],
   )
   const erd = useMemo(
     () =>
@@ -455,7 +465,7 @@ export function ErdPage({
         )}
         {canSuggest && !panelOpen && (
           <button type="button" className="ghost-button" onClick={() => setPanelOpen(true)}>
-            Suggested ({suggestions.length})
+            Suggested ({shownSuggestions.length})
           </button>
         )}
         {canStage ? (
@@ -530,7 +540,7 @@ export function ErdPage({
         {canSuggest && panelOpen && (
           <aside className="suggest-panel" aria-label="Suggested relationships">
             <div className="suggest-panel-head">
-              <span className="suggest-panel-title">Suggested ({suggestions.length})</span>
+              <span className="suggest-panel-title">Suggested ({shownSuggestions.length})</span>
               {erd.suggestedHidden > 0 && (
                 <span className="muted suggest-cap" title="the panel lists them all; the canvas draws the strongest">
                   {erd.suggestedHidden} not drawn
@@ -545,14 +555,28 @@ export function ErdPage({
                 ✕
               </button>
             </div>
-            {suggestions.length === 0 ? (
+            <div className="suggest-filter" role="group" aria-label="Suggestion source">
+              {(['implicit_join', 'naming', 'all'] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`suggest-filter-option${sourceFilter === value ? ' active' : ''}`}
+                  onClick={() => setSourceFilter(value)}
+                  title={value === 'all' ? 'every candidate' : SOURCE_HELP[value]}
+                >
+                  {value === 'all' ? 'all' : SOURCE_LABEL[value]} ({sourceCounts[value]})
+                </button>
+              ))}
+            </div>
+            {shownSuggestions.length === 0 ? (
               <p className="muted suggest-empty">
-                Nothing to suggest — every join stitch can see is already declared, staged or
-                dismissed.
+                {suggestions.length === 0
+                  ? 'Nothing to suggest — every join stitch can see is already declared, staged or dismissed.'
+                  : 'None from this source. The counts above show what the others hold.'}
               </p>
             ) : (
               <ul className="suggest-list">
-                {suggestions.map((entry) => {
+                {shownSuggestions.map((entry) => {
                   const offCanvas = resolvedSuggestions.unresolvedIds.includes(entry.id)
                   const notDrawn =
                     !offCanvas && !erd.suggested.some((rel) => rel.id === entry.id)
