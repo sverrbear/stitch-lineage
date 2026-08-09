@@ -81,8 +81,8 @@ export function Fact({ label, children }: { label: string; children?: ReactNode 
   )
 }
 
-/** Footer legend for the lineage / ERD canvases (spec §9 + confidence styling). */
-export function GraphLegend({ erd = false }: { erd?: boolean }) {
+/** Footer legend for the lineage / ERD / map canvases (spec §9 + confidence styling). */
+export function GraphLegend({ erd = false, rollup = false }: { erd?: boolean; rollup?: boolean }) {
   return (
     <div className="graph-legend">
       <span className="legend-item">
@@ -91,6 +91,14 @@ export function GraphLegend({ erd = false }: { erd?: boolean }) {
       <span className="legend-item">
         <MetabaseMark size={12} /> Metabase / BI
       </span>
+      {rollup && (
+        <span className="legend-item">
+          <svg width="26" height="10">
+            <line x1="0" y1="5" x2="26" y2="5" className="legend-line-solid" strokeWidth={4} />
+          </svg>
+          thickness = contributing columns
+        </span>
+      )}
       {erd ? (
         <>
           <span className="legend-item">

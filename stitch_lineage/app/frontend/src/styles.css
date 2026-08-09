@@ -218,13 +218,163 @@ kbd {
 .home {
   flex: 1;
   display: flex;
-  justify-content: center;
-  padding: 9vh 20px 40px;
+  flex-direction: column;
+  align-items: center;
+  gap: 34px;
+  padding: 6vh 20px 60px;
 }
 
 .home-hero {
   width: min(680px, 100%);
   text-align: center;
+}
+
+.home-section {
+  width: min(1000px, 100%);
+}
+
+.home-section-title {
+  font-size: 13px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+  margin: 0 0 12px;
+}
+
+/* ---- coverage tiles ---- */
+
+.tile-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.tile {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+
+.tile-value {
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.5px;
+}
+
+.tile-total {
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.tile-label {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.tile-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-hover);
+  margin: 10px 0 8px;
+  overflow: hidden;
+}
+
+.tile-bar-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.tile-link {
+  font-size: 12px;
+  display: inline-block;
+}
+
+/* ---- entry cards + starting points ---- */
+
+.entry-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.entry-card {
+  display: block;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.entry-card:hover {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+}
+
+.entry-card-title {
+  display: block;
+  font-weight: 650;
+  margin-bottom: 4px;
+}
+
+.entry-card-text {
+  display: block;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.start-lists {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px 28px;
+  margin-top: 18px;
+}
+
+.start-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.start-items li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.home-generated {
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.stale-hint {
+  color: var(--edge-weak);
+}
+
+.coverage-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.coverage-orphan {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
 }
 
 .home-title {
@@ -727,6 +877,123 @@ kbd {
   white-space: pre-wrap;
   word-break: break-word;
   pointer-events: none;
+}
+
+/* grain toggle + map controls */
+
+.grain-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.grain-option {
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.grain-option:hover {
+  background: var(--bg-hover);
+}
+
+.grain-option.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.highlight-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--text);
+  width: 150px;
+}
+
+/* pipeline map node */
+
+.map-node {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 10px;
+  padding: 8px 12px;
+  width: 250px;
+  font-size: 12px;
+}
+
+.map-node.system-dbt {
+  border-left-color: var(--snowflake);
+}
+
+.map-node.system-mb {
+  border-left-color: var(--metabase);
+}
+
+.map-node.dimmed {
+  opacity: 0.22;
+}
+
+.map-node-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.map-node-name {
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-node-sub {
+  display: flex;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  overflow: hidden;
+}
+
+.map-node-context::before {
+  content: '·';
+  margin-right: 6px;
+}
+
+.map-node-context {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-node-meta {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.map-edge .react-flow__edge-path {
+  stroke: var(--edge);
+}
+
+.map-edge.conf-inferred .react-flow__edge-path,
+.map-edge.conf-fuzzy .react-flow__edge-path,
+.map-edge.conf-parsed .react-flow__edge-path {
+  stroke: var(--edge-weak);
 }
 
 /* lineage node */
