@@ -80,12 +80,31 @@ stitch doctor                    # config, artifacts, graph, Metabase connectivi
 stitch doctor --list-databases   # database names visible to the API key
 stitch doctor --unbound          # dbt models with no bound Metabase table
 stitch doctor --untraced         # columns sqlglot could not trace
+stitch doctor --dead             # dead weight: unconsumed columns, models feeding nothing
+stitch doctor --dead --json      # the same report as one JSON object
 
 stitch export --format jsonl     # flat nodes.jsonl/edges.jsonl for agents/warehouses
 stitch export --format site      # static build of the app, graph inlined, host anywhere
 ```
 
-Commands that don't call the Metabase API (`build --no-metabase`, `search`, `suggest`, `export`, `doctor --unbound/--untraced`) work without the `STITCH_METABASE_*` env vars set. Add `.stitch/` to your `.gitignore` — the graph is a local artifact.
+Commands that don't call the Metabase API (`build --no-metabase`, `search`, `suggest`, `export`, `doctor --unbound/--untraced/--dead`) work without the `STITCH_METABASE_*` env vars set. Add `.stitch/` to your `.gitignore` — the graph is a local artifact.
+
+### `doctor --dead`: estate hygiene
+
+The mirror image of impact analysis — the same flow edges, walked the other way. Counts headline, then the lists:
+
+```
+unconsumed columns                  412/1901   (across 96 models, 4 sources)
+models feeding nothing              23/147
+archived cards still bound          2
+cards only on archived dashboards   5
+```
+
+- **unconsumed columns** — no `feeds`/`binds_to`/`consumed_by` path reaches any card, grouped by the owning model or source (an owner whose every column is unconsumed collapses to one line).
+- **models feeding nothing** — no path from the model to any card or dashboard. A model whose downstream model *is* consumed counts as alive even when the column lineage between the two went untraced, so stitch's own blind spot doesn't become the report's loudest finding.
+- **archived-but-bound** — archived cards still consuming live columns (they are why those columns look consumed), and live cards whose every dashboard is archived.
+
+> **Caveat, printed with every report:** stitch only sees Metabase. A column no card reaches may still be read by reverse ETL, a notebook, ad-hoc SQL or another BI tool. Treat the output as candidates to review, never as a delete queue.
 
 ## The app
 
