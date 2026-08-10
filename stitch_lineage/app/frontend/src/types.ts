@@ -69,6 +69,8 @@ export interface StitchMeta {
   schema_version: number
   /** `schema:<name>` / `tag:<name>` the ERD opens on (serve.erd_default_scope). */
   erd_default_scope?: string | null
+  /** Routing prefixes hidden from model display names (serve.strip_model_prefixes). */
+  strip_model_prefixes?: string[]
   /**
    * Whether this build has the staging API: true under `stitch serve`, false in
    * a static export, absent on a serve that predates the flag (probe instead).

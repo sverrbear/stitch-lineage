@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   StagingError,
   errorMessage,
+  cardinalitySentence,
   groupStagedByTarget,
   listStaged,
   probeStaging,
@@ -183,5 +184,37 @@ describe('groupStagedByTarget', () => {
 
   it('returns nothing for nothing', () => {
     expect(groupStagedByTarget([])).toEqual([])
+  })
+})
+
+describe('cardinalitySentence', () => {
+  const shape = {
+    fromModel: 'fct_match_activity_daily',
+    fromColumn: 'match_id',
+    toModel: 'dim_matches',
+    toColumn: 'match_id',
+    cardinality: 'many-to-one',
+  }
+
+  it('says which end is the one and which is the many', () => {
+    expect(cardinalitySentence(shape)).toBe(
+      'One dim_matches.match_id can have many matching rows in fct_match_activity_daily.',
+    )
+  })
+
+  it('turns the sentence around for one-to-many', () => {
+    expect(cardinalitySentence({ ...shape, cardinality: 'one-to-many' })).toBe(
+      'One fct_match_activity_daily.match_id can have many matching rows in dim_matches.',
+    )
+  })
+
+  it('says both ends are unique for one-to-one', () => {
+    expect(cardinalitySentence({ ...shape, cardinality: 'one-to-one' })).toContain('at most one row')
+  })
+
+  it('falls back to the many-to-one reading rather than saying nothing', () => {
+    expect(cardinalitySentence({ ...shape, cardinality: 'nonsense' })).toBe(
+      cardinalitySentence(shape),
+    )
   })
 })

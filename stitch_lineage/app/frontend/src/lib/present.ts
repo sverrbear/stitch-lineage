@@ -14,6 +14,53 @@
 import type { Confidence, GraphNode, NodeType } from '../types'
 import { type GraphIndex, idTail, mbId, modelIdOfColumn } from './graph'
 
+/**
+ * Routing prefixes hidden from a model's DISPLAY name (#69). `viz_dim_users`
+ * reads as `dim_users` when `serve.strip_model_prefixes` says so — the id, the
+ * search key, the staging API and everything written back keep the real dbt
+ * name, because the prefix is a routing convention, not part of the entity.
+ */
+let stripPrefixes: string[] = []
+
+/** Set from `/api/meta` (or the static export's globals) as the app loads. */
+export function setStripModelPrefixes(prefixes: string[] | null | undefined): void {
+  stripPrefixes = (prefixes ?? []).filter((prefix) => prefix.trim().length > 0)
+}
+
+/** The prefixes currently hidden — exported for tests and for the detail panel. */
+export function strippedPrefixes(): string[] {
+  return [...stripPrefixes]
+}
+
+/** The name as dbt spells it, prefix and all. Always available as secondary detail. */
+export function fullName(node: GraphNode): string {
+  return node.name?.trim() || idTail(node.node_id)
+}
+
+/** Whether this node's display name hides a prefix (so a panel can show both). */
+export function hasHiddenPrefix(node: GraphNode): boolean {
+  return fullName(node) !== displayName(node)
+}
+
+/**
+ * The display spelling of a dbt model NAME (as opposed to a node). The staging
+ * and suggestion APIs speak real dbt names; every surface that shows one runs it
+ * through here, and every surface that SENDS one keeps the original (#69).
+ */
+export function displayModelName(name: string): string {
+  for (const prefix of stripPrefixes) {
+    if (name.length > prefix.length && name.toLowerCase().startsWith(prefix.toLowerCase())) {
+      return name.slice(prefix.length)
+    }
+  }
+  return name
+}
+
+function stripModelPrefix(node: GraphNode, name: string): string {
+  if (node.node_type !== 'model' && node.node_type !== 'source') return name
+  return displayModelName(name)
+}
+
 export const NODE_TYPE_NAME: Record<NodeType, string> = {
   source: 'source',
   model: 'model',
@@ -53,7 +100,7 @@ export function displayName(node: GraphNode): string {
     if (isPlaceholder(node) && node.node_type.startsWith('mb_') && /^\d+$/.test(name)) {
       return `${NODE_TYPE_NAME[node.node_type]} ${name}`
     }
-    return name
+    return stripModelPrefix(node, name)
   }
   const id = mbId(node.node_id)
   if (id !== null) return `${NODE_TYPE_NAME[node.node_type]} ${id}`

@@ -1264,6 +1264,16 @@ kbd {
   margin: 14px 0 0;
 }
 
+/* the declaration in plain English, under the cardinality picker (#73) */
+.modal-sentence {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent);
+  background: var(--bg-hover);
+  border-radius: 0 6px 6px 0;
+  font-size: 13px;
+}
+
 .modal-error {
   margin: 12px 0 0;
   padding: 8px 10px;
