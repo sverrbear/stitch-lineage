@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  AUTO_EXPAND_MAX_MODELS,
   MAX_DRAWN_SUGGESTIONS,
+  autoExpandedModels,
   resolveStaged,
   defaultScope,
   erdClickHref,
@@ -396,5 +398,26 @@ describe('scoping suggestions to the canvas (#60)', () => {
     expect(erd.suggested.map((rel) => rel.id)).toEqual(['inside'])
     // ...and no external table is pulled in to hold the crossing one
     expect(erd.models.some((model) => model.node.name === 'stg_payments')).toBe(false)
+  })
+})
+
+describe('auto-expanding a small scope (#62)', () => {
+  const marts = () => listScopes(index).find((s) => s.kind === 'schema' && s.value === 'marts')!
+
+  it('opens every table of a small scope expanded', () => {
+    const erd = erdForScope(index, marts())
+    expect(erd.models.length).toBeLessThanOrEqual(AUTO_EXPAND_MAX_MODELS)
+    expect(autoExpandedModels(erd.models)).toEqual(
+      new Set(erd.models.map((model) => model.node.node_id)),
+    )
+  })
+
+  it('leaves a big scope collapsed, so the shape stays readable', () => {
+    const erd = erdForScope(index, marts())
+    expect(autoExpandedModels(erd.models, 2)).toEqual(new Set())
+  })
+
+  it('expands nothing when the scope is empty', () => {
+    expect(autoExpandedModels([])).toEqual(new Set())
   })
 })

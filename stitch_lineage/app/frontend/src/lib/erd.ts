@@ -447,6 +447,25 @@ function columnKey(modelId: string, columnNodeId: string): string {
 }
 
 /**
+ * A scope small enough that hiding columns helps nobody: at this size the whole
+ * diagram fits on screen expanded, and the reader came to read the columns (#62).
+ */
+export const AUTO_EXPAND_MAX_MODELS = 8
+
+/**
+ * Which tables a freshly opened scope shows expanded: all of them when the scope
+ * is small, none when it is big enough that a wall of columns would bury the
+ * shape. The reader's own toggles take over from here — this only seeds them.
+ */
+export function autoExpandedModels(
+  models: ErdModel[],
+  max: number = AUTO_EXPAND_MAX_MODELS,
+): Set<string> {
+  if (models.length === 0 || models.length > max) return new Set()
+  return new Set(models.map((model) => model.node.node_id))
+}
+
+/**
  * The column rows to draw: key columns are never hidden, the rest fill the row
  * budget until the reader expands the table.
  */

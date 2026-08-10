@@ -33,6 +33,7 @@ import { StageRelationshipModal, type StageTarget } from '../components/StageRel
 import { useStitch } from '../data'
 import { CLICK_SLOP_PX, isClickNotDrag, type Point } from '../lib/canvas'
 import {
+  autoExpandedModels,
   erdClickHref,
   erdForScope,
   initialScope,
@@ -47,6 +48,7 @@ import {
 import { erdNodeHeight, layoutErd } from '../lib/erdLayout'
 import { NODE_TYPE_NAME, displayName } from '../lib/present'
 import {
+  groupStagedByTarget,
   listStaged,
   probeStaging,
   stageRelationship,
@@ -189,6 +191,11 @@ function scopeKey(scope: ErdScope): string {
   return `${scope.kind}:${scope.value}`
 }
 
+/** Height-cache key: a table measures one thing collapsed and another expanded. */
+function sizeKey(id: string, expanded: boolean): string {
+  return `${expanded ? 'open' : 'shut'}:${id}`
+}
+
 function scopeLabel(scope: ErdScope): string {
   const models = `${scope.modelCount} model${scope.modelCount === 1 ? '' : 's'}`
   const rels = scope.relationshipCount > 0 ? `, ${scope.relationshipCount} rels` : ''
@@ -233,6 +240,7 @@ export function ErdPage({
   const [suggestions, setSuggestions] = useState<Suggestion[]>([])
   const [canSuggest, setCanSuggest] = useState(false)
   const [panelOpen, setPanelOpen] = useState(true)
+  const [stagedOpen, setStagedOpen] = useState(false)
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('implicit_join')
 
   // Canvas state the auto-layout does not own: tables the reader dragged, and
@@ -242,6 +250,13 @@ export function ErdPage({
   const [manual, setManual] = useState<Record<string, { x: number; y: number }>>({})
   const [layoutStale, setLayoutStale] = useState(false)
   const movedCount = Object.keys(manual).length
+
+  // Rendered node heights, keyed by table AND expansion state, so the layout
+  // spaces tables by what they actually measure rather than by an estimate of
+  // the CSS box (#62). `measuredHeights` is a ref because it is layout input,
+  // not render output; the counter is what re-runs the layout when it changes.
+  const measuredHeights = useRef<Record<string, number>>({})
+  const [measuredVersion, setMeasuredVersion] = useState(0)
 
   const fitSoon = () => {
     // let React Flow measure the new nodes before it fits them
@@ -301,6 +316,7 @@ export function ErdPage({
   }, [meta.staging_enabled, refreshStaged, refreshSuggestions])
 
   const resolved = useMemo(() => resolveStaged(index, staged), [index, staged])
+  const stagedGroups = useMemo(() => groupStagedByTarget(staged), [staged])
   // Suggestions arrive graph-wide (hundreds on a real project). Scope them to the
   // ERD first: both endpoints inside it, which is exactly what the canvas can draw.
   const inScopeIds = useMemo(
@@ -361,6 +377,8 @@ export function ErdPage({
           ? `staged ${result.relationship.from_model}.${result.relationship.from_column} → ${result.relationship.to_model}.${result.relationship.to_column}`
           : 'that column pair was already staged',
       )
+      // what just happened is in the panel: show it rather than announce it nowhere
+      setStagedOpen(true)
       relayout()
       return null
     } catch (error) {
@@ -400,18 +418,23 @@ export function ErdPage({
    * tables (see lib/erdLayout). Suggestions are deliberately NOT layout input —
    * they are proposals, and the canvas must not rearrange itself every time the
    * source filter changes.
+   *
+   * Expanding a table changes its height, which changes this map, which reflows
+   * the scope — a grown table pushes its neighbours down instead of covering them,
+   * and collapsing gives the space back (#62).
    */
   const positions = useMemo(() => {
     if (!erd) return new Map<string, { x: number; y: number }>()
     return layoutErd(
       erd.models.map((model) => {
         const open = expanded.has(model.node.node_id)
+        const estimate = erdNodeHeight(
+          visibleColumns(model, open, COLLAPSED_LIMIT).length,
+          model.columns.some((column) => !column.isKey),
+        )
         return {
           id: model.node.node_id,
-          height: erdNodeHeight(
-            visibleColumns(model, open, COLLAPSED_LIMIT).length,
-            model.columns.some((column) => !column.isKey),
-          ),
+          height: measuredHeights.current[sizeKey(model.node.node_id, open)] ?? estimate,
         }
       }),
       [...erd.relationships, ...erd.staged].map((rel) => ({
@@ -419,7 +442,9 @@ export function ErdPage({
         to: rel.toModelId,
       })),
     )
-  }, [erd, expanded])
+    // measuredVersion: the ref it reads is mutated in place, so the counter is
+    // what tells this memo a table now measures something else
+  }, [erd, expanded, measuredVersion])
 
   const baseNodes = useMemo(() => {
     if (!erd) return [] as ErdFlowNode[]
@@ -494,6 +519,10 @@ export function ErdPage({
   // React Flow owns node positions while a drag is in flight; the layout owns them
   // otherwise. `manual` is the reader's overrides, and resetting the view drops it.
   const [nodes, setNodes] = useState<ErdFlowNode[]>(baseNodes)
+  // Rebuilt nodes go to React Flow WITHOUT a carried-over `measured`: that field
+  // is React Flow's own bookkeeping, and handing it back on a fresh object makes
+  // it skip re-measuring — which silently drops every edge on that node, because
+  // handle bounds are measured with it. `measuredHeights` is our copy for layout.
   useEffect(() => setNodes(baseNodes), [baseNodes])
   const onNodesChange = useCallback(
     (changes: NodeChange<ErdFlowNode>[]) =>
@@ -501,11 +530,28 @@ export function ErdPage({
     [],
   )
 
-  // A new scope is a new drawing: nobody's drags carry over to it.
+  // What a table actually measures, per expansion state — the layout's input.
+  useEffect(() => {
+    let changed = false
+    for (const node of nodes) {
+      const height = node.measured?.height
+      if (!height) continue
+      const key = sizeKey(node.id, node.data.expanded)
+      if (Math.abs((measuredHeights.current[key] ?? 0) - height) > 1) {
+        measuredHeights.current[key] = height
+        changed = true
+      }
+    }
+    if (changed) setMeasuredVersion((version) => version + 1)
+  }, [nodes])
+
+  // A new scope is a new drawing: nobody's drags carry over to it, and a small
+  // one opens with every table's columns showing (#62).
   const activeKey = active ? scopeKey(active) : ''
   useEffect(() => {
     setManual({})
     setLayoutStale(false)
+    setExpanded(autoExpandedModels(erd?.models ?? []))
     fitSoon()
   }, [activeKey])
 
@@ -574,6 +620,16 @@ export function ErdPage({
           Reset view
           {movedCount > 0 ? ` (${movedCount} moved)` : ''}
         </button>
+        {canStage && !stagedOpen && staged.length > 0 && (
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={() => setStagedOpen(true)}
+            title="the relationships waiting for `stitch apply`"
+          >
+            Staged ({staged.length})
+          </button>
+        )}
         {canSuggest && !panelOpen && (
           <button type="button" className="ghost-button" onClick={() => setPanelOpen(true)}>
             Suggested ({scopedSuggestions.length})
@@ -587,40 +643,11 @@ export function ErdPage({
           <span className="muted graph-toolbar-hint">click a table or column for details</span>
         )}
       </div>
-      {canStage && (staged.length > 0 || notice) && (
-        <div className="staged-bar">
-          <span className="staged-count">staged ({staged.length})</span>
-          <ul className="staged-list">
-            {staged.map((entry) => (
-              <li key={entry.id} className="staged-entry">
-                <code>
-                  {entry.from_model}.{entry.from_column} → {entry.to_model}.{entry.to_column}
-                </code>
-                <span className="muted">{entry.cardinality}</span>
-                {resolved.unresolvedIds.includes(entry.id) && (
-                  <span className="muted" title="its model is not in this graph">
-                    not in this graph
-                  </span>
-                )}
-                <button
-                  type="button"
-                  className="ghost-button staged-remove"
-                  onClick={() => void removeStaged(entry.id)}
-                  title="remove this staged relationship"
-                  aria-label={`Remove staged relationship ${entry.from_model}.${entry.from_column}`}
-                >
-                  ✕
-                </button>
-              </li>
-            ))}
-          </ul>
-          <span className="muted staged-hint">
-            run <code>stitch apply</code> to write these into the dbt repo
-          </span>
-          {notice && <span className="muted">{notice}</span>}
-        </div>
-      )}
-      <div className={`graph-canvas${canSuggest && panelOpen ? ' with-panel' : ''}`}>
+      <div
+        className={`graph-canvas${canSuggest && panelOpen ? ' with-panel' : ''}${
+          canStage && stagedOpen ? ' with-staged' : ''
+        }`}
+      >
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -655,6 +682,70 @@ export function ErdPage({
           <Controls showInteractive={false} />
           <MiniMap pannable zoomable />
         </ReactFlow>
+        {canStage && stagedOpen && (
+          <aside className="staged-panel" aria-label="Staged relationships">
+            <div className="staged-panel-head">
+              <span className="staged-panel-title">Staged ({staged.length})</span>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setStagedOpen(false)}
+                aria-label="Hide staged relationships"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="staged-panel-body">
+              {stagedGroups.length === 0 ? (
+                <p className="muted staged-empty">
+                  Nothing staged yet — drag a column handle onto another, or accept a suggestion.
+                </p>
+              ) : (
+                stagedGroups.map((group) => (
+                  <section key={group.target} className="staged-group">
+                    {/* the unit a reader scans for is "everything that joins to dim_users" */}
+                    <h3 className="staged-group-head">
+                      → {group.target} <span className="muted">({group.entries.length})</span>
+                    </h3>
+                    <ul className="staged-rows">
+                      {group.entries.map((entry) => (
+                        <li key={entry.id} className="staged-row">
+                          <code
+                            className="staged-pair"
+                            title={`${entry.from_model}.${entry.from_column} → ${entry.to_model}.${entry.to_column}`}
+                          >
+                            {entry.from_model}.{entry.from_column} → {entry.to_column}
+                          </code>
+                          <span className="muted staged-cardinality">{entry.cardinality}</span>
+                          {resolved.unresolvedIds.includes(entry.id) && (
+                            <span className="muted" title="its model is not in this graph">
+                              not in this graph
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            className="ghost-button staged-remove"
+                            onClick={() => void removeStaged(entry.id)}
+                            title="remove this staged relationship"
+                            aria-label={`Remove staged relationship ${entry.from_model}.${entry.from_column}`}
+                          >
+                            ✕
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ))
+              )}
+            </div>
+            <div className="staged-panel-foot">
+              {notice && <p className="staged-notice">{notice}</p>}
+              <span className="muted">
+                run <code>stitch apply</code> to write these into the dbt repo
+              </span>
+            </div>
+          </aside>
+        )}
         {canSuggest && panelOpen && (
           <aside className="suggest-panel" aria-label="Suggested relationships">
             <div className="suggest-panel-head">
