@@ -35,9 +35,12 @@ from stitch_lineage.graph.impact import (
 from stitch_lineage.graph.schema import Coverage, EdgeType, Graph, NodeType
 from stitch_lineage.graph.scopes import erd_scopes
 from stitch_lineage.graph.search import search as search_graph
+from stitch_lineage.graph.suggest import Suggestion
+from stitch_lineage.graph.suggest import suggest as suggest_relationships
 from stitch_lineage.io.artifacts import StitchArtifactError, load_catalog, load_manifest
 from stitch_lineage.io.dbt_runner import StitchDbtRunnerError, run_docs_generate
 from stitch_lineage.io.graph_store import graphs_semantically_equal, read_graph, write_graph
+from stitch_lineage.io.layout_store import LAYOUT_FILENAME, LayoutStoreError, read_dismissed
 from stitch_lineage.io.metabase_client import MetabaseAPIError, MetabaseClient
 from stitch_lineage.io.staged_store import (
     STAGED_FILENAME,
@@ -642,6 +645,63 @@ def search(
 
 
 @app.command()
+def suggest(
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit suggestions as JSON lines for piping.")
+    ] = False,
+    limit: Annotated[int, typer.Option("--limit", help="Maximum suggestions (0 for all).")] = 0,
+    config: ConfigOpt = None,
+) -> None:
+    """List candidate relationships nobody has declared yet, strongest evidence first.
+
+    Sources: Metabase implicit joins (cards already joining through an FK, scored by how
+    many) and `<entity>_id` naming conventions. Pairs already declared, already staged or
+    previously dismissed in the app never appear.
+    """
+    config = _resolve_config(config)
+    graph = _read_graph_or_fail(_graph_path(config))
+    try:
+        staged = [
+            (entry.from_model, entry.from_column, entry.to_model, entry.to_column)
+            for entry in read_staged(_default_out_dir(config, STAGED_FILENAME))
+        ]
+    except StagedStoreError as exc:
+        _fail(str(exc))
+    try:
+        dismissed = read_dismissed(_default_out_dir(config, LAYOUT_FILENAME))
+    except LayoutStoreError as exc:
+        _fail(str(exc))
+
+    suggestions = suggest_relationships(graph, staged, dismissed)
+    if limit > 0:
+        suggestions = suggestions[:limit]
+    if json_output:
+        for suggestion in suggestions:
+            typer.echo(json.dumps(suggestion.model_dump(mode="json"), sort_keys=True))
+        return
+    if not suggestions:
+        console.print("no suggestions")
+        return
+    table = Table("source", "score", "from", "to", "why")
+    for suggestion in suggestions:
+        table.add_row(
+            suggestion.source,
+            f"{suggestion.score:g}",
+            f"{suggestion.from_model}.{suggestion.from_column}",
+            f"{suggestion.to_model}.{suggestion.to_column}",
+            _suggestion_why(suggestion),
+        )
+    console.print(table)
+
+
+def _suggestion_why(suggestion: Suggestion) -> str:
+    if suggestion.source == "implicit_join":
+        cards = len(suggestion.evidence.get("card_ids") or [])
+        return f"{cards} card{'s' if cards != 1 else ''} join through it"
+    return f"names the '{suggestion.evidence.get('entity')}' grain"
+
+
+@app.command()
 def doctor(
     list_databases: Annotated[
         bool,
@@ -997,8 +1057,9 @@ def serve(
     scope = _erd_default_scope(config)
     _warn_unknown_erd_scope(scope, graph_path)
     staged = _default_out_dir(config, STAGED_FILENAME)
+    layout = _default_out_dir(config, LAYOUT_FILENAME)
     try:
-        server = create_app(graph_path, _metabase_url(config), scope, staged)
+        server = create_app(graph_path, _metabase_url(config), scope, staged, layout)
     except StitchAppError as exc:
         _fail(str(exc))
     url = f"http://{host}:{port}"

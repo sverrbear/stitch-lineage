@@ -58,6 +58,9 @@ stitch search order_total --json # JSON lines for piping
 
 stitch serve                     # local lineage + ERD app on http://127.0.0.1:8787
 
+stitch suggest                   # relationships worth declaring, strongest evidence first
+stitch suggest --json            # JSON lines for piping
+
 stitch apply                     # write staged relationships into model YAML (diff, then confirm)
 stitch apply --dry-run           # show the diff and stop
 stitch apply --yes               # skip the confirmation prompt
@@ -71,7 +74,7 @@ stitch export --format jsonl     # flat nodes.jsonl/edges.jsonl for agents/wareh
 stitch export --format site      # static build of the app, graph inlined, host anywhere
 ```
 
-Commands that don't call the Metabase API (`build --no-metabase`, `search`, `export`, `doctor --unbound/--untraced`) work without the `STITCH_METABASE_*` env vars set. Add `.stitch/` to your `.gitignore` — the graph is a local artifact.
+Commands that don't call the Metabase API (`build --no-metabase`, `search`, `suggest`, `export`, `doctor --unbound/--untraced`) work without the `STITCH_METABASE_*` env vars set. Add `.stitch/` to your `.gitignore` — the graph is a local artifact.
 
 ## The app
 
@@ -111,6 +114,23 @@ The write is deliberately conservative:
 - **`relationships.write_to`** picks the written form: `relationships_test` (a dbt `relationships` test on the FK column) or `meta` (dbt-metabase interop keys, so FK sync into Metabase keeps working).
 
 Applied entries clear from the staging store; anything that could not be applied stays staged and is reported with the reason.
+
+### Where to start: `stitch suggest`
+
+Starting from zero declared relationships, `stitch suggest` tells you which ones are worth declaring first:
+
+```bash
+stitch suggest
+```
+```
+ source         score  from                     to                        why
+ implicit_join  204    fct_user_activity.user_id  dim_users.user_id       204 cards join through it
+ naming         0.5    dim_subscriptions.user_id  dim_users.user_id       names the 'user' grain
+```
+
+Two sources of candidates. **Implicit joins** come from Metabase itself: when a card reaches a column by joining through an FK, that join is recorded in the graph, so the score is the number of cards already relying on a relationship nobody wrote down. **Naming** is the weaker `<entity>_id` → matching-grain-model convention, always ranked below a single witnessing card.
+
+Pairs you have already declared in the repo, already staged, or dismissed in the app never come back.
 
 ## Coverage report
 

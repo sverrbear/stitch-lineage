@@ -10,7 +10,6 @@ same set are byte-identical. Writes are atomic (temp file + os.replace) because 
 rewrites the whole file on every POST/DELETE while `stitch apply` may be reading it.
 """
 
-import hashlib
 import os
 import tempfile
 from io import StringIO
@@ -19,6 +18,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, model_validator
 from ruamel.yaml import YAML, YAMLError
+
+from stitch_lineage.graph.schema import relationship_id
 
 __all__ = [
     "STAGED_FILENAME",
@@ -44,16 +45,6 @@ _HEADER = (
 
 class StagedStoreError(Exception):
     """staged_relationships.yml exists but is unusable; the message names the fix."""
-
-
-def relationship_id(from_model: str, from_column: str, to_model: str, to_column: str) -> str:
-    """Deterministic id for a relationship's endpoints.
-
-    Endpoints only: re-staging the same column pair with a different cardinality is the
-    same relationship, so it dedupes instead of stacking up a second entry.
-    """
-    payload = f"{from_model}.{from_column}->{to_model}.{to_column}".lower()
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
 
 class StagedRelationship(BaseModel):
