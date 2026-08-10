@@ -43,6 +43,7 @@ MB_ENDPOINTS = (
     ("/api/dashboard/301", "dashboard_301"),
     ("/api/dashboard/302", "dashboard_302"),
     ("/api/collection", "collections"),
+    ("/api/native-query-snippet", "snippets"),
 )
 
 ORDER_TOTAL = "model.demo.fct_orders::order_total"
