@@ -113,6 +113,7 @@ allow_indirect_imports = true
 source_modules = [
     "stitch_lineage.cli",
     "stitch_lineage.config",
+    "stitch_lineage.init_wizard",
     "stitch_lineage.payloads",
     "stitch_lineage.apply",
     "stitch_lineage.graph",
