@@ -4,6 +4,7 @@
 // rendering a 200-node hairball — one scope at a time.
 
 import {
+  applyNodeChanges,
   Background,
   Controls,
   Handle,
@@ -12,7 +13,9 @@ import {
   ReactFlow,
   type Edge,
   type Node,
+  type NodeChange,
   type NodeProps,
+  type ReactFlowInstance,
 } from '@xyflow/react'
 import {
   useCallback,
@@ -35,10 +38,13 @@ import {
   initialScope,
   listScopes,
   resolveStaged,
+  scopeModelIds,
+  suggestionsInScope,
   visibleColumns,
   type ErdModel,
   type ErdScope,
 } from '../lib/erd'
+import { erdNodeHeight, layoutErd } from '../lib/erdLayout'
 import { NODE_TYPE_NAME, displayName } from '../lib/present'
 import {
   listStaged,
@@ -229,6 +235,37 @@ export function ErdPage({
   const [panelOpen, setPanelOpen] = useState(true)
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('implicit_join')
 
+  // Canvas state the auto-layout does not own: tables the reader dragged, and
+  // whether a relationship landed since — which is what the reset control offers
+  // to fix (see `resetView`).
+  const flow = useRef<ReactFlowInstance<ErdFlowNode, Edge> | null>(null)
+  const [manual, setManual] = useState<Record<string, { x: number; y: number }>>({})
+  const [layoutStale, setLayoutStale] = useState(false)
+  const movedCount = Object.keys(manual).length
+
+  const fitSoon = () => {
+    // let React Flow measure the new nodes before it fits them
+    window.setTimeout(() => void flow.current?.fitView({ padding: 0.12, duration: 320 }), 80)
+  }
+
+  /** Reset: back to the auto-layout, fitted, with every dragged table let go. */
+  const resetView = () => {
+    setManual({})
+    setLayoutStale(false)
+    fitSoon()
+  }
+
+  /**
+   * A relationship was declared or dropped, so the arrangement changed underneath
+   * the reader. If the layout still owns the canvas, show the new one; if they
+   * have been moving tables by hand, say so on the reset control instead of
+   * yanking their work away.
+   */
+  const relayout = () => {
+    if (movedCount > 0) setLayoutStale(true)
+    else fitSoon()
+  }
+
   const refreshStaged = useCallback(async () => {
     try {
       setStaged(await listStaged())
@@ -264,26 +301,37 @@ export function ErdPage({
   }, [meta.staging_enabled, refreshStaged, refreshSuggestions])
 
   const resolved = useMemo(() => resolveStaged(index, staged), [index, staged])
-  const sourceCounts = useMemo(() => countBySource(suggestions), [suggestions])
-  // the canvas draws what the panel lists: one filter, both surfaces
-  const shownSuggestions = useMemo(
-    () => filterBySource(suggestions, sourceFilter),
-    [suggestions, sourceFilter],
+  // Suggestions arrive graph-wide (hundreds on a real project). Scope them to the
+  // ERD first: both endpoints inside it, which is exactly what the canvas can draw.
+  const inScopeIds = useMemo(
+    () => (active ? scopeModelIds(index, active) : new Set<string>()),
+    [index, active],
   )
   const resolvedSuggestions = useMemo(
     () =>
       resolveStaged(
         index,
-        shownSuggestions.map((entry) => ({ ...entry, cardinality: entry.cardinality_guess })),
+        suggestions.map((entry) => ({ ...entry, cardinality: entry.cardinality_guess })),
       ),
-    [index, shownSuggestions],
+    [index, suggestions],
   )
+  const scopedSuggestions = useMemo(
+    () => suggestionsInScope(suggestions, resolvedSuggestions.drawable, inScopeIds),
+    [suggestions, resolvedSuggestions, inScopeIds],
+  )
+  const sourceCounts = useMemo(() => countBySource(scopedSuggestions), [scopedSuggestions])
+  // the canvas draws what the panel lists: one filter, both surfaces
+  const shownSuggestions = useMemo(
+    () => filterBySource(scopedSuggestions, sourceFilter),
+    [scopedSuggestions, sourceFilter],
+  )
+  const drawableSuggestions = useMemo(() => {
+    const shown = new Set(shownSuggestions.map((entry) => entry.id))
+    return resolvedSuggestions.drawable.filter((rel) => shown.has(rel.id))
+  }, [resolvedSuggestions, shownSuggestions])
   const erd = useMemo(
-    () =>
-      active
-        ? erdForScope(index, active, resolved.drawable, resolvedSuggestions.drawable)
-        : null,
-    [index, active, resolved, resolvedSuggestions],
+    () => (active ? erdForScope(index, active, resolved.drawable, drawableSuggestions) : null),
+    [index, active, resolved, drawableSuggestions],
   )
 
   /** node id -> dbt model name, which is what the staging API speaks. */
@@ -313,6 +361,7 @@ export function ErdPage({
           ? `staged ${result.relationship.from_model}.${result.relationship.from_column} → ${result.relationship.to_model}.${result.relationship.to_column}`
           : 'that column pair was already staged',
       )
+      relayout()
       return null
     } catch (error) {
       return error instanceof Error ? error.message : String(error)
@@ -324,6 +373,7 @@ export function ErdPage({
     await refreshStaged()
     if (canSuggest) await refreshSuggestions()
     setNotice(null)
+    relayout()
   }
 
   /** Accepting is not a shortcut: it opens the same modal a drag opens, prefilled. */
@@ -345,8 +395,34 @@ export function ErdPage({
     setNotice('suggestion dismissed — it will not come back')
   }
 
-  const { nodes, edges } = useMemo(() => {
-    if (!erd) return { nodes: [] as ErdFlowNode[], edges: [] as Edge[] }
+  /**
+   * Auto-layout for the current scope: declared and staged relationships place the
+   * tables (see lib/erdLayout). Suggestions are deliberately NOT layout input —
+   * they are proposals, and the canvas must not rearrange itself every time the
+   * source filter changes.
+   */
+  const positions = useMemo(() => {
+    if (!erd) return new Map<string, { x: number; y: number }>()
+    return layoutErd(
+      erd.models.map((model) => {
+        const open = expanded.has(model.node.node_id)
+        return {
+          id: model.node.node_id,
+          height: erdNodeHeight(
+            visibleColumns(model, open, COLLAPSED_LIMIT).length,
+            model.columns.some((column) => !column.isKey),
+          ),
+        }
+      }),
+      [...erd.relationships, ...erd.staged].map((rel) => ({
+        from: rel.fromModelId,
+        to: rel.toModelId,
+      })),
+    )
+  }, [erd, expanded])
+
+  const baseNodes = useMemo(() => {
+    if (!erd) return [] as ErdFlowNode[]
     const onToggle = (id: string) =>
       setExpanded((prev) => {
         const next = new Set(prev)
@@ -355,14 +431,18 @@ export function ErdPage({
         return next
       })
 
-    const columns = Math.max(1, Math.ceil(Math.sqrt(erd.models.length)))
-    const nodes: ErdFlowNode[] = erd.models.map((model, i) => ({
+    return erd.models.map((model, i) => ({
       id: model.node.node_id,
-      type: 'erdModel',
-      position: { x: (i % columns) * 340, y: Math.floor(i / columns) * 320 },
+      type: 'erdModel' as const,
+      // a dragged table keeps where the reader put it until they reset the view
+      position: manual[model.node.node_id] ??
+        positions.get(model.node.node_id) ?? { x: i * 360, y: 0 },
       data: { model, expanded: expanded.has(model.node.node_id), onToggle, connectable: canStage },
     }))
+  }, [erd, expanded, canStage, positions, manual])
 
+  const edges = useMemo(() => {
+    if (!erd) return [] as Edge[]
     const edges: Edge[] = erd.relationships.map((rel, i) => ({
       id: `rel-${i}`,
       source: rel.fromModelId,
@@ -408,8 +488,26 @@ export function ErdPage({
         labelShowBg: true,
       })
     }
-    return { nodes, edges }
-  }, [erd, expanded, canStage])
+    return edges
+  }, [erd])
+
+  // React Flow owns node positions while a drag is in flight; the layout owns them
+  // otherwise. `manual` is the reader's overrides, and resetting the view drops it.
+  const [nodes, setNodes] = useState<ErdFlowNode[]>(baseNodes)
+  useEffect(() => setNodes(baseNodes), [baseNodes])
+  const onNodesChange = useCallback(
+    (changes: NodeChange<ErdFlowNode>[]) =>
+      setNodes((current) => applyNodeChanges(changes, current)),
+    [],
+  )
+
+  // A new scope is a new drawing: nobody's drags carry over to it.
+  const activeKey = active ? scopeKey(active) : ''
+  useEffect(() => {
+    setManual({})
+    setLayoutStale(false)
+    fitSoon()
+  }, [activeKey])
 
   if (!active || !erd) {
     return (
@@ -463,9 +561,22 @@ export function ErdPage({
             configured scope <code>{unknownConfigured}</code> is not in this graph
           </span>
         )}
+        <button
+          type="button"
+          className={`ghost-button erd-reset${layoutStale ? ' stale' : ''}`}
+          onClick={resetView}
+          title={
+            layoutStale
+              ? 'the relationships changed — reset to lay the scope out again'
+              : 'lay the scope out again and fit it to the window (drops dragged positions)'
+          }
+        >
+          Reset view
+          {movedCount > 0 ? ` (${movedCount} moved)` : ''}
+        </button>
         {canSuggest && !panelOpen && (
           <button type="button" className="ghost-button" onClick={() => setPanelOpen(true)}>
-            Suggested ({shownSuggestions.length})
+            Suggested ({scopedSuggestions.length})
           </button>
         )}
         {canStage ? (
@@ -518,6 +629,13 @@ export function ErdPage({
           minZoom={0.05}
           nodesConnectable={canStage}
           nodesDraggable
+          onNodesChange={onNodesChange}
+          onInit={(instance) => {
+            flow.current = instance
+          }}
+          onNodeDragStop={(_event, node) =>
+            setManual((current) => ({ ...current, [node.id]: node.position }))
+          }
           nodeClickDistance={CLICK_SLOP_PX}
           proOptions={{ hideAttribution: true }}
           onConnect={(connection) => {
@@ -541,6 +659,12 @@ export function ErdPage({
           <aside className="suggest-panel" aria-label="Suggested relationships">
             <div className="suggest-panel-head">
               <span className="suggest-panel-title">Suggested ({shownSuggestions.length})</span>
+              <span
+                className="muted suggest-scope"
+                title={`candidates with both models in ${active.value}; the rest join models in other scopes`}
+              >
+                {scopedSuggestions.length} in this scope · {suggestions.length} total
+              </span>
               {erd.suggestedHidden > 0 && (
                 <span className="muted suggest-cap" title="the panel lists them all; the canvas draws the strongest">
                   {erd.suggestedHidden} not drawn
@@ -572,14 +696,16 @@ export function ErdPage({
               <p className="muted suggest-empty">
                 {suggestions.length === 0
                   ? 'Nothing to suggest — every join stitch can see is already declared, staged or dismissed.'
-                  : 'None from this source. The counts above show what the others hold.'}
+                  : scopedSuggestions.length === 0
+                    ? `None inside ${active.value}: all ${suggestions.length} candidates join a model in another scope.`
+                    : 'None from this source. The counts above show what the others hold.'}
               </p>
             ) : (
               <ul className="suggest-list">
                 {shownSuggestions.map((entry) => {
-                  const offCanvas = resolvedSuggestions.unresolvedIds.includes(entry.id)
-                  const notDrawn =
-                    !offCanvas && !erd.suggested.some((rel) => rel.id === entry.id)
+                  // everything listed is in scope and resolvable now; only the draw
+                  // cap can still keep one off the canvas
+                  const notDrawn = !erd.suggested.some((rel) => rel.id === entry.id)
                   return (
                     <li key={entry.id} className="suggest-entry">
                       <code className="suggest-pair">
@@ -591,9 +717,9 @@ export function ErdPage({
                         </span>
                         <span className="muted">{scoreLabel(entry)}</span>
                         <span className="muted">{entry.cardinality_guess}</span>
-                        {(offCanvas || notDrawn) && (
+                        {notDrawn && (
                           <span className="muted" title="listed here, but not drawn on this canvas">
-                            {offCanvas ? 'not in this graph' : 'not drawn'}
+                            not drawn
                           </span>
                         )}
                       </div>

@@ -779,6 +779,33 @@ kbd {
   font-size: 12px;
 }
 
+/* Reset view: idle it is one more ghost button; it pulses only when a
+   relationship landed after the reader started arranging tables by hand, i.e.
+   when the layout on screen is no longer the layout stitch would draw (#59). */
+.erd-reset.stale {
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: erd-reset-pulse 1.7s ease-in-out infinite;
+}
+
+@keyframes erd-reset-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .erd-reset.stale {
+    animation: none;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+}
+
 .graph-canvas {
   flex: 1;
   min-height: 0;
@@ -914,7 +941,9 @@ kbd {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
+  row-gap: 2px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -928,6 +957,13 @@ kbd {
 }
 
 .suggest-cap {
+  font-size: 11px;
+}
+
+/* how much of the graph-wide candidate list this scope holds (#60) */
+.suggest-scope {
+  order: 3;
+  flex-basis: 100%;
   font-size: 11px;
 }
 

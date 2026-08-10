@@ -9,6 +9,8 @@ import {
   findScope,
   initialScope,
   listScopes,
+  scopeModelIds,
+  suggestionsInScope,
   visibleColumns,
 } from './erd'
 import { buildIndex } from './graph'
@@ -338,5 +340,61 @@ describe('the suggestion cap', () => {
     const fct = erd.models.find((m) => m.node.name === 'fct_revenue')!
     expect(fct.columns.find((c) => c.key === 'user_id')?.isKey).toBe(true)
     expect(fct.columns.find((c) => c.key === 'net_revenue')?.isKey).toBe(false)
+  })
+})
+
+describe('scoping suggestions to the canvas (#60)', () => {
+  const marts = () => listScopes(index).find((s) => s.kind === 'schema' && s.value === 'marts')!
+  const inside = {
+    id: 'inside',
+    from_model: 'fct_revenue',
+    from_column: 'net_revenue',
+    to_model: 'mart_board',
+    to_column: 'net_revenue',
+  }
+  const crossing = {
+    id: 'crossing',
+    from_model: 'fct_revenue',
+    from_column: 'net_revenue',
+    to_model: 'stg_payments',
+    to_column: 'amount',
+  }
+  const offGraph = {
+    id: 'off-graph',
+    from_model: 'fct_revenue',
+    from_column: 'user_id',
+    to_model: 'gone_model',
+    to_column: 'user_id',
+  }
+
+  it('lists the scope’s own models', () => {
+    const ids = scopeModelIds(index, marts())
+    expect([...ids].sort()).toEqual([
+      'model.demo.dim_users',
+      'model.demo.fct_revenue',
+      'model.demo.mart_board',
+    ])
+  })
+
+  it('keeps only candidates with BOTH endpoints in the scope', () => {
+    const entries = [inside, crossing, offGraph]
+    const { drawable } = resolveStaged(index, entries)
+    const scoped = suggestionsInScope(entries, drawable, scopeModelIds(index, marts()))
+    expect(scoped.map((entry) => entry.id)).toEqual(['inside'])
+  })
+
+  it('refilters when the scope changes', () => {
+    const entries = [inside, crossing]
+    const { drawable } = resolveStaged(index, entries)
+    const staging = listScopes(index).find((s) => s.kind === 'schema' && s.value === 'staging')!
+    expect(suggestionsInScope(entries, drawable, scopeModelIds(index, staging))).toEqual([])
+  })
+
+  it('never draws a candidate whose other end is outside the scope', () => {
+    const drawable = resolveStaged(index, [inside, crossing]).drawable
+    const erd = erdForScope(index, marts(), [], drawable)
+    expect(erd.suggested.map((rel) => rel.id)).toEqual(['inside'])
+    // ...and no external table is pulled in to hold the crossing one
+    expect(erd.models.some((model) => model.node.name === 'stg_payments')).toBe(false)
   })
 })

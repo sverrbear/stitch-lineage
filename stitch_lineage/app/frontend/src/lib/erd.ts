@@ -255,6 +255,35 @@ export function initialScope(scopes: ErdScope[], configured?: string | null): In
  */
 export const MAX_DRAWN_SUGGESTIONS = 30
 
+/** The models the scope itself holds — not the external ones its edges reach into. */
+export function scopeModelIds(index: GraphIndex, scope: ErdScope): Set<string> {
+  const ids = new Set<string>()
+  for (const node of index.nodes) {
+    if (isErdModel(node) && modelInScope(node, scope)) ids.add(node.node_id)
+  }
+  return ids
+}
+
+/**
+ * The suggestions that belong to one scope: both ends inside it (#60). A
+ * candidate with one foot in another schema is a real candidate, but it is not
+ * this ERD's business — the panel would list hundreds of pairs the reader never
+ * asked about, and the canvas would grow an external table per proposal. The
+ * caller keeps the unfiltered list to show the global total next to the count.
+ */
+export function suggestionsInScope<T extends { id: string }>(
+  entries: T[],
+  /** `resolveStaged(...).drawable` for the same entries — ids carry across. */
+  resolved: ErdStagedRelationship[],
+  inScope: Set<string>,
+): T[] {
+  const byId = new Map(resolved.map((rel) => [rel.id, rel]))
+  return entries.filter((entry) => {
+    const rel = byId.get(entry.id)
+    return !!rel && inScope.has(rel.fromModelId) && inScope.has(rel.toModelId)
+  })
+}
+
 export function erdForScope(
   index: GraphIndex,
   scope: ErdScope,
@@ -263,10 +292,7 @@ export function erdForScope(
   suggested: ErdStagedRelationship[] = [],
   maxSuggested: number = MAX_DRAWN_SUGGESTIONS,
 ): ErdData {
-  const inScope = new Set<string>()
-  for (const node of index.nodes) {
-    if (isErdModel(node) && modelInScope(node, scope)) inScope.add(node.node_id)
-  }
+  const inScope = scopeModelIds(index, scope)
 
   const rels = relationships(index).filter(
     (rel) => inScope.has(rel.fromModelId) || inScope.has(rel.toModelId),
@@ -276,7 +302,12 @@ export function erdForScope(
   const scopedStaged = staged.filter(touchesScope)
   // a suggestion already staged is no longer a suggestion, whatever the server said
   const stagedIds = new Set(scopedStaged.map((rel) => rel.id))
-  const inScopeSuggested = suggested.filter((rel) => touchesScope(rel) && !stagedIds.has(rel.id))
+  // suggestions are held to the stricter rule: both ends in scope, so the canvas
+  // draws exactly what the panel lists
+  const inScopeSuggested = suggested.filter(
+    (rel) =>
+      inScope.has(rel.fromModelId) && inScope.has(rel.toModelId) && !stagedIds.has(rel.id),
+  )
   const scopedSuggested = inScopeSuggested.slice(0, Math.max(0, maxSuggested))
   const suggestedHidden = inScopeSuggested.length - scopedSuggested.length
 
