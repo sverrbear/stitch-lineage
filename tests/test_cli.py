@@ -69,10 +69,22 @@ def test_version():
     assert __version__ in result.output
 
 
-def test_init_is_phase_1():
+def test_init_outside_a_dbt_project_fails_with_the_fix(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["init"])
-    assert result.exit_code == 2
-    assert "Phase 1" in result.output
+    assert result.exit_code == 1
+    assert "no dbt_project.yml" in result.output
+
+
+def test_init_runs_the_wizard(tmp_path, monkeypatch):
+    # the wizard itself is covered in test_init_wizard.py; this is the CLI wiring
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "target").mkdir()
+    (tmp_path / "dbt_project.yml").write_text("name: demo\n", encoding="utf-8")
+    result = runner.invoke(app, ["init"], input="n\n")
+    assert result.exit_code == 1
+    assert "no manifest at" in result.output
+    assert "dbt docs generate" in result.output
 
 
 def _stub_uvicorn(monkeypatch):
@@ -436,6 +448,29 @@ def test_export_site_warns_about_an_erd_scope_the_graph_does_not_have(tmp_path, 
         '"erd_default_scope":"tag:nope"'
         in (tmp_path / ".stitch" / "site" / "index.html").read_text()
     )
+
+
+def test_export_site_inlines_the_configured_table_prefixes(tmp_path, monkeypatch):
+    """The dev alias prefix reaches the app as display config (#80)."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(VALID_CONFIG + "      table_prefix: sis_\n")
+    _write_graph(tmp_path, [_marts_model()])
+    result = runner.invoke(app, ["export", "--format", "site"])
+    assert result.exit_code == 0, result.output
+    assert '"table_prefixes":["sis_"]' in (tmp_path / ".stitch" / "site" / "index.html").read_text()
+
+
+def test_export_site_drops_an_unresolved_table_prefix(tmp_path, monkeypatch):
+    """An unresolved ${USER_PREFIX} must not be shown to the app as a literal prefix."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("STITCH_USER_PREFIX", raising=False)
+    (tmp_path / "stitch.yml").write_text(
+        VALID_CONFIG + "      table_prefix: ${STITCH_USER_PREFIX}_\n"
+    )
+    _write_graph(tmp_path, [_marts_model()])
+    result = runner.invoke(app, ["export", "--format", "site"])
+    assert result.exit_code == 0, result.output
+    assert '"table_prefixes":[]' in (tmp_path / ".stitch" / "site" / "index.html").read_text()
 
 
 def test_export_site_skips_an_unresolved_metabase_url(tmp_path, monkeypatch):

@@ -3,8 +3,10 @@ import { fixtureGraph } from './fixture'
 import { buildIndex } from './graph'
 import {
   displayName,
+  displayTableName,
   strippedPrefixes,
   setStripModelPrefixes,
+  setTablePrefixes,
   hasHiddenPrefix,
   fullName,
   isPlaceholder,
@@ -135,5 +137,37 @@ describe('routing prefixes hidden from display names (#69)', () => {
       properties: {},
     }
     expect(displayName(column)).toBe('viz_id')
+  })
+})
+
+describe('table_prefix hidden from displayed physical names (#80)', () => {
+  afterEach(() => setTablePrefixes([]))
+
+  it('strips a configured prefix, case-insensitively', () => {
+    setTablePrefixes(['sis_'])
+    expect(displayTableName('sis_fct_boost_performance')).toBe('fct_boost_performance')
+    expect(displayTableName('SIS_FCT_BOOST_PERFORMANCE')).toBe('FCT_BOOST_PERFORMANCE')
+  })
+
+  it('leaves a name alone when nothing is configured or nothing matches', () => {
+    expect(displayTableName('sis_fct_revenue')).toBe('sis_fct_revenue')
+    setTablePrefixes(['xx_'])
+    expect(displayTableName('sis_fct_revenue')).toBe('sis_fct_revenue')
+  })
+
+  it('never strips a name down to nothing, and ignores blank config', () => {
+    setTablePrefixes(['sis_', '   '])
+    expect(displayTableName('sis_')).toBe('sis_')
+  })
+
+  it('has nothing to say about a missing table', () => {
+    setTablePrefixes(['sis_'])
+    expect(displayTableName(null)).toBeNull()
+    expect(displayTableName('  ')).toBeNull()
+  })
+
+  it('leaves the exact warehouse relation alone — that one is a locator', () => {
+    setTablePrefixes(['sis_'])
+    expect(warehouseRelation(get('model.demo.fct_revenue'))).toBe('marts.sis_fct_revenue')
   })
 })
