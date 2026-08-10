@@ -74,10 +74,22 @@ def test_version():
     assert __version__ in result.output
 
 
-def test_init_is_phase_1():
+def test_init_outside_a_dbt_project_fails_with_the_fix(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["init"])
-    assert result.exit_code == 2
-    assert "Phase 1" in result.output
+    assert result.exit_code == 1
+    assert "no dbt_project.yml" in result.output
+
+
+def test_init_runs_the_wizard(tmp_path, monkeypatch):
+    # the wizard itself is covered in test_init_wizard.py; this is the CLI wiring
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "target").mkdir()
+    (tmp_path / "dbt_project.yml").write_text("name: demo\n", encoding="utf-8")
+    result = runner.invoke(app, ["init"], input="n\n")
+    assert result.exit_code == 1
+    assert "no manifest at" in result.output
+    assert "dbt docs generate" in result.output
 
 
 def _stub_uvicorn(monkeypatch):

@@ -14,7 +14,15 @@ pip install stitch-lineage
 pip install git+https://github.com/sverrbear/stitch-lineage.git
 ```
 
-Drop a `stitch.yml` at your dbt project root:
+Then, from your dbt project root:
+
+```bash
+stitch init
+```
+
+`stitch init` is a wizard, not a scaffolder: it reads `dbt_project.yml` and `target/manifest.json` for your project name, target path, databases, schemas and model inventory, and never asks a question dbt already answers. It asks for the Metabase URL and an API key, calls Metabase, proposes the database mapping (`Metabase "Analytics" ↔ dbt "analytics" — confirm?`) and the `include_schemas` where your marts actually live, then writes `stitch.yml`, a `.env.example` line, a `.gitignore` entry, and finishes with a mini-doctor and the next command. Four inputs, under two minutes. **The API key is never written anywhere** — `stitch.yml` gets the `${STITCH_METABASE_API_KEY}` reference and `.env.example` gets the name.
+
+Or write `stitch.yml` yourself at the dbt project root:
 
 ```yaml
 dbt:
@@ -48,6 +56,8 @@ stitch build                     # dbt docs generate + resolve dbt + Metabase in
 Or keep the two steps explicit (typical in CI, where `dbt docs generate` runs its own way):
 
 ```bash
+stitch init                      # set up stitch.yml (--force overwrites an existing one)
+
 dbt docs generate                # produce target/manifest.json + catalog.json
 stitch build --no-docs           # resolve only; --docs/--no-docs overrides auto_docs either way
 
