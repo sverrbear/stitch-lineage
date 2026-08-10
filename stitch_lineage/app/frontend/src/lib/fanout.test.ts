@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dashboardCount, dashboardGroups, layerGroups } from './fanout'
+import { dashboardCount, dashboardGroups, hopRange, layerGroups } from './fanout'
 import { fixtureGraph } from './fixture'
 import { buildIndex, type Reach } from './graph'
 import { modelDetail } from './details'
@@ -105,5 +105,23 @@ describe('dashboardGroups', () => {
   it('is empty for a model no card touches', () => {
     expect(dashboardGroups(index, [])).toEqual([])
     expect(dashboardCount([])).toBe(0)
+  })
+})
+
+describe('hopRange', () => {
+  it('says direct when everything in the layer is one hop away', () => {
+    expect(hopRange([reach({ node_id: 'a' }, 1), reach({ node_id: 'b' }, 1)])).toBe('direct')
+  })
+
+  it('says the distance when the layer sits at one', () => {
+    expect(hopRange([reach({ node_id: 'a' }, 3)])).toBe('3 hops')
+  })
+
+  it('gives a range when the layer spans several', () => {
+    expect(hopRange([reach({ node_id: 'a' }, 2), reach({ node_id: 'b' }, 5)])).toBe('2–5 hops')
+  })
+
+  it('has nothing to say about an empty layer', () => {
+    expect(hopRange([])).toBe('')
   })
 })

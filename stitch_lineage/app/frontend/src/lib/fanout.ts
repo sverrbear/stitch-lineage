@@ -69,6 +69,20 @@ export function layerGroups(reaches: readonly Reach[], direction: 'up' | 'down')
     })
 }
 
+/**
+ * How far a layer sits from the model, as a collapsed row can say it: `direct`,
+ * `3 hops`, or a range when the layer spans several. This is the hint that makes a
+ * closed group worth closing — the count says how much, this says how far (#104).
+ */
+export function hopRange(entries: readonly Reach[]): string {
+  if (entries.length === 0) return ''
+  const depths = entries.map((entry) => entry.depth)
+  const low = Math.min(...depths)
+  const high = Math.max(...depths)
+  if (low === high) return low === 1 ? 'direct' : `${low} hops`
+  return `${low}–${high} hops`
+}
+
 export interface DashboardUsage {
   /** `null` collects cards that are on no dashboard at all. */
   dashboard: GraphNode | null
