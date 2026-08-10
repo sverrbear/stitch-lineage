@@ -305,8 +305,10 @@ def test_rebuild_after_a_dropped_column_summarizes_the_blast_radius(project):
     with responses.RequestsMock():
         result = runner.invoke(app, ["build", "--no-metabase"])
     assert result.exit_code == 0, result.output
+    # 4 cards, not 3: card 205 is native SQL, which resolves since #105 and consumes the
+    # same mb_field::102 the MBQL cards do -- the summary counts both card kinds alike
     assert (
-        "since last build: 2 columns removed -> 3 cards on 1 dashboard affected "
+        "since last build: 2 columns removed -> 4 cards on 1 dashboard affected "
         "(run 'stitch impact' for the tree)"
     ) in result.output
 
