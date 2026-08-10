@@ -164,8 +164,10 @@ Setup friction is a product feature. `init` derives everything derivable and ask
 2. From the manifest: quoting/casing policy, databases and schemas models land in, model inventory. **Never ask a question the manifest answers.**
 3. Ask the two unknowables: Metabase URL, API key. Key is env-only from the first second — init writes the `${STITCH_METABASE_API_KEY}` reference into config and a line into `.env.example`, never the value.
 4. Immediately call Metabase, list its databases, and **propose the database mapping** by name-similarity against the manifest ("Metabase *Analytics* ↔ dbt *ANALYTICS* — confirm? [Y/n]"). Ambiguity → a real question; the common case → one keystroke.
-5. Propose `include_schemas` from where marts actually live; write `stitch.yml`; append `.stitch/cache/` to `.gitignore`; drop the GitHub Action into `.github/workflows/` with a commented-out trigger.
+5. Propose `include_schemas` from where marts actually live; write `stitch.yml`; append `.stitch/` to `.gitignore` — the whole directory, since v0.5 made all of it local; drop the GitHub Action into `.github/workflows/` with its real trigger commented out and `workflow_dispatch` standing in (a workflow with no `on:` block is an Actions error, not a disarmed workflow).
 6. Finish with a mini-doctor (Metabase reachable, version ≥ 49, manifest parses, model counts on both sides) and print the next command.
+
+The Action drop is best-effort: `action/` lives in the repo, not in the wheel (`packages = ["stitch_lineage"]`), so a pip-installed `init` skips that step and says so rather than pretending. Open question, not decided here: promote `action/` to package data, or leave the templates a source-checkout convenience and let pip users copy them from the repo.
 
 Target: repo → configured in under two minutes with four human inputs (URL, key, one mapping confirm, later un-commenting the Action). Every derived value is written into `stitch.yml` explicitly rather than defaulted invisibly, so the config file remains the full, inspectable truth.
 
@@ -423,7 +425,7 @@ A scheduled nightly job runs full `stitch build` (with Metabase) on main and com
 
 | Phase | Scope | Status |
 |---|---|---|
-| **0** | `build`: dbt models **+ column lineage via sqlglot on compiled SQL** + MBQL cards; `graph.json` deterministic + `--check`; coverage report incl. lineage trace rate; recursive `impact` + GitHub Action; `stitch search` (CLI); `doctor` basics | **shipped** (impact shelved by default — see v0.5 deltas) |
+| **0** | `build`: dbt models **+ column lineage via sqlglot on compiled SQL** + MBQL cards; `graph.json` deterministic + `--check`; coverage report incl. lineage trace rate; recursive `impact` + GitHub Action; `stitch search` (CLI); `doctor` basics, plus `doctor --dead` for estate hygiene — unconsumed columns, models feeding nothing, archived-but-bound cards (#88) | **shipped** (impact shelved by default — see v0.5 deltas) |
 | **1** | `serve`: **search + detail panels** (the entry point), end-to-end column lineage view, catalog, read-only ERD; `export --format site` | **shipped** |
 | **2** | Editable canvas → **staged relationships + `stitch apply`** (§8.2, issues #24/#27), suggestion layer, `layout.yml` | next |
 | **3** | Metabase **native SQL** cards via sqlglot + template-tag substitution (NOTE: modern Metabase also emits **MBQL 5 lib/stages** for saved questions — issue #22, being fixed ahead of phase order), rename heuristics, `--verify-lineage` (ACCESS_HISTORY), Metabase version matrix | ongoing |
