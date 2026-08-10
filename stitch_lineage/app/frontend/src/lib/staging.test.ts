@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   StagingError,
   errorMessage,
+  groupStagedByTarget,
   listStaged,
   probeStaging,
   stageRelationship,
   unstageRelationship,
+  type StagedRelationship,
 } from './staging'
 
 function respond(status: number, body?: unknown): Response {
@@ -132,5 +134,54 @@ describe('errorMessage', () => {
 
   it('falls back to the status when the body is not JSON', async () => {
     expect(await errorMessage(respond(500))).toBe('request failed (HTTP 500)')
+  })
+})
+
+describe('groupStagedByTarget', () => {
+  const entry = (id: string, from: string, to: string, column = 'user_id'): StagedRelationship => ({
+    id,
+    from_model: from,
+    from_column: column,
+    to_model: to,
+    to_column: column,
+    cardinality: 'many-to-one',
+    shape: 'simple',
+  })
+
+  it('groups by the model each entry points at, biggest group first', () => {
+    const groups = groupStagedByTarget([
+      entry('1', 'fct_orders', 'dim_users'),
+      entry('2', 'fct_sessions', 'dim_dates', 'day_date'),
+      entry('3', 'fct_events', 'dim_users'),
+    ])
+    expect(groups.map((group) => [group.target, group.entries.length])).toEqual([
+      ['dim_users', 2],
+      ['dim_dates', 1],
+    ])
+  })
+
+  it('sorts inside a group by source model and column', () => {
+    const groups = groupStagedByTarget([
+      entry('1', 'fct_orders', 'dim_users', 'buyer_id'),
+      entry('2', 'fct_events', 'dim_users'),
+      entry('3', 'fct_orders', 'dim_users', 'agent_id'),
+    ])
+    expect(groups[0].entries.map((e) => `${e.from_model}.${e.from_column}`)).toEqual([
+      'fct_events.user_id',
+      'fct_orders.agent_id',
+      'fct_orders.buyer_id',
+    ])
+  })
+
+  it('breaks ties between equal-sized groups by name, so the panel never reshuffles', () => {
+    const groups = groupStagedByTarget([
+      entry('1', 'fct_a', 'dim_zones'),
+      entry('2', 'fct_b', 'dim_apps'),
+    ])
+    expect(groups.map((group) => group.target)).toEqual(['dim_apps', 'dim_zones'])
+  })
+
+  it('returns nothing for nothing', () => {
+    expect(groupStagedByTarget([])).toEqual([])
   })
 })
