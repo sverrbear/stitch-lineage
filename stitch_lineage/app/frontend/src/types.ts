@@ -69,6 +69,11 @@ export interface StitchMeta {
   schema_version: number
   /** `schema:<name>` / `tag:<name>` the ERD opens on (serve.erd_default_scope). */
   erd_default_scope?: string | null
+  /**
+   * Whether this build has the staging API: true under `stitch serve`, false in
+   * a static export, absent on a serve that predates the flag (probe instead).
+   */
+  staging_enabled?: boolean
 }
 
 declare global {
