@@ -175,11 +175,15 @@ export function chooseAnchors(
 
 /**
  * The side-oriented variant of a cardinality marker (see ErdMarkers): the `1` and
- * `*` glyphs have to be nudged clear of the card they belong to, and which way
- * that is depends on the side the edge leaves from. Anything else is left alone.
+ * `*` glyphs have to be nudged clear of the card they belong to, and which way that
+ * is depends on the side the edge leaves from.
+ *
+ * The reference arrives already built by React Flow (`url('#erd-card-one')`), so
+ * only the id inside it is rewritten and the wrapper is left exactly as it came.
+ * Anything that is not one of the two glyphs is passed through untouched.
  */
 export function markerForSide(marker: string | undefined, side: AnchorSide): string | undefined {
   if (!marker) return marker
-  const match = /^url\(#(erd-card-(?:one|many))\)$/.exec(marker)
-  return match ? `url(#${match[1]}-${side})` : marker
+  const match = /^url\(\s*'?#(erd-card-(?:one|many))'?\s*\)$/.exec(marker)
+  return match ? marker.replace(match[1], `${match[1]}-${side}`) : marker
 }

@@ -157,12 +157,14 @@ describe('anchorOn', () => {
 
 describe('markerForSide', () => {
   it('points a cardinality glyph at the side its end anchors to', () => {
-    expect(markerForSide('url(#erd-card-one)', 'top')).toBe('url(#erd-card-one-top)')
-    expect(markerForSide('url(#erd-card-many)', 'left')).toBe('url(#erd-card-many-left)')
+    // the form React Flow hands the edge component, quotes and all
+    expect(markerForSide("url('#erd-card-one')", 'top')).toBe("url('#erd-card-one-top')")
+    expect(markerForSide("url('#erd-card-many')", 'left')).toBe("url('#erd-card-many-left')")
+    expect(markerForSide('url(#erd-card-one)', 'bottom')).toBe('url(#erd-card-one-bottom)')
   })
 
   it('leaves anything else alone', () => {
     expect(markerForSide(undefined, 'left')).toBeUndefined()
-    expect(markerForSide('url(#something-else)', 'left')).toBe('url(#something-else)')
+    expect(markerForSide("url('#something-else')", 'left')).toBe("url('#something-else')")
   })
 })
