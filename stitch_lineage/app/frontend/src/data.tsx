@@ -5,7 +5,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { buildIndex, type GraphIndex } from './lib/graph'
 import { loadData, type LoadedData } from './lib/load'
-import { setStripModelPrefixes } from './lib/present'
+import { setStripModelPrefixes, setTablePrefixes } from './lib/present'
 import { GraphSearch } from './lib/search'
 import type { StitchMeta } from './types'
 
@@ -58,6 +58,7 @@ export function DataProvider({
     if (state.status !== 'ready') return null
     // display names first: the search index is built from them (#69)
     setStripModelPrefixes(state.data.meta.strip_model_prefixes)
+    setTablePrefixes(state.data.meta.table_prefixes)
     const index = buildIndex(state.data.graph)
     return {
       index,

@@ -204,6 +204,20 @@ describe('layoutErd — star-schema arrangement', () => {
     expect(layout.get('a')).not.toEqual(layout.get('b'))
   })
 
+  it('never overlaps the grid of unrelated tables, whatever they measure', () => {
+    // a card wider than the fallback (a long model name, #80) used to land under its
+    // neighbour: the grid stepped by a fixed 300px pitch
+    const all: ErdLayoutNode[] = [
+      { id: 'fct', width: CARD_W, height: 200 },
+      { id: 'dim', width: CARD_W, height: 200 },
+      { id: 'lonely_a', width: 396, height: 200 },
+      { id: 'lonely_b', width: 240, height: 300 },
+      { id: 'lonely_c', width: 396, height: 200 },
+      { id: 'lonely_d', width: 230, height: 160 },
+    ]
+    expect(overlaps(layoutErd(all, [edge('fct', 'dim')]), all)).toEqual([])
+  })
+
   it('uses measured widths, not just the fallback', () => {
     const all: ErdLayoutNode[] = [
       { id: 'fct', width: 900, height: 200 },

@@ -435,6 +435,29 @@ def test_export_site_warns_about_an_erd_scope_the_graph_does_not_have(tmp_path, 
     )
 
 
+def test_export_site_inlines_the_configured_table_prefixes(tmp_path, monkeypatch):
+    """The dev alias prefix reaches the app as display config (#80)."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(VALID_CONFIG + "      table_prefix: sis_\n")
+    _write_graph(tmp_path, [_marts_model()])
+    result = runner.invoke(app, ["export", "--format", "site"])
+    assert result.exit_code == 0, result.output
+    assert '"table_prefixes":["sis_"]' in (tmp_path / ".stitch" / "site" / "index.html").read_text()
+
+
+def test_export_site_drops_an_unresolved_table_prefix(tmp_path, monkeypatch):
+    """An unresolved ${USER_PREFIX} must not be shown to the app as a literal prefix."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("STITCH_USER_PREFIX", raising=False)
+    (tmp_path / "stitch.yml").write_text(
+        VALID_CONFIG + "      table_prefix: ${STITCH_USER_PREFIX}_\n"
+    )
+    _write_graph(tmp_path, [_marts_model()])
+    result = runner.invoke(app, ["export", "--format", "site"])
+    assert result.exit_code == 0, result.output
+    assert '"table_prefixes":[]' in (tmp_path / ".stitch" / "site" / "index.html").read_text()
+
+
 def test_export_site_skips_an_unresolved_metabase_url(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("STITCH_METABASE_URL", raising=False)
