@@ -9,7 +9,13 @@ import { SystemBadge } from '../components/badges'
 import { ChipList, ConfidenceTag, Fact, NodeChip, Section } from '../components/bits'
 import { DashboardGroups, LayerGroups } from '../components/fanout'
 import { useStitch } from '../data'
-import { biDetail, columnDetail, modelDetail, type RelationshipRef } from '../lib/details'
+import {
+  biDetail,
+  columnDetail,
+  modelDetail,
+  type ChainGap,
+  type RelationshipRef,
+} from '../lib/details'
 import { resolveStaged, type ErdStagedRelationship } from '../lib/erd'
 import { dashboardCount, dashboardGroups, layerGroups } from '../lib/fanout'
 import { metabaseLink } from '../lib/graph'
@@ -201,6 +207,60 @@ function CardFacts({ node }: { node: GraphNode }) {
   )
 }
 
+/** The two ways a `binds_to` hop goes missing, and the command that lists them. */
+function UnboundWhy() {
+  return (
+    <>
+      Either the Metabase table is not bound to a dbt model in this build, or the column is absent
+      from the dbt artifacts this graph was built from. <code>stitch doctor --unbound</code> lists
+      the models with no bound Metabase table.
+    </>
+  )
+}
+
+/**
+ * What to say when the reverse view is empty. A bare "none" reads as a broken
+ * app; naming the missing hop and the command that lists it makes the gap
+ * diagnosable (#25).
+ */
+function ChainGapNote({ gap, node, fieldCount }: { gap: ChainGap; node: GraphNode; fieldCount: number }) {
+  const type = NODE_TYPE_NAME[node.node_type]
+  return (
+    <p className="chain-gap">
+      {gap === 'fields-unbound' && (
+        <>
+          No dbt column binds to the {plural(fieldCount, 'Metabase field')} this {type} queries, so
+          the chain stops at Metabase. <UnboundWhy />
+        </>
+      )}
+      {gap === 'field-unbound' && (
+        <>
+          No dbt column binds to this field. <UnboundWhy />
+        </>
+      )}
+      {gap === 'native-unresolved' && (
+        <>
+          This card is native SQL, and native cards are not resolved into column lineage in this
+          build — the chain is unknown, not empty. Coverage counts them separately.
+        </>
+      )}
+      {gap === 'query-unresolved' && (
+        <>
+          No Metabase field reference resolved out of this card&rsquo;s query, so there is no chain
+          to walk. <code>stitch doctor --unresolved-cards</code> lists the refs and why each one
+          failed.
+        </>
+      )}
+      {gap === 'dashboard-unresolved' && (
+        <>
+          None of the cards on this dashboard resolved to a Metabase field, so there is no chain to
+          walk down into dbt.
+        </>
+      )}
+    </p>
+  )
+}
+
 function BiPanel({ nodeId }: { nodeId: string }) {
   const { index } = useStitch()
   const detail = biDetail(index, nodeId)
@@ -208,6 +268,9 @@ function BiPanel({ nodeId }: { nodeId: string }) {
   const { node } = detail
   const isDashboard = node.node_type === 'mb_dashboard'
   const isField = node.node_type === 'mb_field'
+  const dependsTitle = detail.gap
+    ? 'Depends on — no dbt column resolved'
+    : `Depends on ${plural(detail.dependsOnColumns.length, 'dbt column')} across ${plural(detail.dependsOnModels.length, 'model')}`
 
   return (
     <article className="panel">
@@ -228,18 +291,44 @@ function BiPanel({ nodeId }: { nodeId: string }) {
         <Section title={`Consumed by ${plural(detail.cards.length, 'card')}`}>{reachChips(detail.cards)}</Section>
       )}
 
-      <Section
-        title={`Depends on ${plural(detail.dependsOnColumns.length, 'dbt column')} across ${plural(detail.dependsOnModels.length, 'model')}`}
-      >
-        <p className="muted">
-          The reverse view: every dbt column this {NODE_TYPE_NAME[node.node_type]} ultimately
-          depends on, named the dbt way with the model it comes from. Non-exact chains carry
-          their weakest hop — hover it for what that means.
-        </p>
-        <h4 className="subhead">models</h4>
-        <ChipList nodes={detail.dependsOnModels.map((node) => ({ node }))} />
-        <h4 className="subhead">columns</h4>
-        {reachChips(detail.dependsOnColumns)}
+      <Section title={dependsTitle}>
+        {detail.gap ? (
+          <>
+            <ChainGapNote gap={detail.gap} node={node} fieldCount={detail.fields.length} />
+            {detail.fields.length > 0 && (
+              <>
+                {/* the half of the chain stitch did resolve: without it a card
+                    whose tables are unbound looks like one that never parsed */}
+                <h4 className="subhead">{plural(detail.fields.length, 'Metabase field')} it queries</h4>
+                {reachChips(detail.fields)}
+              </>
+            )}
+          </>
+        ) : (
+          <>
+            <p className="muted">
+              The reverse view: every dbt column this {NODE_TYPE_NAME[node.node_type]} ultimately
+              depends on, named the dbt way with the model it comes from. Non-exact chains carry
+              their weakest hop — hover it for what that means.
+            </p>
+            <h4 className="subhead">models</h4>
+            <ChipList nodes={detail.dependsOnModels.map((node) => ({ node }))} />
+            <h4 className="subhead">columns</h4>
+            {reachChips(detail.dependsOnColumns)}
+            {detail.unboundFields.length > 0 && (
+              <>
+                <h4 className="subhead">
+                  {plural(detail.unboundFields.length, 'Metabase field')} with no dbt column
+                </h4>
+                <p className="chain-gap">
+                  The chain stops at Metabase for these, so whatever they contribute is missing from
+                  the columns above. <UnboundWhy />
+                </p>
+                {reachChips(detail.unboundFields)}
+              </>
+            )}
+          </>
+        )}
       </Section>
     </article>
   )
