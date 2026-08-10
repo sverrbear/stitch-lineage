@@ -360,14 +360,23 @@ def _apply_entry(
 
 
 def _write_description(model_entry: CommentedMap, entry: StagedDescription) -> None:
-    """Set `description:` on the model or one of its columns, creating the key if needed."""
+    """Set `description:` on the model or one of its columns, creating the key if needed.
+
+    Assigning through an existing key keeps its position, its comments and -- because ruamel
+    round-trip carries the node's style -- its quoting: replacing a `"quoted"` description
+    writes a quoted one back, so the diff is the text and nothing else.
+    """
     target = model_entry if entry.column is None else _ensure_column(model_entry, entry.column)
+    existing = target.get("description")
     value = _description_scalar(entry.new_description)
     if "description" in target:
-        # assigning through the existing key keeps its position, and its comments with it
-        if str(target["description"]) == str(value):
+        if existing is not None and str(existing).rstrip("\n") == str(value).rstrip("\n"):
             return
         target["description"] = value
+        if isinstance(value, LiteralScalarString) and not isinstance(
+            existing, LiteralScalarString
+        ):
+            _absorb_line_break(target, "description")
         return
     # a fresh key goes right after name:, where dbt convention puts it
     keys = list(target)
@@ -379,12 +388,24 @@ def _description_scalar(text: str) -> Any:
     """Multi-line descriptions are emitted as literal block scalars, not quoted one-liners.
 
     A `\\n` inside a plain or quoted scalar would come back out as an escape or a folded
-    line; `|` keeps the text readable in the repo and round-trips unchanged. ruamel needs the
-    trailing newline to choose `|` over `|-`, and either is valid YAML for the same string.
+    line; `|` keeps the text readable in the repo and round-trips unchanged. The trailing
+    newline is what makes ruamel choose `|` over `|-`, and both mean the same string here --
+    the comparison above ignores it.
     """
     if "\n" not in text:
         return text
     return LiteralScalarString(text if text.endswith("\n") else text + "\n")
+
+
+def _absorb_line_break(target: CommentedMap, key: str) -> None:
+    """A block scalar ends with its own line break, so a blank line remembered after `key`
+    would be emitted twice. Drop the duplicate: the author's one blank line stays one."""
+    token = target.ca.items.get(key)
+    comment = token[2] if token else None
+    if comment is None:
+        return
+    if set(comment.value) <= {"\n"} and comment.value.startswith("\n\n"):
+        comment.value = comment.value[1:]
 
 
 def _model_entry(document: Any, model_name: str) -> CommentedMap | None:
