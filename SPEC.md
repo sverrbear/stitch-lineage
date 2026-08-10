@@ -169,7 +169,7 @@ Setup friction is a product feature. `init` derives everything derivable and ask
 
 The Action drop is best-effort: `action/` lives in the repo, not in the wheel (`packages = ["stitch_lineage"]`), so a pip-installed `init` skips that step and says so rather than pretending. Open question, not decided here: promote `action/` to package data, or leave the templates a source-checkout convenience and let pip users copy them from the repo.
 
-Target: repo → configured in under two minutes with four human inputs (URL, key, one mapping confirm, later un-commenting the Action). Every derived value is written into `stitch.yml` explicitly rather than defaulted invisibly, so the config file remains the full, inspectable truth.
+Target: repo → configured in under two minutes with four human inputs (URL, key, one mapping confirm, one schemas confirm) — arming the Action is a later manual step, not one of the four. Every derived value is written into `stitch.yml` explicitly rather than defaulted invisibly, so the config file remains the full, inspectable truth.
 
 ### 6.1 `stitch.yml`
 
@@ -179,6 +179,9 @@ Target: repo → configured in under two minutes with four human inputs (URL, ke
 dbt:
   project_dir: .
   target_path: target/
+  auto_docs: true                       # run `dbt docs generate` at the start of
+                                        # every build; default false, and
+                                        # --docs/--no-docs overrides it either way
   # Identifier quoting/casing is NOT configurable — it is read from the
   # manifest's quoting config. dbt already knows; asking the user invites a
   # silent 0% bind rate that looks exactly like a broken tool.
