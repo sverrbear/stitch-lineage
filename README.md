@@ -87,7 +87,7 @@ Commands that don't call the Metabase API (`build --no-metabase`, `search`, `sug
 
 In the ERD, drag one column's handle onto another's. A dialog names both endpoints, asks for the cardinality, and stages the declaration — the edge then draws dashed until it is applied, and a bar above the canvas lists everything staged so far with a way to drop any of it.
 
-Relationships you declare in the app never touch your repo directly. They are staged to `.stitch/staged_relationships.yml` (local, like the rest of `.stitch/`), and `stitch apply` materializes them into your model YAML as a separate, reviewable step:
+Nothing you do in the app touches your repo directly. Relationships stage to `.stitch/staged_relationships.yml` and description edits to `.stitch/staged_descriptions.yml` (local, like the rest of `.stitch/`), and `stitch apply` materializes all of it into your model YAML as one separate, reviewable step:
 
 ```bash
 stitch apply --dry-run           # exactly what would change, and nothing else
@@ -122,6 +122,20 @@ applied 1 relationship — graph updated, refresh the app · next 'stitch build'
 ```
 
 A `relationships` test lands as a validated edge and a meta declaration as a declared one — exactly what the next build reads back out of the manifest, which is why the patch is a preview of state your repo already contains and never an invention. `--no-graph-update` skips it; `--build` runs a full `stitch build` afterwards (`dbt docs generate` and all) when you want everything reconciled on the spot.
+
+## Editing documentation
+
+Column and model descriptions are staged and applied through the same flow. An edit lands in `.stitch/staged_descriptions.yml` (one entry per model+column, last write wins), and the next `stitch apply` writes it onto the model or column entry in its `_schema.yml`:
+
+```diff
+       - name: match_id
+-        description: "The unique identifier for the match."
++        description: |
++          One row per match.
++          Null for unmatched likes.
+```
+
+The same guarantees hold: the `description:` key is created when it is missing, multi-line text becomes a `|` block, the file's own quoting style is kept, a description the repo already has is reported as nothing to do, and everything around it survives byte-identically. Relationships and descriptions applied in one run share one diff, one confirmation and one graph patch.
 
 Applied entries clear from the staging store; anything that could not be applied stays staged and is reported with the reason.
 
