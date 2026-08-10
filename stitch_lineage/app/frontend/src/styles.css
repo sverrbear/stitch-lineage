@@ -13,6 +13,7 @@
   --snowflake: #29b5e8;
   --metabase: #509ee3;
   --edge: #9aa4b1;
+  --edge-strong: #6b7787;
   --edge-weak: #b8845c;
   --ok: #2e9e63;
   --shadow: 0 8px 30px rgba(20, 30, 50, 0.12);
@@ -27,6 +28,7 @@
   --border: #303a46;
   --accent: #7d8ff0;
   --edge: #5d6976;
+  --edge-strong: #8e9cab;
   --edge-weak: #c08a55;
   --ok: #46c98a;
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
@@ -1583,6 +1585,17 @@ kbd {
   text-decoration: underline;
 }
 
+/* the two rows a hovered relationship joins, so you can see what it connects
+   without a permanent label floating over the canvas (#65) */
+.erd-column.lit {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.erd-edge.hovered .react-flow__edge-path {
+  stroke-width: 3;
+}
+
 .erd-column.key .erd-column-name {
   font-weight: 650;
 }
@@ -1621,9 +1634,29 @@ kbd {
   background: var(--bg-hover);
 }
 
+/* A relationship has to be followable across a busy model, so a declared one is
+   drawn at the text colour's weight rather than the faint canvas grey (#65). */
 .erd-edge .react-flow__edge-path {
-  stroke: var(--edge);
-  stroke-width: 1.8;
+  stroke: var(--edge-strong);
+  stroke-width: 2;
+}
+
+/* the `1` / `*` a model view puts at each end of a relationship */
+.erd-markers {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.erd-marker-glyph {
+  fill: var(--edge-strong);
+  font: 650 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.erd-edge.staged ~ .erd-marker-glyph,
+.erd-edge.suggested .react-flow__edge-path {
+  opacity: 0.75;
 }
 
 .erd-edge .react-flow__edge-text {
