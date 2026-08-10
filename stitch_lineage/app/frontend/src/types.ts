@@ -72,6 +72,12 @@ export interface StitchMeta {
   /** Routing prefixes hidden from model display names (serve.strip_model_prefixes). */
   strip_model_prefixes?: string[]
   /**
+   * Per-database `metabase.databases[].table_prefix` values. Binding strips them to
+   * match dev-target artifacts against a prod-pointed Metabase; the app hides them
+   * from the physical names it displays for the same reason (#80).
+   */
+  table_prefixes?: string[]
+  /**
    * Whether this build has the staging API: true under `stitch serve`, false in
    * a static export, absent on a serve that predates the flag (probe instead).
    */

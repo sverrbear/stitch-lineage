@@ -49,7 +49,13 @@ import {
   type ErdScope,
 } from '../lib/erd'
 import { erdNodeHeight, layoutErd } from '../lib/erdLayout'
-import { NODE_TYPE_NAME, displayModelName, displayName, fullName } from '../lib/present'
+import {
+  NODE_TYPE_NAME,
+  displayModelName,
+  displayName,
+  displayTableName,
+  fullName,
+} from '../lib/present'
 import {
   groupStagedByTarget,
   listStaged,
@@ -117,8 +123,11 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
   const hidden = model.columns.length - visible.length
   const collapsible = model.columns.some((column) => !column.isKey)
   // The dbt model name is the header; the physical table is a subtitle at most, and
-  // only when it says something the schema line does not already say.
-  const table = model.node.table
+  // only when it says something the name does not already say. The configured
+  // table_prefix comes off first — `sis_fct_x` is this machine's dev alias, so with
+  // it gone the line is usually redundant and goes away entirely (#80).
+  const name = displayName(model.node)
+  const table = displayTableName(model.node.table)
 
   return (
     <div className={`erd-node${model.external ? ' external' : ''}`} onPointerDown={onPointerDown}>
@@ -130,16 +139,24 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
         onClick={open(model.node.node_id)}
         onKeyDown={openOnEnter(model.node.node_id)}
       >
+        {/* The header is the NAME's line: `mart_content_feed_impressions_daily` used to
+            shove the type tag out of the card, so the tag moved down to the detail line
+            and the name gets the full width, ellipsised with a tooltip (#80). */}
         <div className="erd-node-header">
           <SystemBadge nodeType={model.node.node_type} />
-          <span className="erd-node-name">{displayName(model.node)}</span>
-          <span className="erd-node-kind">{NODE_TYPE_NAME[model.node.node_type]}</span>
+          <span className="erd-node-name" title={name}>
+            {name}
+          </span>
           {model.external && <span className="erd-external-tag">other scope</span>}
         </div>
         <div className="erd-node-schema">
-          {model.node.schema ?? ''}
-          {table && table !== displayName(model.node) ? (
-            <span className="erd-node-relation" title="physical table in the warehouse">
+          <span className="erd-node-kind">{NODE_TYPE_NAME[model.node.node_type]}</span>
+          <span className="erd-node-scope">{model.node.schema ?? ''}</span>
+          {table && table !== name ? (
+            <span
+              className="erd-node-relation"
+              title={`${model.node.table} — physical table in the warehouse`}
+            >
               {table}
             </span>
           ) : null}
@@ -170,7 +187,9 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
               isConnectable={connectable}
               title={connectable ? RELATE_HINT : undefined}
             />
-            <span className="erd-column-name">{column.name}</span>
+            <span className="erd-column-name" title={column.name}>
+              {column.name}
+            </span>
             <span className="erd-column-type">{column.dataType ?? ''}</span>
             <Handle
               type="source"
