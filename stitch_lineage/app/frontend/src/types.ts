@@ -82,6 +82,11 @@ export interface StitchMeta {
    * a static export, absent on a serve that predates the flag (probe instead).
    */
   staging_enabled?: boolean
+  /**
+   * Whether this build can run `stitch apply` (#72): a serve with a stitch.yml to
+   * apply with. Absent on a serve that predates the flag — probe instead.
+   */
+  apply_enabled?: boolean
 }
 
 declare global {

@@ -1,12 +1,19 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   StagingError,
-  errorMessage,
+  applyStaged,
   cardinalitySentence,
+  editRelationship,
+  errorMessage,
   groupStagedByTarget,
   listStaged,
+  listStagedDescriptions,
+  previewApply,
+  probeApply,
   probeStaging,
+  stageDescription,
   stageRelationship,
+  unstageDescription,
   unstageRelationship,
   type StagedRelationship,
 } from './staging'
@@ -215,6 +222,188 @@ describe('cardinalitySentence', () => {
   it('falls back to the many-to-one reading rather than saying nothing', () => {
     expect(cardinalitySentence({ ...shape, cardinality: 'nonsense' })).toBe(
       cardinalitySentence(shape),
+    )
+  })
+})
+
+// --- editing, descriptions and apply (#70 / #71 / #72) -----------------------
+
+describe('editRelationship', () => {
+  it('PUTs the change and reports a re-hash as a move', async () => {
+    const fetcher = vi.fn(async () => respond(200, { relationship: ENTRY, moved: true }))
+    const result = await editRelationship(
+      'old-id',
+      {
+        from_model: 'fct_orders',
+        from_column: 'customer_id',
+        to_model: 'dim_customers',
+        to_column: 'customer_id',
+        cardinality: 'one-to-one',
+      },
+      fetcher as unknown as typeof fetch,
+    )
+    expect(result.moved).toBe(true)
+    const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('api/staged-relationships/old-id')
+    expect(init.method).toBe('PUT')
+    expect(JSON.parse(String(init.body))).toMatchObject({ shape: 'simple', cardinality: 'one-to-one' })
+  })
+
+  it('treats an unchanged-endpoint edit as staying put', async () => {
+    const fetcher = vi.fn(async () => respond(200, { relationship: ENTRY }))
+    const result = await editRelationship(
+      ENTRY.id,
+      { ...ENTRY },
+      fetcher as unknown as typeof fetch,
+    )
+    expect(result.moved).toBe(false)
+  })
+
+  it('surfaces the server’s refusal verbatim', async () => {
+    const fetcher = vi.fn(async () => respond(422, { detail: "column 'ghost' is not a column" }))
+    await expect(
+      editRelationship('x', { ...ENTRY }, fetcher as unknown as typeof fetch),
+    ).rejects.toThrow("column 'ghost' is not a column")
+  })
+})
+
+describe('staged descriptions', () => {
+  const DESCRIPTION = {
+    id: 'desc-1',
+    entity: 'fct_orders',
+    column: 'customer_id',
+    new_description: 'The customer.',
+  }
+
+  it('unwraps the descriptions envelope', async () => {
+    const fetcher = vi.fn(async () => respond(200, { descriptions: [DESCRIPTION] }))
+    expect(await listStagedDescriptions(fetcher as unknown as typeof fetch)).toEqual([DESCRIPTION])
+  })
+
+  it('treats a missing envelope as nothing staged', async () => {
+    const fetcher = vi.fn(async () => respond(200, {}))
+    expect(await listStagedDescriptions(fetcher as unknown as typeof fetch)).toEqual([])
+  })
+
+  it('PUTs an edit and says whether it replaced one', async () => {
+    const fetcher = vi.fn(async () => respond(200, { description: DESCRIPTION, created: false }))
+    const result = await stageDescription(
+      { entity: 'fct_orders', column: 'customer_id', new_description: 'The customer.' },
+      fetcher as unknown as typeof fetch,
+    )
+    expect(result.created).toBe(false)
+    const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('api/staged-descriptions')
+    expect(init.method).toBe('PUT')
+    expect(JSON.parse(String(init.body))).toEqual({
+      entity: 'fct_orders',
+      column: 'customer_id',
+      new_description: 'The customer.',
+    })
+  })
+
+  it('sends a model-level edit with an explicit null column', async () => {
+    const fetcher = vi.fn(async () => respond(201, { description: DESCRIPTION, created: true }))
+    await stageDescription(
+      { entity: 'fct_orders', column: null, new_description: 'Orders.' },
+      fetcher as unknown as typeof fetch,
+    )
+    const [, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(String(init.body)).column).toBeNull()
+  })
+
+  it('treats discarding an already-gone edit as done', async () => {
+    const fetcher = vi.fn(async () => respond(404))
+    await expect(
+      unstageDescription('desc-1', fetcher as unknown as typeof fetch),
+    ).resolves.toBeUndefined()
+  })
+
+  it('raises anything else', async () => {
+    const fetcher = vi.fn(async () => respond(503, { detail: 'staged store is unreadable' }))
+    await expect(
+      unstageDescription('desc-1', fetcher as unknown as typeof fetch),
+    ).rejects.toThrow(StagingError)
+  })
+})
+
+describe('probeApply', () => {
+  it('is a definitive no when the build says so', async () => {
+    const fetcher = vi.fn()
+    expect(await probeApply(false, fetcher as unknown as typeof fetch)).toBe(false)
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it('accepts a refusal as proof the route exists', async () => {
+    // 422 means "this apply is invalid", which still means apply is available
+    const fetcher = vi.fn(async () => respond(422, { detail: 'nothing staged' }))
+    expect(await probeApply(undefined, fetcher as unknown as typeof fetch)).toBe(true)
+  })
+
+  it('hides the button when the route is absent or the fetch throws', async () => {
+    expect(await probeApply(true, (async () => respond(404)) as unknown as typeof fetch)).toBe(false)
+    const broken = async () => {
+      throw new TypeError('Failed to fetch')
+    }
+    expect(await probeApply(true, broken as unknown as typeof fetch)).toBe(false)
+  })
+})
+
+describe('previewApply / applyStaged', () => {
+  it('reads a preview as the panel needs it', async () => {
+    const fetcher = vi.fn(async () =>
+      respond(200, {
+        write_to: 'meta',
+        staged: { relationships: 2, descriptions: 1 },
+        files: [{ path: 'models/_schema.yml', diff: '--- a\n+++ b\n' }],
+        unappliable: [{ entry: { kind: 'relationship', label: 'a → b' }, reason: 'no schema file' }],
+        unchanged: [],
+      }),
+    )
+    const preview = await previewApply(fetcher as unknown as typeof fetch)
+    expect(preview.files).toHaveLength(1)
+    expect(preview.unappliable[0].entry.kind).toBe('relationship')
+    const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('api/apply/preview')
+    expect(init.method).toBe('POST')
+  })
+
+  it('fills in a partial preview rather than crashing the panel', async () => {
+    const fetcher = vi.fn(async () => respond(200, {}))
+    const preview = await previewApply(fetcher as unknown as typeof fetch)
+    expect(preview).toEqual({
+      write_to: '',
+      staged: { relationships: 0, descriptions: 0 },
+      files: [],
+      unappliable: [],
+      unchanged: [],
+    })
+  })
+
+  it('reads an apply outcome, refusals included', async () => {
+    const fetcher = vi.fn(async () =>
+      respond(200, {
+        written: ['models/a.yml'],
+        refused: [{ path: 'models/b.yml', reason: 'has uncommitted changes' }],
+        applied: 3,
+        still_staged: 1,
+        unappliable: [],
+        graph: { patched: true, edges_added: 2, descriptions_updated: 1 },
+      }),
+    )
+    const outcome = await applyStaged(fetcher as unknown as typeof fetch)
+    expect(outcome.written).toEqual(['models/a.yml'])
+    expect(outcome.refused[0].reason).toBe('has uncommitted changes')
+    expect(outcome.graph.patched).toBe(true)
+  })
+
+  it('surfaces a 503 from either route', async () => {
+    const broken = async () => respond(503, { detail: 'manifest is unreadable' })
+    await expect(previewApply(broken as unknown as typeof fetch)).rejects.toThrow(
+      'manifest is unreadable',
+    )
+    await expect(applyStaged(broken as unknown as typeof fetch)).rejects.toThrow(
+      'manifest is unreadable',
     )
   })
 })
