@@ -7,7 +7,10 @@ from typer.testing import CliRunner
 from stitch_lineage import __version__
 from stitch_lineage.cli import _print_coverage, app, console
 from stitch_lineage.graph.schema import (
+    Confidence,
     Coverage,
+    Edge,
+    EdgeType,
     Graph,
     Node,
     NodeType,
@@ -568,3 +571,132 @@ def test_build_docs_runner_failure_fails_cleanly(tmp_path, monkeypatch):
     result = runner.invoke(app, ["build", "--docs"])
     assert result.exit_code == 1
     assert "dbt executable not found on PATH" in result.output
+
+
+# --- stitch impact --column: point-query blast radius (issue #86) --------------------
+
+
+def _write_impact_graph(tmp_path):
+    """Synthetic chain: fct_matches.match_intensity -> mart_engagement -> field -> card."""
+    fct, mart = "model.demo.fct_matches", "model.demo.mart_engagement"
+    fct_col, mart_col = column_node_id(fct, "match_intensity"), column_node_id(mart, "m_i")
+    nodes = [
+        Node(node_id=fct, node_type=NodeType.MODEL, name="fct_matches"),
+        Node(node_id=mart, node_type=NodeType.MODEL, name="mart_engagement"),
+        Node(node_id=fct_col, node_type=NodeType.COLUMN, name="match_intensity"),
+        Node(node_id=mart_col, node_type=NodeType.COLUMN, name="m_i"),
+        Node(
+            node_id=column_node_id(mart, "match_intensity"),
+            node_type=NodeType.COLUMN,
+            name="match_intensity",
+        ),
+        Node(node_id="mb_field::101", node_type=NodeType.MB_FIELD, name="Match Intensity"),
+        Node(node_id="mb_card::412", node_type=NodeType.MB_CARD, name="Intensity by country"),
+        Node(node_id="mb_dash::9", node_type=NodeType.MB_DASHBOARD, name="Board"),
+    ]
+    edges = [
+        Edge(from_=fct_col, to=mart_col, edge_type=EdgeType.FEEDS, confidence=Confidence.EXACT),
+        Edge(
+            from_=mart_col,
+            to="mb_field::101",
+            edge_type=EdgeType.BINDS_TO,
+            confidence=Confidence.EXACT,
+        ),
+        Edge(
+            from_="mb_field::101",
+            to="mb_card::412",
+            edge_type=EdgeType.CONSUMED_BY,
+            confidence=Confidence.EXACT,
+        ),
+        Edge(
+            from_="mb_card::412",
+            to="mb_dash::9",
+            edge_type=EdgeType.APPEARS_ON,
+            confidence=Confidence.EXACT,
+        ),
+    ]
+    write_graph(Graph(nodes=nodes, edges=edges), tmp_path / ".stitch" / "graph.json")
+
+
+def test_impact_column_prints_the_blast_radius_offline(tmp_path, monkeypatch):
+    # no stitch.yml and no Metabase credentials: the point query reads graph.json only
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("STITCH_METABASE_API_KEY", raising=False)
+    _write_impact_graph(tmp_path)
+    result = runner.invoke(app, ["impact", "--column", "fct_matches.match_intensity"])
+    assert result.exit_code == 0, result.output
+    assert "fct_matches.match_intensity" in result.output
+    assert "1 downstream model: mart_engagement" in result.output
+    assert "#412 Intensity by country  (Board)" in result.output
+    assert "1 dashboard: Board" in result.output
+
+
+def test_impact_column_json_is_pipeable(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_impact_graph(tmp_path)
+    result = runner.invoke(app, ["impact", "--column", "fct_matches.match_intensity", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["node_id"] == "model.demo.fct_matches::match_intensity"
+    assert [card["card_id"] for card in payload["cards"]] == [412]
+    assert [ref["label"] for ref in payload["models"]] == ["mart_engagement"]
+
+
+def test_impact_column_ambiguous_reference_lists_candidates(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_impact_graph(tmp_path)
+    result = runner.invoke(app, ["impact", "--column", "match_intensity"])
+    assert result.exit_code == 1
+    assert "matches 2 columns" in result.output
+    assert "qualify it as model.column" in result.output
+    assert "fct_matches.match_intensity" in result.output
+
+
+def test_impact_column_unknown_reference_suggests(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_impact_graph(tmp_path)
+    result = runner.invoke(app, ["impact", "--column", "fct_matches.match_intensety"])
+    assert result.exit_code == 1
+    assert "no column matching" in result.output
+    assert "did you mean" in result.output
+    assert "fct_matches.match_intensity" in result.output
+    assert "stitch search" in result.output
+
+
+def test_impact_column_on_a_model_names_its_columns(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_impact_graph(tmp_path)
+    result = runner.invoke(app, ["impact", "--column", "fct_matches"])
+    assert result.exit_code == 1
+    assert "is a model, not a column" in result.output
+    assert "fct_matches.match_intensity" in result.output
+
+
+def test_impact_json_and_format_are_scoped_to_their_own_paths(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_impact_graph(tmp_path)
+    no_column = runner.invoke(app, ["impact", "--json"])
+    assert no_column.exit_code == 1
+    assert "--json requires --column" in no_column.output
+
+    wrong_format = runner.invoke(
+        app, ["impact", "--column", "fct_matches.match_intensity", "--format", "slack"]
+    )
+    assert wrong_format.exit_code == 1
+    assert "use --json with --column" in wrong_format.output
+
+
+def test_impact_column_documented_on_the_hidden_command(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    top_help = runner.invoke(app, ["--help"])
+    assert "impact" not in top_help.output
+    own_help = runner.invoke(app, ["impact", "--help"])
+    assert own_help.exit_code == 0
+    assert "--column" in own_help.output
+
+
+def test_impact_column_without_a_graph_points_at_build(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["impact", "--column", "fct_matches.match_intensity"])
+    assert result.exit_code == 1
+    assert "stitch build" in result.output

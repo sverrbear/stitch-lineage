@@ -183,6 +183,24 @@ Native SQL cards are counted but not resolved in Phase 0 (they are Phase 3); MBQ
 
 stitch can diff two graphs and walk the downstream blast radius — "this rename breaks 4 cards on 2 dashboards" — as a PR comment (`stitch impact --format github-comment`) or a Slack deploy alert (`--format slack`; templates in [`action/`](action/)). That workflow needs a baseline `graph.json` committed on the base branch, which conflicts with keeping the graph purely local, so it's shelved as the default story for now: the command is hidden from `--help` but fully functional if you keep your own baselines.
 
+The point query needs no baseline at all — it walks the current `graph.json` downstream from one column, so you can ask "what would a change here break" *before* the edit:
+
+```
+$ stitch impact --column fct_matches.match_intensity
+fct_matches.match_intensity
+  ├ 2 downstream models: mart_board_kpis, mart_engagement
+  ├ 2 downstream columns:
+      mart_board_kpis.match_intensity
+      mart_engagement.match_intensity
+  ├ 1 Metabase field: Match Intensity
+  ├ 2 Metabase cards:
+      #412 Match intensity by country  (Board dashboard, sverrir)
+      #418 Weekly intensity trend  (Board dashboard)
+  └ 1 dashboard: Board dashboard
+```
+
+It takes `model.column`, a bare column name when that is unique, or a full node id; anything unknown or ambiguous gets `stitch search`-style suggestions. Add `--json` to pipe it. No git, no baseline, no Metabase credentials.
+
 ## Built on
 
 stitch deliberately reuses the conventions of the tools next to it rather than reinventing them (SPEC §2): relationship metadata is written in `dbt-metabase`'s and `dbterd`'s meta keys, so those tools keep working unchanged on a stitch-annotated repo.
