@@ -23,6 +23,7 @@
 //     fall back to a fixed order that keeps the classic right→left reading.
 
 import {
+  DEFAULT_MARGIN,
   DEFAULT_STUB,
   outwardOf,
   segmentHitsBox,
@@ -56,8 +57,13 @@ export interface AnchorOptions {
   margin?: number
 }
 
-/** Clearance the direct-run test uses by default, in step with the router's own. */
-const DIRECT_RUN_MARGIN = 8
+/**
+ * Clearance the direct-run test keeps around a card. It IS the router's own, not a
+ * number that resembles it: a smaller one here would price a pair as clear that the
+ * router then has to detour around, and the whole point of the scoring is that the
+ * pair it calls cheap is the pair the router draws straight.
+ */
+const DIRECT_RUN_MARGIN = DEFAULT_MARGIN
 
 /** How far an anchor stays clear of its card's corners, so the stub has room to turn. */
 const CORNER_INSET = 20

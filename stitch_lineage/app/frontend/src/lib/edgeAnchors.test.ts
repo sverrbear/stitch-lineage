@@ -109,6 +109,26 @@ describe('chooseAnchors — the side each end attaches to', () => {
     expect(pathHitsRects(routed, [wall, source, target])).toEqual([])
   })
 
+  it('re-chooses as a card is dragged past its partner', () => {
+    // the choice is a function of the two rectangles and nothing else, which is what
+    // makes it re-run on a drag (#100): the component re-reads the card boxes and
+    // asks again, so the sides follow the cards rather than the direction of the join
+    const source = card('a', 0, 0)
+    const seen = [700, 400, -400, -900].map((x) => sides(end(source), end(card('b', x, 60))))
+    expect(seen).toEqual(['right→left', 'right→left', 'left→right', 'left→right'])
+  })
+
+  it('re-chooses when a card is expanded and grows past its partner', () => {
+    // expanding a table changes its height, which is exactly the case #62 reflows;
+    // the side pair has to be recomputed from the new box, not kept from the old one
+    const target = card('b', 500, 500)
+    const collapsed = card('a', 0, 0, CARD_W, 200)
+    const expanded = card('a', 0, 0, CARD_W, 800)
+    expect(sides(end(collapsed), end(target))).toBe('bottom→top')
+    // grown down past the target's row, leaving from the bottom would be a U-turn
+    expect(sides(end(expanded), end(target))).toBe('right→top')
+  })
+
   it('is deterministic, whatever order the obstacles arrive in', () => {
     const source = card('a', 0, 0)
     const target = card('b', 640, 520)

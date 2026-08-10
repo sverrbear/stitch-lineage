@@ -82,8 +82,13 @@ export interface RouteOptions {
  *  which has to know it to price a side pair by the run between the two stub points. */
 export const DEFAULT_STUB = 18
 
+/** Clearance kept around every card. Shared with lib/edgeAnchors for the same reason
+ *  as the stub: it prices a side pair by whether a card already blocks the run, and
+ *  a clearance that disagrees with the router's would price a route it cannot draw. */
+export const DEFAULT_MARGIN = 12
+
 const DEFAULTS = {
-  margin: 12,
+  margin: DEFAULT_MARGIN,
   stub: DEFAULT_STUB,
   turnPenalty: 34,
   detour: 280,
