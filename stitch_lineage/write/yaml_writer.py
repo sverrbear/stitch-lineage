@@ -373,9 +373,7 @@ def _write_description(model_entry: CommentedMap, entry: StagedDescription) -> N
         if existing is not None and str(existing).rstrip("\n") == str(value).rstrip("\n"):
             return
         target["description"] = value
-        if isinstance(value, LiteralScalarString) and not isinstance(
-            existing, LiteralScalarString
-        ):
+        if isinstance(value, LiteralScalarString) and not isinstance(existing, LiteralScalarString):
             _absorb_line_break(target, "description")
         return
     # a fresh key goes right after name:, where dbt convention puts it

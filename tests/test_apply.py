@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from ruamel.yaml import YAML
 from typer.testing import CliRunner
 
 from stitch_lineage.app.server import create_app
@@ -21,7 +22,15 @@ from stitch_lineage.graph.schema import (
     column_node_id,
 )
 from stitch_lineage.io.graph_store import read_graph, write_graph
-from stitch_lineage.io.staged_store import StagedRelationship, read_staged, write_staged
+from stitch_lineage.io.staged_store import (
+    StagedDescription,
+    StagedRelationship,
+    descriptions_path,
+    read_descriptions,
+    read_staged,
+    write_descriptions,
+    write_staged,
+)
 
 runner = CliRunner()
 
@@ -625,3 +634,137 @@ def test_build_runs_even_when_everything_was_already_declared(repo, store, build
 
     assert _run("--yes", "--build").exit_code == 0
     assert len(builds) == 1
+
+
+# --- descriptions in the same run (issue #70) ---------------------------------------------
+
+
+def _stage_descriptions(repo, *entries):
+    write_descriptions(list(entries), descriptions_path(repo / ".stitch"))
+
+
+def _description(entity="fct_orders", column="customer_id", text="Who placed it, FK to customers"):
+    return StagedDescription(entity=entity, column=column, new_description=text)
+
+
+def _yaml_value(repo, path, model, column=None):
+    document = YAML(typ="safe").load((repo / path).read_text())
+    entry = next(item for item in document["models"] if item["name"] == model)
+    if column is None:
+        return entry.get("description")
+    return next(item for item in entry["columns"] if item["name"] == column).get("description")
+
+
+def test_a_staged_description_is_written_and_cleared(repo):
+    _stage_descriptions(repo, _description())
+    result = _run("--yes")
+    assert result.exit_code == 0
+    assert _yaml_value(repo, MARTS, "fct_orders", "customer_id") == "Who placed it, FK to customers"
+    assert read_descriptions(descriptions_path(repo / ".stitch")) == []
+    assert "applied 1 description" in result.output
+
+
+def test_a_model_description_is_written(repo):
+    _stage_descriptions(repo, _description(entity="dim_customers", column=None, text="Customers"))
+    assert _run("--yes").exit_code == 0
+    assert _yaml_value(repo, MARTS, "dim_customers") == "Customers"
+
+
+def test_relationships_and_descriptions_apply_in_one_run(repo, store):
+    _stage(store, _entry())
+    _stage_descriptions(repo, _description())
+    result = _run("--yes")
+    assert result.exit_code == 0
+    assert "1 staged relationship" in result.output
+    assert "1 staged description" in result.output
+    assert "applied 1 relationship and 1 description" in result.output
+    written = (repo / MARTS).read_text()
+    assert "- relationships:" in written
+    assert "Who placed it, FK to customers" in written
+    assert read_staged(store) == []
+    assert read_descriptions(descriptions_path(repo / ".stitch")) == []
+
+
+def test_a_dry_run_shows_the_description_diff_and_writes_nothing(repo):
+    before = (repo / MARTS).read_text()
+    _stage_descriptions(repo, _description())
+    result = _run("--dry-run")
+    assert result.exit_code == 0
+    # the replaced line, in the quoting style the file already used
+    assert "+        description: 'Who placed it, FK to customers'" in result.output
+    assert "-        description: 'Who placed the order'" in result.output
+    assert (repo / MARTS).read_text() == before
+    assert len(read_descriptions(descriptions_path(repo / ".stitch"))) == 1
+
+
+def test_an_empty_run_mentions_both_ways_to_stage(repo):
+    result = _run()
+    assert result.exit_code == 0
+    assert "nothing staged" in result.output
+    assert "edit a description" in result.output
+
+
+def test_the_graph_patch_updates_node_descriptions(repo):
+    graph_path = _graph_file(repo)
+    _stage_descriptions(repo, _description(), _description(entity="dim_customers", column=None))
+
+    result = _run("--yes")
+    assert result.exit_code == 0
+    assert "graph updated, refresh the app" in result.output
+    nodes = {node.node_id: node for node in read_graph(graph_path).nodes}
+    assert nodes[ORDERS_FK].description == "Who placed it, FK to customers"
+    assert nodes["model.demo.dim_customers"].description == "Who placed it, FK to customers"
+
+
+def test_a_description_whose_target_is_not_in_the_graph_is_reported(repo):
+    graph_path = _graph_file(repo, without=("fct_orders.customer_id",))
+    _stage_descriptions(repo, _description())
+
+    result = _run("--yes")
+    assert result.exit_code == 0
+    assert "not added to the graph" in result.output
+    assert "fct_orders.customer_id description" in result.output
+    assert read_graph(graph_path).nodes  # graph still intact
+    assert _yaml_value(repo, MARTS, "fct_orders", "customer_id") == "Who placed it, FK to customers"
+
+
+def test_no_graph_update_leaves_descriptions_out_of_the_graph(repo):
+    graph_path = _graph_file(repo)
+    before = graph_path.read_bytes()
+    _stage_descriptions(repo, _description())
+
+    assert _run("--yes", "--no-graph-update").exit_code == 0
+    assert graph_path.read_bytes() == before
+
+
+def test_an_unappliable_description_stays_staged(repo):
+    orphan = _description(entity="dim_stores", column=None, text="Stores")
+    _stage_descriptions(repo, orphan)
+
+    result = _run("--yes")
+    assert result.exit_code == 1
+    assert "cannot apply" in result.output
+    assert "has no schema YAML file" in result.output
+    assert [entry.id for entry in read_descriptions(descriptions_path(repo / ".stitch"))] == [
+        orphan.id
+    ]
+
+
+def test_a_dirty_file_refuses_the_description_too(repo):
+    _stage_descriptions(repo, _description())
+    target = repo / MARTS
+    target.write_text(target.read_text() + "\n# local edit\n")
+
+    result = _run("--yes")
+    assert result.exit_code == 1
+    assert "refusing" in result.output
+    assert len(read_descriptions(descriptions_path(repo / ".stitch"))) == 1
+
+
+def test_a_corrupt_description_store_names_the_fix(repo):
+    path = descriptions_path(repo / ".stitch")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("descriptions: [unclosed\n")
+    result = _run("--yes")
+    assert result.exit_code == 1
+    assert "delete the file" in result.output

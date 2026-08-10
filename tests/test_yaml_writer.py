@@ -11,7 +11,6 @@ import shutil
 from pathlib import Path
 
 import pytest
-
 from ruamel.yaml import YAML
 
 from stitch_lineage.config import RelationshipsConfig
@@ -511,13 +510,14 @@ def test_an_existing_block_scalar_matches_whatever_its_trailing_newline(repo):
         assert plan.results[0].status == "unchanged"
 
 
-def test_a_model_with_no_schema_file_is_unappliable(repo):
-    (result,) = _plan(repo, [_description(entity="dim_stores", column=None, text="Stores")]).results
+def test_a_description_on_a_model_with_no_schema_file_is_unappliable(repo):
+    entry = _description(entity="dim_stores", column=None, text="Stores")
+    (result,) = _plan(repo, [entry]).results
     assert result.status == "failed"
     assert "has no schema YAML file" in result.message
 
 
-def test_an_unknown_model_is_unappliable(repo):
+def test_a_description_on_an_unknown_model_is_unappliable(repo):
     (result,) = _plan(repo, [_description(entity="dim_ghost", column=None, text="Ghost")]).results
     assert result.status == "failed"
     assert "not in the manifest" in result.message
