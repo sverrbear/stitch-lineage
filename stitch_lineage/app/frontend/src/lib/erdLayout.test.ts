@@ -75,6 +75,32 @@ describe('layoutErd', () => {
     expect(gap('h6')).toBeLessThan(gap('h1'))
   })
 
+  it('wraps a tall layer into side-by-side stacks, still left of what it points at', () => {
+    // the shape a real scope hits: a dozen facts all pointing at one dimension
+    const sources = Array.from({ length: 12 }, (_, i) => `fct_${String(i).padStart(2, '0')}`)
+    const layout = layoutErd(
+      nodes(...sources, 'dim_users'),
+      sources.map((id) => edge(id, 'dim_users')),
+    )
+    const columns = new Set(sources.map((id) => layout.get(id)!.x))
+    expect(columns.size).toBeGreaterThan(1)
+    const hub = layout.get('dim_users')!.x
+    for (const id of sources) expect(layout.get(id)!.x).toBeLessThan(hub)
+    // ...and the whole component stays inside the wrap budget
+    const ys = [...layout.values()].map((position) => position.y)
+    expect(Math.max(...ys) - Math.min(...ys)).toBeLessThan(1400)
+  })
+
+  it('honours an explicit wrap budget', () => {
+    const ids = ['a', 'b', 'c', 'target']
+    const wrapped = layoutErd(
+      nodes(...ids),
+      ['a', 'b', 'c'].map((id) => edge(id, 'target')),
+      { maxLayerHeight: 1 },
+    )
+    expect(new Set(['a', 'b', 'c'].map((id) => wrapped.get(id)!.x)).size).toBe(3)
+  })
+
   it('separates connected components vertically', () => {
     const layout = layoutErd(nodes('a', 'b', 'c', 'd'), [edge('a', 'b'), edge('c', 'd')])
     const first = Math.max(layout.get('a')!.y, layout.get('b')!.y)
