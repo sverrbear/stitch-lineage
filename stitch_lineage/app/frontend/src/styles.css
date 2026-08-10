@@ -126,11 +126,6 @@ kbd {
   text-decoration: none;
 }
 
-.app-brand-marks {
-  display: inline-flex;
-  gap: 2px;
-}
-
 .app-nav {
   display: flex;
   gap: 14px;
@@ -1067,11 +1062,59 @@ kbd {
 
 /* staging: drawable handles, the staged bar, the confirm modal */
 
+/* A relationship is drawn from a column's edge. The strip is the target you
+   actually hit: full row height, 16px wide, inside the card (so nothing clips
+   it) — roughly 40x the old dot's area, and it still reads as an edge anchor
+   because the dot is drawn at its centre. */
+.erd-handle {
+  width: 16px;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  top: 0;
+  transform: none;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.erd-handle.react-flow__handle-left {
+  left: 0;
+}
+
+.erd-handle.react-flow__handle-right {
+  right: 0;
+  left: auto;
+}
+
 .erd-handle.drawable {
-  width: 9px;
-  height: 9px;
-  background: var(--accent);
   cursor: crosshair;
+}
+
+.erd-handle.drawable::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.3;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+/* hovering the row is what tells you the row can be dragged from */
+.erd-column:hover .erd-handle.drawable::after {
+  opacity: 0.85;
+}
+
+.erd-handle.drawable:hover::after,
+.erd-handle.react-flow__handle-connecting::after,
+.erd-handle.react-flow__handle-valid::after {
+  opacity: 1;
+  transform: scale(1.5);
 }
 
 .erd-edge.staged .react-flow__edge-path {
@@ -1439,7 +1482,17 @@ kbd {
   min-width: 230px;
   max-width: 300px;
   box-shadow: 0 1px 3px rgba(10, 20, 35, 0.12);
-  overflow: hidden;
+  /* NOT `overflow: hidden`: it clipped React Flow's connection handles, and a
+     clipped region is not hit-testable, so pointer-down landed on the card and
+     no connection ever started (#64). The children round their own corners. */
+}
+
+.erd-node-title {
+  border-radius: 9px 9px 0 0;
+}
+
+.erd-node > :last-child {
+  border-radius: 0 0 9px 9px;
 }
 
 .erd-node.external {
@@ -1552,15 +1605,6 @@ kbd {
   color: var(--text-muted);
   font-size: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-
-.erd-handle {
-  width: 5px;
-  height: 5px;
-  background: var(--edge);
-  border: none;
-  min-width: 0;
-  min-height: 0;
 }
 
 .erd-expand {
