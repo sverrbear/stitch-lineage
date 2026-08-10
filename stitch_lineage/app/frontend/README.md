@@ -71,6 +71,15 @@ scripts/      make-dev-graph.mjs
 dev-public/   dev-only static dir (never bundled into dist/)
 ```
 
+## Staging (ERD drawing)
+
+Dragging a column handle onto another in the ERD stages a relationship through
+the `stitch serve` API (`src/lib/staging.ts`); nothing touches the dbt repo until
+somebody runs `stitch apply`. The capability is detected, never assumed:
+`GET /api/meta`'s `staging_enabled` is a definitive no when false, and otherwise
+the endpoint is probed once — so a static export, or a `serve` that predates the
+flag, renders a plain read-only ERD with no handles rather than a broken canvas.
+
 ## Naming rules
 
 Every surface — panels, chips, canvases, search — takes a node's label and its
