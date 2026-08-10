@@ -82,7 +82,17 @@ export function Fact({ label, children }: { label: string; children?: ReactNode 
 }
 
 /** Footer legend for the lineage / ERD / map canvases (spec §9 + confidence styling). */
-export function GraphLegend({ erd = false, rollup = false }: { erd?: boolean; rollup?: boolean }) {
+export function GraphLegend({
+  erd = false,
+  rollup = false,
+  staged = false,
+  suggested = false,
+}: {
+  erd?: boolean
+  rollup?: boolean
+  staged?: boolean
+  suggested?: boolean
+}) {
   return (
     <div className="graph-legend">
       <span className="legend-item">
@@ -110,6 +120,22 @@ export function GraphLegend({ erd = false, rollup = false }: { erd?: boolean; ro
           <span className="legend-item">
             <span className="validated-badge">✓</span> validated (relationships test)
           </span>
+          {staged && (
+            <span className="legend-item">
+              <svg width="26" height="8">
+                <line x1="0" y1="4" x2="26" y2="4" className="legend-line-dashed" />
+              </svg>
+              staged — not in the repo until <code>stitch apply</code>
+            </span>
+          )}
+          {suggested && (
+            <span className="legend-item">
+              <svg width="26" height="8">
+                <line x1="0" y1="4" x2="26" y2="4" className="legend-line-dotted" />
+              </svg>
+              suggested — nobody has declared this yet
+            </span>
+          )}
         </>
       ) : (
         <>

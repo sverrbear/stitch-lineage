@@ -47,7 +47,7 @@ Everything is a file in (or derived from) the dbt repo. One CLI, three commands 
  │
  ├─ .stitch/
  │   ├─ graph.json           ◄── the database. Deterministic, committed.
- │   ├─ layout.yml           ◄── ERD positions + saved views. Committed.
+ │   ├─ layout.yml           ◄── ERD positions, saved views, dismissed suggestions. Local (§8.2).
  │   └─ cache/               ◄── raw Metabase payloads. Gitignored.
  │
  stitch serve   ──► localhost app: catalog, column lineage, ERD editor

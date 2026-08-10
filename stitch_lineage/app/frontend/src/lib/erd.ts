@@ -55,10 +55,26 @@ export interface ErdModel {
   external: boolean
 }
 
+/** A pending declaration (staged, or merely suggested) on this graph's node ids. */
+export interface ErdStagedRelationship {
+  id: string
+  fromModelId: string
+  toModelId: string
+  fromColumn: string
+  toColumn: string
+  cardinality: string
+}
+
 export interface ErdData {
   scope: ErdScope
   models: ErdModel[]
   relationships: ErdRelationship[]
+  /** Staged (not yet applied) declarations touching this scope. */
+  staged: ErdStagedRelationship[]
+  /** Suggested candidates DRAWN for this scope — the strongest, capped. */
+  suggested: ErdStagedRelationship[]
+  /** In scope but not drawn, because the canvas would stop being readable. */
+  suggestedHidden: number
 }
 
 function isErdModel(node: GraphNode): boolean {
@@ -231,7 +247,22 @@ export function initialScope(scopes: ErdScope[], configured?: string | null): In
  * ERD for one scope: its models, plus any model a scoped relationship points
  * at (marked `external` — FK targets usually live in another schema).
  */
-export function erdForScope(index: GraphIndex, scope: ErdScope): ErdData {
+/**
+ * Candidate edges the canvas will draw at once. The naming heuristic alone
+ * proposes hundreds on a real graph, and a hundred dotted lines is not a
+ * suggestion, it is a hairball — the panel keeps the full list, and what is not
+ * drawn is counted rather than hidden.
+ */
+export const MAX_DRAWN_SUGGESTIONS = 30
+
+export function erdForScope(
+  index: GraphIndex,
+  scope: ErdScope,
+  staged: ErdStagedRelationship[] = [],
+  /** Strongest first — the cap keeps the head of this list. */
+  suggested: ErdStagedRelationship[] = [],
+  maxSuggested: number = MAX_DRAWN_SUGGESTIONS,
+): ErdData {
   const inScope = new Set<string>()
   for (const node of index.nodes) {
     if (isErdModel(node) && modelInScope(node, scope)) inScope.add(node.node_id)
@@ -240,16 +271,26 @@ export function erdForScope(index: GraphIndex, scope: ErdScope): ErdData {
   const rels = relationships(index).filter(
     (rel) => inScope.has(rel.fromModelId) || inScope.has(rel.toModelId),
   )
+  const touchesScope = (rel: ErdStagedRelationship) =>
+    inScope.has(rel.fromModelId) || inScope.has(rel.toModelId)
+  const scopedStaged = staged.filter(touchesScope)
+  // a suggestion already staged is no longer a suggestion, whatever the server said
+  const stagedIds = new Set(scopedStaged.map((rel) => rel.id))
+  const inScopeSuggested = suggested.filter((rel) => touchesScope(rel) && !stagedIds.has(rel.id))
+  const scopedSuggested = inScopeSuggested.slice(0, Math.max(0, maxSuggested))
+  const suggestedHidden = inScopeSuggested.length - scopedSuggested.length
 
   const externalIds = new Set<string>()
-  for (const rel of rels) {
+  for (const rel of [...rels, ...scopedStaged, ...scopedSuggested]) {
     for (const id of [rel.fromModelId, rel.toModelId]) {
       if (!inScope.has(id) && index.nodesById.has(id)) externalIds.add(id)
     }
   }
 
+  // A staged or suggested endpoint has to stay visible too, or its edge has no
+  // handle to land on.
   const keyColumnsByModel = new Map<string, Set<string>>()
-  for (const rel of rels) {
+  for (const rel of [...rels, ...scopedStaged, ...scopedSuggested]) {
     for (const [modelId, column] of [
       [rel.fromModelId, rel.fromColumn],
       [rel.toModelId, rel.toColumn],
@@ -277,7 +318,59 @@ export function erdForScope(index: GraphIndex, scope: ErdScope): ErdData {
     return aRel - bRel || a.node.name.localeCompare(b.node.name)
   })
 
-  return { scope, models, relationships: rels }
+  return {
+    scope,
+    models,
+    relationships: rels,
+    staged: scopedStaged,
+    suggested: scopedSuggested,
+    suggestedHidden,
+  }
+}
+
+/**
+ * Staged entries speak dbt model NAMES; the canvas speaks node ids. Entries whose
+ * model is not in this graph come back as `unresolved` rather than vanishing —
+ * a staged declaration the user cannot see is a staged declaration they will be
+ * surprised by at `stitch apply`.
+ */
+export function resolveStaged(
+  index: GraphIndex,
+  entries: Array<{
+    id: string
+    from_model: string
+    from_column: string
+    to_model: string
+    to_column: string
+    cardinality?: string
+  }>,
+): { drawable: ErdStagedRelationship[]; unresolvedIds: string[] } {
+  const byName = new Map<string, string>()
+  for (const node of index.nodes) {
+    if (!isErdModel(node)) continue
+    const key = displayName(node).toLowerCase()
+    // a model wins over a source of the same name, and the first model wins over later ones
+    if (!byName.has(key) || node.node_type === 'model') byName.set(key, node.node_id)
+  }
+  const drawable: ErdStagedRelationship[] = []
+  const unresolvedIds: string[] = []
+  for (const entry of entries) {
+    const fromModelId = byName.get(entry.from_model.toLowerCase())
+    const toModelId = byName.get(entry.to_model.toLowerCase())
+    if (!fromModelId || !toModelId) {
+      unresolvedIds.push(entry.id)
+      continue
+    }
+    drawable.push({
+      id: entry.id,
+      fromModelId,
+      toModelId,
+      fromColumn: entry.from_column.toLowerCase(),
+      toColumn: entry.to_column.toLowerCase(),
+      cardinality: entry.cardinality ?? 'many-to-one',
+    })
+  }
+  return { drawable, unresolvedIds }
 }
 
 /**

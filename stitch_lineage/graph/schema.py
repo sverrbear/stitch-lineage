@@ -6,6 +6,7 @@ either the field name (schema_, from_) or the alias -- serialization always uses
 alias via model_dump(by_alias=True).
 """
 
+import hashlib
 from enum import StrEnum
 from typing import Any
 
@@ -54,6 +55,21 @@ def mb_card_node_id(card_id: int) -> str:
 
 def mb_dashboard_node_id(dashboard_id: int) -> str:
     return f"mb_dash::{dashboard_id}"
+
+
+def relationship_id(from_model: str, from_column: str, to_model: str, to_column: str) -> str:
+    """Deterministic id for a relationship's endpoints.
+
+    Endpoints only: re-staging the same column pair with a different cardinality is the
+    same relationship, so it dedupes instead of stacking up a second entry.
+
+    It lives here, not in io/staged_store.py where it is used most, because
+    graph/suggest.py must mint the SAME id for a suggested pair -- accepting or
+    dismissing a suggestion has to survive a graph rebuild -- and graph/ may not import
+    io/ (SPEC.md section 4). One definition, no drift.
+    """
+    payload = f"{from_model}.{from_column}->{to_model}.{to_column}".lower()
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
 
 class Node(BaseModel):
