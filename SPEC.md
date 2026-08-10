@@ -211,6 +211,8 @@ serve:
 output:
   dir: .stitch/
   retain_cache_runs: 3                  # raw Metabase payload snapshots
+  history_retention: 20                 # SHA-keyed graph baselines in .stitch/history/;
+                                        # 0 turns history off and clears the directory
 ```
 
 Rules carried forward:
@@ -417,6 +419,8 @@ fct_matches.match_intensity → removed
 Ship the GitHub Action in the repo. This is the feature that earns adoption; the ERD earns affection.
 
 A scheduled nightly job runs full `stitch build` (with Metabase) on main and commits the refreshed `graph.json` — so the baseline tracks Metabase-side drift (new cards, archived dashboards) without any human remembering to rebuild.
+
+**SHA-keyed local history — a baseline without committing one (#87).** Every `stitch build` on a clean working tree gzips the graph it just wrote into `.stitch/history/<commit-sha>.json.gz`, keyed by HEAD, retained `output.history_retention` deep (oldest pruned first, insertion order in an `index.json` — mtimes are not a contract). `stitch impact --base <ref>` then resolves *locally first*: `<ref>` → its merge-base with HEAD → that commit's snapshot, or the nearest stored ancestor of it; only on a miss does it fall back to the committed `graph.json` at the ref, and a miss on both names the fix. Which baseline was used is printed on stderr — never inferred, and never mixed into the stdout payload that `--format github-comment` pipes. Builds with a dirty tree store nothing and say so: such a snapshot describes the working tree rather than the commit, and used as a baseline it would report no impact on exactly the changes it contains. `stitch history` lists what is stored (sha, time, node/edge counts, commit subject). This is §12.2's "CI artifact keyed by commit SHA" fallback in local form — it restores §10's PR-diff workflow with nothing committed, inside the gitignored `.stitch/`.
 
 **The point query — ask before you edit.** `stitch impact --column fct_matches.match_intensity` (#86) runs the same downstream walk (`from → to`, `relates_to` excluded, depth-capped) over the *current* `graph.json`: no baseline, no git, no Metabase credentials, because one graph is all a point query needs. The diff answers "what did my change break"; this answers "what breaks if I change this" — the question that gets asked before the edit rather than after it. Same grouped counts as the comment above (models, columns, fields, cards with dashboard and owner), `--json` for piping; input is `model.column`, a bare column name when it is unique in the graph, or a full node id, and ambiguity lists the qualified candidates rather than guessing which of three `match_intensity` columns was meant. Local impact — this plus the previous-build baseline (#53), which is also what brings `impact` back onto `--help` — is the top of the priority order (§12.1).
 

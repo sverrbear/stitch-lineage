@@ -78,6 +78,9 @@ class RelationshipsConfig(BaseModel):
 class OutputConfig(BaseModel):
     dir: str = ".stitch/"
     retain_cache_runs: int = 3
+    # how many SHA-keyed graph snapshots `.stitch/history/` keeps for `impact --base`
+    # (issue #87). 0 turns history off and clears whatever is already stored.
+    history_retention: int = Field(default=20, ge=0)
 
 
 class ServeConfig(BaseModel):

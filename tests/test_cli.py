@@ -45,8 +45,24 @@ def _marts_model():
 def test_help_lists_commands():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    for command in ("build", "search", "suggest", "doctor", "export", "init", "serve"):
+    for command in ("build", "search", "suggest", "doctor", "export", "init", "serve", "history"):
         assert command in result.output
+
+
+def test_history_works_without_a_config_and_points_at_build(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["history"])
+    assert result.exit_code == 0, result.output
+    assert "no graph baselines stored in .stitch/history" in result.output
+    assert "keyed by the HEAD commit" in result.output
+
+    as_json = runner.invoke(app, ["history", "--json"])
+    assert as_json.exit_code == 0, as_json.output
+    assert json.loads(as_json.output) == {
+        "baselines": [],
+        "dir": ".stitch/history",
+        "retention": 20,
+    }
 
 
 def test_impact_is_shelved_hidden_but_invocable():
