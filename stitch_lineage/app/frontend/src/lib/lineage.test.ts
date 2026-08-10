@@ -94,3 +94,30 @@ describe('lineageFor', () => {
     expect(parsedEdge?.confidence).toBe('parsed')
   })
 })
+
+describe('layoutLineage wrapping', () => {
+  const wide = {
+    nodes: Array.from({ length: 7 }, (_, i) => ({ node_id: `n${i}` })),
+    edges: [] as Array<{ from: string; to: string }>,
+    layers: new Map(Array.from({ length: 7 }, (_, i) => [`n${i}`, i < 5 ? 0 : 1] as const)),
+  }
+
+  it('wraps a layer taller than maxRows into side-by-side columns', () => {
+    const positions = layoutLineage(wide, { columnWidth: 100, rowHeight: 10, maxRows: 2 })
+    const xs = new Set([...positions.values()].map((p) => p.x))
+    // layer 0 has 5 nodes at 2 rows -> 3 columns; layer 1 has 2 -> 1 column
+    expect(xs.size).toBe(4)
+  })
+
+  it('shifts later layers right so a wrapped layer never overlaps them', () => {
+    const positions = layoutLineage(wide, { columnWidth: 100, rowHeight: 10, maxRows: 2 })
+    const layer0 = Array.from({ length: 5 }, (_, i) => positions.get(`n${i}`)!.x)
+    const layer1 = [positions.get('n5')!.x, positions.get('n6')!.x]
+    expect(Math.max(...layer0)).toBeLessThan(Math.min(...layer1))
+  })
+
+  it('leaves a layer that fits in one column exactly where it was', () => {
+    const positions = layoutLineage(wide, { columnWidth: 100, rowHeight: 10, maxRows: 50 })
+    expect([...new Set([...positions.values()].map((p) => p.x))]).toEqual([0, 100])
+  })
+})
