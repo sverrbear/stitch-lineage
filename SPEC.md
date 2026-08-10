@@ -9,6 +9,7 @@
 - **`stitch impact` is shelved by default** (hidden from `--help`, fully functional for teams that keep their own baselines) because the default PR-comment workflow required the committed baseline.
 - **Phase 2 is a plan/apply model, not direct write-back** — §8.2 below. Drawings stage locally; an explicit `stitch apply` writes dbt `relationships` tests.
 - **Phases 0 and 1 are shipped**, including `stitch build --docs/auto_docs`, per-database `table_prefix` (dev artifacts bind to a prod-pointed BI database), manifest-columns fallback for the sqlglot schema map, and system badges (Snowflake/Metabase marks) on every node in the app.
+- **Amended 2026-08-10** (product review): the order of work and the boundaries of the product are written down — §12.1 priority order, §12.2 scope guardrails. Phases are unchanged.
 
 ---
 
@@ -427,11 +428,32 @@ A scheduled nightly job runs full `stitch build` (with Metabase) on main and com
 
 Work is tracked as GitHub issues; the tracker, not this table, is the operational truth.
 
+### 12.1 Priority order (2026-08-10)
+
+Phases describe scope, not sequence. The current order of work cuts across them:
+
+1. **Local impact.** The previous-build baseline plus a blast-radius summary on every build (#53), then the point query `stitch impact --column` — a blast radius askable *before* an edit, not only as a diff after one (#86) — and SHA-keyed local history (#87). This returns §10's killer feature to the local-only world where the graph now lives; the committed baseline stays the CI variant for teams that keep one.
+2. **`stitch init`** (#29, §6.0). Every install after the first one starts here, and setup friction is a product feature.
+3. **Metabase native SQL cards** (#32, §7.4). `native SQL cards 0/41` is the honest headline limit of the tool for every shop that is not MBQL-only.
+
+Canvas and ERD polish ranks below all three, and a broken core chain outranks all cosmetic work: while card detail shows no source columns (#25), how the ERD looks is not the problem.
+
+### 12.2 Scope guardrails — what stitch is not
+
+Each of these was a reasonable-sounding idea. They are decided against, not deferred.
+
+- **No third canvas.** The ERD is the canvas; the column lineage view is the flow view. The global overview/pipeline map is removed (#83) — its rollup lib survives because the lineage grain toggle uses it. Home's entry points are ERD and lineage.
+- **Not a dbt YAML IDE.** `stitch apply` writes **relationships** (§8). Description editing exists only because it rides the same staged store, the same writer and the same diff preview (§8.2); it earns no UI surface of its own, and no further YAML key follows it in on that precedent.
+- **The home page stays a search box and a few numbers.** Search is the entry point (§9). A home page that grows tiles is a dashboard, and a dashboard is a thing nobody opens twice.
+- **One BI tool until the Metabase story is complete.** Looker, Tableau and the rest are a new `resolve/` module by construction (§4) — that is what the seam is for, not an invitation to use it while column lineage into Metabase is unfinished.
+- **No warehouse backend, no hosted anything.** Standing since v0.2/v0.3 (§3, §11): the warehouse is a consumer of `graph.json`, not its home.
+
 ## 13. Risks
 
-- **Committed generated file friction.** `.stitch/graph.json` in git means occasional merge conflicts (regenerate-and-recommit resolves them — document it) and reviewers seeing a machine file in diffs. Deterministic ordering keeps diffs semantic; `--check` in CI keeps it honest. If it proves hateful in practice, the fallback is storing the baseline as a CI artifact keyed by commit SHA — costs the git-native diffing, keeps everything else.
-- **Native SQL coverage — not a configuration problem.** Smitten is MBQL-only; the tool gets built against its easiest case while most Metabase shops live in the hard one. Coverage reporting from Phase 0 makes the gap legible; sqlglot is Phase 3 and the README says so.
+- **Committed generated file friction.** `.stitch/graph.json` in git means occasional merge conflicts (regenerate-and-recommit resolves them — document it) and reviewers seeing a machine file in diffs. Deterministic ordering keeps diffs semantic; `--check` in CI keeps it honest. If it proves hateful in practice, the fallback is storing the baseline as a CI artifact keyed by commit SHA — costs the git-native diffing, keeps everything else. That is where it landed: v0.5 made the graph local, and #87 (§12.1) is that fallback in local form — snapshots keyed by SHA inside gitignored `.stitch/`.
+- **Native SQL coverage — not a configuration problem.** Smitten is MBQL-only; the tool gets built against its easiest case while most Metabase shops live in the hard one. Coverage reporting from Phase 0 makes the gap legible; sqlglot is Phase 3 and the README says so. Third in the priority order (§12.1) for exactly this reason — it is the difference between a tool for Smitten and a tool for Metabase shops.
 - **Frontend bundling.** Shipping a prebuilt SPA in the wheel means a JS build step in *release* CI and wheel size in the tens of MB. Acceptable; the alternative (npm at install time) is not, for a pip package.
 - **Metabase API drift.** Pin 49+ (API keys), keep a tested version matrix, treat every response shape as untrusted, keep raw payloads for repro.
 - **Adjacency to `dbt-metabase`.** If it grows column-level exposures, Phase 0's differentiation shrinks. Open an issue with the maintainer early — Phase 0 might be strongest as an upstream contribution plus this repo owning the viewer/editor.
 - **Sole maintainer with a day job.** One maintainer is a repo, not a project, unless the CI feature earns contributors. Optimize the README for the impact-comment screenshot.
+- **Scope creep, one reasonable feature at a time.** No single addition looks like a mistake; the cost shows up as a second half-finished surface competing for the same maintainer. §12.2 is the answer, and its test is the core chain — a new surface waits until column → field → card → dashboard is complete and correct, not until the backlog is empty.
