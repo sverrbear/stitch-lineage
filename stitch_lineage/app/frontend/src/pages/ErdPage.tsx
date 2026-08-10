@@ -73,6 +73,7 @@ import { erdHref, navigate } from '../router'
 
 const COLLAPSED_LIMIT = 8
 const OPEN_HINT = 'Open details · ⌘/Ctrl-click for lineage'
+const RELATE_HINT = 'Drag onto another column to declare a relationship'
 
 type ErdFlowNode = Node<
   {
@@ -150,12 +151,17 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
             onClick={open(column.nodeId)}
             onKeyDown={openOnEnter(column.nodeId)}
           >
+            {/* Grab strips run the full height of the row and sit INSIDE the card.
+                A 9px dot centred on the card's edge was half-clipped by the card's
+                `overflow: hidden` — not hit-testable at its own centre, 1-2px wide
+                at ERD zoom — which is why drawing a relationship read as broken (#64). */}
             <Handle
               type="target"
               id={column.key}
               position={Position.Left}
               className={`erd-handle${connectable ? ' drawable' : ''}`}
               isConnectable={connectable}
+              title={connectable ? RELATE_HINT : undefined}
             />
             <span className="erd-column-name">{column.name}</span>
             <span className="erd-column-type">{column.dataType ?? ''}</span>
@@ -165,6 +171,7 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
               position={Position.Right}
               className={`erd-handle${connectable ? ' drawable' : ''}`}
               isConnectable={connectable}
+              title={connectable ? RELATE_HINT : undefined}
             />
           </li>
         ))}
@@ -637,7 +644,8 @@ export function ErdPage({
         )}
         {canStage ? (
           <span className="muted graph-toolbar-hint">
-            drag a column handle onto another to declare a relationship · click for details
+            drag from a column's edge onto another column to declare a relationship · click for
+            details
           </span>
         ) : (
           <span className="muted graph-toolbar-hint">click a table or column for details</span>
@@ -655,6 +663,8 @@ export function ErdPage({
           fitView
           minZoom={0.05}
           nodesConnectable={canStage}
+          // generous snap on the drop side: releasing near a column's strip counts
+          connectionRadius={40}
           nodesDraggable
           onNodesChange={onNodesChange}
           onInit={(instance) => {
