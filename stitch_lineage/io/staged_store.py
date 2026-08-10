@@ -267,10 +267,15 @@ def replace_staged(
     never create a duplicate pair.
     """
     entries = read_staged(path)
-    if all(item.id != entry_id for item in entries):
+    previous = next((item for item in entries if item.id == entry_id), None)
+    if previous is None:
         return None
     remaining = [item for item in entries if item.id != entry_id]
     collision = next((item for item in remaining if item.id == entry.id), None)
+    # an edit is not a re-staging: the change was staged when it was drawn, not when it was
+    # last tweaked, so the original created_at rides along
+    if entry.created_at is None:
+        entry = entry.model_copy(update={"created_at": previous.created_at})
     stored = collision or entry
     write_staged([*remaining, stored], path)
     return stored, stored.id != entry_id

@@ -53,6 +53,7 @@ from stitch_lineage.io.graph_store import (
 from stitch_lineage.io.layout_store import LAYOUT_FILENAME, LayoutStoreError, read_dismissed
 from stitch_lineage.io.metabase_client import MetabaseAPIError, MetabaseClient
 from stitch_lineage.io.staged_store import (
+    DESCRIPTIONS_FILENAME,
     STAGED_FILENAME,
     StagedRelationship,
     StagedStoreError,
@@ -1153,8 +1154,18 @@ def serve(
     _warn_unknown_erd_scope(scope, graph_path)
     staged = _default_out_dir(config, STAGED_FILENAME)
     layout = _default_out_dir(config, LAYOUT_FILENAME)
+    descriptions = _default_out_dir(config, DESCRIPTIONS_FILENAME)
+    # apply from the app needs the config it would apply with; without a stitch.yml the app
+    # still serves the graph, it just cannot write the repo
+    context = (
+        apply_service.ApplyContext(config=config, cfg=_load_config_or_fail(config))
+        if config.is_file()
+        else None
+    )
     try:
-        server = create_app(graph_path, _metabase_url(config), scope, staged, layout)
+        server = create_app(
+            graph_path, _metabase_url(config), scope, staged, layout, descriptions, context
+        )
     except StitchAppError as exc:
         _fail(str(exc))
     url = f"http://{host}:{port}"

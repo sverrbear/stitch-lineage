@@ -53,6 +53,7 @@ def test_api_meta_shape(client, sample_graph):
         "schema_version": sample_graph.schema_version,
         "erd_default_scope": None,
         "staging_enabled": False,
+        "apply_enabled": False,
     }
 
 

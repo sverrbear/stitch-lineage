@@ -46,6 +46,7 @@ from stitch_lineage.write.yaml_writer import (
 )
 
 __all__ = [
+    "ApplyContext",
     "ApplyOutcome",
     "ApplyPaths",
     "ApplyPlan",
@@ -162,6 +163,21 @@ class ApplyPlan:
         """
         ids = self.plan.ids_for(paths)
         return [result.entry for result in self.plan.results if result.entry.id in ids]
+
+
+@dataclass(frozen=True)
+class ApplyContext:
+    """What the app needs to run an apply: the config it was started with.
+
+    `stitch serve` hands one to create_app; without it the apply endpoints do not exist, which
+    is how the static export (and any read-only embedding) stays unable to write the repo.
+    """
+
+    config: Path
+    cfg: StitchConfig
+
+    def plan(self) -> "ApplyPlan":
+        return build_plan(self.config, self.cfg)
 
 
 def paths_for(config_path: Path, cfg: StitchConfig) -> ApplyPaths:
