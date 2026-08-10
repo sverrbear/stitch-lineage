@@ -16,7 +16,8 @@ export function Header({ onOpenPalette }: { onOpenPalette: () => void }) {
         stitch
       </a>
       <nav className="app-nav">
-        <a href="#/">Search</a>
+        <a href="#/">Overview</a>
+        <a href="#/overview">Map</a>
         <a href="#/erd">ERD</a>
       </nav>
       <div className="app-header-right">

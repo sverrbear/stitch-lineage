@@ -20,10 +20,12 @@ import { SystemBadge } from '../components/badges'
 import { GraphLegend } from '../components/bits'
 import { useStitch } from '../data'
 import { CLICK_SLOP_PX } from '../lib/canvas'
+import type { GraphIndex } from '../lib/graph'
 import { lineageFor, layoutLineage } from '../lib/lineage'
 import { CONFIDENCE_HELP, NODE_TYPE_NAME, displayName, nodeContext } from '../lib/present'
-import { navigate, nodeHref } from '../router'
-import type { Confidence, GraphNode } from '../types'
+import { entityIdOf, layerEntities, rollUp, type Grain, type RollupEdge } from '../lib/rollup'
+import { lineageHref, navigate, nodeHref } from '../router'
+import type { Confidence, GraphEdge, GraphNode } from '../types'
 
 /** One card shape for all six node types: badge + name + type · context. */
 type LineageFlowNode = Node<{ node: GraphNode; context: string | null; isRoot: boolean }, 'lineage'>
@@ -52,6 +54,24 @@ function LineageNode({ data }: NodeProps<LineageFlowNode>) {
 
 const nodeTypes = { lineage: LineageNode }
 
+/** The same reachable subgraph at table grain, laid out by the shared layerer. */
+function rolledView(
+  index: GraphIndex,
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+): { nodes: GraphNode[]; edges: RollupEdge[]; layers: Map<string, number> } {
+  const rolled = rollUp(index, nodes, edges)
+  const rolledNodes = rolled.nodes.map((entry) => entry.node)
+  return {
+    nodes: rolledNodes,
+    edges: rolled.edges,
+    layers: layerEntities(
+      rolledNodes.map((node) => node.node_id),
+      rolled.edges,
+    ),
+  }
+}
+
 const DASHED: ReadonlySet<Confidence> = new Set(['parsed', 'inferred', 'fuzzy', 'declared'])
 
 interface EdgeTip {
@@ -60,41 +80,57 @@ interface EdgeTip {
   text: string
 }
 
-export function LineagePage({ nodeId }: { nodeId: string }) {
+export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain }) {
   const { index } = useStitch()
   const [tip, setTip] = useState<EdgeTip | null>(null)
 
   const root = index.nodesById.get(nodeId)
   const rootContext = root ? nodeContext(index, root) : null
+  // At table grain the focus is the entity the selected node belongs to, so
+  // flipping the toggle on a column lands on its model instead of nothing.
+  const rootEntityId = root ? (entityIdOf(root) ?? nodeId) : nodeId
 
   const { nodes, edges, truncated } = useMemo(() => {
     if (!root) return { nodes: [] as LineageFlowNode[], edges: [] as Edge[], truncated: false }
     const lineage = lineageFor(index, nodeId)
-    const positions = layoutLineage(lineage)
-    const flowNodes: LineageFlowNode[] = lineage.nodes.map((node) => ({
+    const focusId = grain === 'table' ? rootEntityId : nodeId
+    const view =
+      grain === 'table'
+        ? rolledView(index, lineage.nodes, lineage.edges)
+        : { nodes: lineage.nodes, edges: lineage.edges, layers: lineage.layers }
+    const positions = layoutLineage(view, grain === 'table' ? { rowHeight: 92 } : {})
+    const flowNodes: LineageFlowNode[] = view.nodes.map((node) => ({
       id: node.node_id,
       type: 'lineage',
       position: positions.get(node.node_id) ?? { x: 0, y: 0 },
-      data: { node, context: nodeContext(index, node), isRoot: node.node_id === nodeId },
+      data: { node, context: nodeContext(index, node), isRoot: node.node_id === focusId },
     }))
-    const flowEdges: Edge[] = lineage.edges.map((edge) => {
+    const flowEdges: Edge[] = view.edges.map((edge) => {
       const dashed = DASHED.has(edge.confidence)
-      const evidence = Object.entries(edge.evidence ?? {})
-        .map(([key, value]) => `${key}: ${String(value)}`)
-        .join('\n')
+      const rollupWeight = 'weight' in edge ? (edge as RollupEdge).weight : null
+      const evidence =
+        rollupWeight === null
+          ? Object.entries((edge as GraphEdge).evidence ?? {})
+              .map(([key, value]) => `${key}: ${String(value)}`)
+              .join('\n')
+          : `${rollupWeight} contributing column${rollupWeight === 1 ? '' : 's'}`
+      const kind = 'edge_type' in edge ? (edge as GraphEdge).edge_type : 'rolled up'
       return {
-        id: `${edge.from}->${edge.to}:${edge.edge_type}`,
+        id: `${edge.from}->${edge.to}:${kind}`,
         source: edge.from,
         target: edge.to,
         className: `lineage-edge conf-${edge.confidence}`,
-        style: dashed ? { strokeDasharray: '6 4' } : undefined,
+        style: {
+          strokeDasharray: dashed ? '6 4' : undefined,
+          strokeWidth: rollupWeight === null ? undefined : Math.min(5, 1 + Math.log2(Math.max(1, rollupWeight))),
+        },
         data: {
-          tooltip: `${edge.edge_type} · ${edge.confidence}\n${CONFIDENCE_HELP[edge.confidence]}${evidence ? `\n${evidence}` : ''}`,
+          tooltip: `${kind} · ${edge.confidence}\n${CONFIDENCE_HELP[edge.confidence]}${evidence ? `\n${evidence}` : ''}`,
         },
       }
     })
     return { nodes: flowNodes, edges: flowEdges, truncated: lineage.truncated }
-  }, [index, nodeId, root])
+  }, [index, nodeId, root, grain, rootEntityId])
 
   if (!root) {
     return (
@@ -115,6 +151,22 @@ export function LineagePage({ nodeId }: { nodeId: string }) {
             {rootContext ? ` · ${rootContext}` : ''})
           </span>
         </span>
+        <div className="grain-toggle" role="group" aria-label="Lineage grain">
+          {(['column', 'table'] as const).map((option) => (
+            <a
+              key={option}
+              className={`grain-option${grain === option ? ' active' : ''}`}
+              href={lineageHref(nodeId, option)}
+              title={
+                option === 'column'
+                  ? 'Which columns feed which fields'
+                  : 'Which models feed which cards — the same subgraph rolled up'
+              }
+            >
+              {option}
+            </a>
+          ))}
+        </div>
         <a className="button" href={nodeHref(nodeId)}>
           Details
         </a>

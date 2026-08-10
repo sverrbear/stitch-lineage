@@ -102,6 +102,15 @@ function relationships(index: GraphIndex): ErdRelationship[] {
 const INTERNAL_SCHEMAS =
   /^(elementary|elementary_.*|dbt_artifacts|artifacts|audit|dbt_test__audit|information_schema|account_usage|snowflake)$/i
 
+/** Schemas the scope picker files under "tooling & internal" (see `ErdScope.internal`). */
+export function internalSchemas(index: GraphIndex): Set<string> {
+  return new Set(
+    listScopes(index)
+      .filter((scope) => scope.kind === 'schema' && scope.internal)
+      .map((scope) => scope.value),
+  )
+}
+
 /** The project's own dbt package: the one owning the most model nodes. */
 function rootPackage(index: GraphIndex): string | null {
   const counts = new Map<string, number>()
