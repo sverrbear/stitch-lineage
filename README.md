@@ -200,12 +200,12 @@ Every build prints what it could and couldn't resolve, so a thin graph is a docu
 ```
 models bound         142/147   (5 unmatched -> stitch doctor --unbound)
 MBQL cards           218/218
-native SQL cards     0/41   unsupported in v0
+native SQL cards     38/41   parsed
 dashboards           19/19
 dbt column lineage   1842/1901 columns traced   (37 inferred via star-expansion, 22 unresolved -> stitch doctor --untraced)
 ```
 
-Native SQL cards are counted but not resolved in Phase 0 (they are Phase 3); MBQL cards resolve exactly, including card-on-card sources. Both query formats are handled: the legacy `dataset_query.query` shape and the MBQL 5 (`lib/type` + `stages`) shape modern Metabase returns.
+MBQL cards resolve exactly, including card-on-card sources. Native SQL cards resolve by parsing: stitch substitutes the card's template tags (`{{variable}}`, `[[optional clauses]]`, `{{snippet: name}}`, `{{#123-card}}`), parses the result with sqlglot, and maps every column that lands on a table Metabase knows to that table's field — so a hand-written card's columns join the same lineage chain an MBQL card's do, marked `parsed` rather than `exact`. A field-filter tag names its field outright and stays `exact`. Anything that will not parse degrades to the tables it reads (`stitch doctor --unresolved-cards` says which card and why); no card is ever dropped, and no column is ever invented. Both query formats are handled on both paths: the legacy `dataset_query.query` shape and the MBQL 5 (`lib/type` + `stages`) shape modern Metabase returns.
 
 ## What did my last build change?
 

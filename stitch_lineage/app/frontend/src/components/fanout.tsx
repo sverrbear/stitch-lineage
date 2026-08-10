@@ -1,9 +1,17 @@
-// The model page's dependency lists (#82). Chip walls out, hierarchy in: one row
-// per entry, grouped by the layer it lives in or the dashboard it appears on, with
-// the counts in the group heads so a reader can stop reading at any level.
+// The model page's dependency lists (#82), as collapsed rows (#104).
+//
+// Chip walls out, hierarchy in — and then one step further: a group is a ROW, with
+// its count and how far away it sits, and the entries arrive when you ask for them.
+// `dim_users` has 39 upstream models across three layers and 400 cards on 37
+// dashboards; expanded by default that is a page you scroll past rather than read.
+// So both kinds of group open closed, and both use the same row.
+//
+// Expansion is the `<details>` element's own state: per group, and deliberately not
+// persisted — a page should open compact every time, not remember that it was once
+// pulled apart.
 
 import { useStitch } from '../data'
-import type { DashboardUsage, LayerGroup } from '../lib/fanout'
+import { hopRange, type DashboardUsage, type LayerGroup } from '../lib/fanout'
 import { metabaseLink } from '../lib/graph'
 import { displayName } from '../lib/present'
 import { nodeHref } from '../router'
@@ -14,17 +22,20 @@ function hops(depth: number): string {
   return depth === 1 ? 'direct' : `${depth} hops`
 }
 
-/** Models grouped by layer, in pipeline order — one compact row each. */
+/** Models grouped by layer, in pipeline order — a collapsed row each. */
 export function LayerGroups({ groups, empty }: { groups: LayerGroup[]; empty: string }) {
   if (groups.length === 0) return <p className="muted">{empty}</p>
   return (
-    <div className="dep-groups">
+    <div className="group-rows">
       {groups.map((group) => (
-        <section key={group.label} className="dep-group">
-          <h4 className="dep-group-head">
-            {group.label}
-            <span className="muted dep-group-count">{group.entries.length}</span>
-          </h4>
+        <details key={group.label} className="group-panel dep-group">
+          <summary className="group-head">
+            <span className="group-name dep-group-name">{group.label}</span>
+            <span className="muted group-hint">{hopRange(group.entries)}</span>
+            <span className="muted group-count">
+              {group.entries.length} model{group.entries.length === 1 ? '' : 's'}
+            </span>
+          </summary>
           <ul className="dep-rows">
             {group.entries.map((entry) => (
               <li key={entry.node.node_id} className="dep-row">
@@ -39,7 +50,7 @@ export function LayerGroups({ groups, empty }: { groups: LayerGroup[]; empty: st
               </li>
             ))}
           </ul>
-        </section>
+        </details>
       ))}
     </div>
   )
@@ -47,37 +58,38 @@ export function LayerGroups({ groups, empty }: { groups: LayerGroup[]; empty: st
 
 /**
  * BI usage, grouped by the dashboard the cards sit on — the unit a reader
- * recognises. Groups start open; the deep links go straight to Metabase.
+ * recognises. Collapsed, always: the count is the answer most of the time, and the
+ * deep link is right there on the closed row (#104).
  */
 export function DashboardGroups({ groups, empty }: { groups: DashboardUsage[]; empty: string }) {
   const { meta } = useStitch()
   if (groups.length === 0) return <p className="muted">{empty}</p>
-  // A heavily used table is on 37 dashboards and 400 cards: opening every group by
-  // default would rebuild the chip wall this replaced. A small usage list stays open.
-  const cards = groups.reduce((total, group) => total + group.cards.length, 0)
-  const open = groups.length <= 3 && cards <= 12
   return (
-    <div className="bi-groups">
+    <div className="group-rows">
       {groups.map((group) => {
         const link = group.dashboard ? metabaseLink(meta.metabase_url, group.dashboard) : null
         return (
-          <details key={group.dashboard?.node_id ?? 'no-dashboard'} className="bi-group" open={open}>
-            <summary className="bi-group-head">
+          <details key={group.dashboard?.node_id ?? 'no-dashboard'} className="group-panel bi-group">
+            <summary className="group-head">
               <SystemBadge nodeType="mb_dashboard" />
               {group.dashboard ? (
-                <a className="bi-group-name" href={nodeHref(group.dashboard.node_id)}>
-                  {displayName(group.dashboard)}
-                </a>
+                <span className="group-name">{displayName(group.dashboard)}</span>
               ) : (
-                <span className="bi-group-name muted" title="not pinned to any dashboard">
+                <span className="group-name muted" title="not pinned to any dashboard">
                   cards on no dashboard
                 </span>
               )}
-              <span className="muted bi-group-count">
+              <span className="muted group-count">
                 {group.cards.length} card{group.cards.length === 1 ? '' : 's'}
               </span>
+              {/* the two ways out of a closed row: the dashboard here, or its cards inside */}
+              {group.dashboard && (
+                <a className="group-link" href={nodeHref(group.dashboard.node_id)}>
+                  details
+                </a>
+              )}
               {link && (
-                <a className="bi-group-link" href={link} target="_blank" rel="noreferrer">
+                <a className="group-link bi-group-link" href={link} target="_blank" rel="noreferrer">
                   open ↗
                 </a>
               )}

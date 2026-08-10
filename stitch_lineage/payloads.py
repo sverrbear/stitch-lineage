@@ -27,6 +27,10 @@ class MetabasePayload(BaseModel):
                          archived).
       dashboards:        full GET /api/dashboard/:id payloads (dashcards included).
       collections:       GET /api/collection tree, for collection filtering.
+      snippets:          GET /api/native-query-snippet -- the SQL behind a
+                         `{{snippet: name}}` tag in a native card. Empty when the
+                         instance does not expose the endpoint; a native card using an
+                         unavailable snippet degrades rather than failing the build.
     """
 
     metabase_version: str | None = None
@@ -35,3 +39,4 @@ class MetabasePayload(BaseModel):
     cards: list[dict[str, Any]] = Field(default_factory=list)
     dashboards: list[dict[str, Any]] = Field(default_factory=list)
     collections: list[dict[str, Any]] = Field(default_factory=list)
+    snippets: list[dict[str, Any]] = Field(default_factory=list)
