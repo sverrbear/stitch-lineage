@@ -918,6 +918,16 @@ kbd {
   width: calc(100% - 320px);
 }
 
+/* the staged drawer takes its space from the canvas, never overlaps it */
+.graph-canvas.with-staged .react-flow {
+  margin-left: 320px;
+  width: calc(100% - 320px);
+}
+
+.graph-canvas.with-staged.with-panel .react-flow {
+  width: calc(100% - 640px);
+}
+
 .suggest-panel {
   position: absolute;
   top: 0;
@@ -1109,47 +1119,106 @@ kbd {
   stroke: var(--accent);
 }
 
-.staged-bar {
+/* Staged relationships: a drawer on the left of the canvas, mirroring the
+   suggestion panel on the right — decisions made on one side, proposals on the
+   other. Seventeen staged FKs used to wrap into a chip wall nobody could read
+   (#61); here they are grouped by the model they point at and scroll. */
+.staged-panel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 320px;
+  z-index: 5;
   display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding: 8px 18px;
-  border-bottom: 1px solid var(--border);
+  flex-direction: column;
   background: var(--bg-elev);
-  font-size: 12px;
+  border-right: 1px solid var(--border);
 }
 
-.staged-count {
+.staged-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.staged-panel-title {
   font-weight: 650;
+  font-size: 13px;
   color: var(--accent);
 }
 
-.staged-list {
+.staged-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.staged-empty {
+  padding: 12px;
+  font-size: 12px;
+}
+
+.staged-group-head {
+  position: sticky;
+  top: 0;
+  margin: 0;
+  padding: 6px 12px;
+  background: var(--bg-hover);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 650;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.staged-rows {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
 }
 
-.staged-entry {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  border: 1px dashed var(--accent);
-  border-radius: 8px;
-  padding: 2px 6px 2px 9px;
+.staged-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 8px 5px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.staged-pair {
+  background: none;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.staged-cardinality {
+  margin-left: auto;
+  font-size: 10px;
+  white-space: nowrap;
 }
 
 .staged-remove {
-  padding: 0 6px;
+  padding: 0 5px;
   line-height: 1.4;
 }
 
-.staged-hint {
-  margin-left: auto;
+.staged-panel-foot {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.staged-notice {
+  margin: 0 0 6px;
+  color: var(--accent);
+  overflow-wrap: anywhere;
 }
 
 .modal-backdrop {
