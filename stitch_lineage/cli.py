@@ -25,14 +25,18 @@ from rich.table import Table
 from stitch_lineage import __version__
 from stitch_lineage import apply as apply_service
 from stitch_lineage.app import StitchAppError
-from stitch_lineage.config import StitchConfig, StitchConfigError, load_config
+from stitch_lineage.config import OutputConfig, StitchConfig, StitchConfigError, load_config
 from stitch_lineage.export.jsonl import export_jsonl
 from stitch_lineage.export.static_site import export_site
 from stitch_lineage.graph.dead import dead_report, format_dead_report
 from stitch_lineage.graph.impact import (
+    ColumnLookup,
+    column_blast_radius,
+    format_blast_radius,
     format_github_comment,
     format_slack_comment,
     impact_from_graphs,
+    resolve_column_ref,
 )
 from stitch_lineage.graph.schema import (
     Coverage,
@@ -45,12 +49,22 @@ from stitch_lineage.graph.search import search as search_graph
 from stitch_lineage.graph.suggest import Suggestion
 from stitch_lineage.graph.suggest import suggest as suggest_relationships
 from stitch_lineage.init_wizard import ConsolePrompter, StitchInitError, run_init
+from stitch_lineage.io import git
 from stitch_lineage.io.artifacts import StitchArtifactError, load_catalog, load_manifest
 from stitch_lineage.io.dbt_runner import StitchDbtRunnerError, run_docs_generate
 from stitch_lineage.io.graph_store import (
     graphs_semantically_equal,
     read_graph,
     write_graph,
+)
+from stitch_lineage.io.history_store import (
+    HistoryEntry,
+    clear_snapshots,
+    history_dir,
+    load_snapshot,
+    read_entries,
+    resolve_baseline,
+    store_snapshot,
 )
 from stitch_lineage.io.layout_store import LAYOUT_FILENAME, LayoutStoreError, read_dismissed
 from stitch_lineage.io.metabase_client import MetabaseAPIError, MetabaseClient
@@ -72,6 +86,9 @@ app = typer.Typer(
     help="dbt <-> Metabase column lineage.",
 )
 console = Console()
+# provenance and other commentary go to stderr so stdout stays exactly the payload
+# (`impact --format github-comment` is piped into a PR comment)
+err_console = Console(stderr=True)
 
 ConfigOpt = Annotated[
     Path | None, typer.Option("--config", help="Path to stitch.yml (default: ./stitch.yml).")
@@ -536,13 +553,20 @@ def _run_build(
         )
 
         drifted = False
+        history_note: str | None = None
         if check:
             if not graph_path.is_file():
                 _fail(f"no committed graph at {graph_path} to check against -- run 'stitch build'")
             drifted = not graphs_semantically_equal(read_graph(graph_path), graph)
         else:
             write_task = progress.add_task("writing graph", total=1)
+            # asked before the write: writing graph.json itself would look like a dirty
+            # tree in a repo that tracks .stitch/
+            head, dirty = _git_head_state(config.parent)
             write_graph(graph, graph_path)
+            history_note = _store_history_snapshot(
+                graph, history_dir(out_dir), head, dirty, cfg.output.history_retention
+            )
             progress.update(write_task, completed=1)
 
     # everything below prints after the transient progress display has stopped
@@ -559,9 +583,66 @@ def _run_build(
         return
     console.print(f"wrote {graph_path} ({len(nodes)} nodes, {len(edges)} edges)")
     _print_coverage(graph.coverage, metabase_side, case_mismatch_count, bindings_total)
+    if history_note:
+        console.print(history_note, soft_wrap=True)
+
+
+def _git_head_state(repo_dir: Path) -> tuple[str | None, bool]:
+    """(HEAD sha, working tree is dirty). (None, False) outside a git repo."""
+    head = git.head_sha(repo_dir)
+    return (head, git.is_dirty(repo_dir)) if head else (None, False)
+
+
+def _store_history_snapshot(
+    graph: Graph, directory: Path, head: str | None, dirty: bool, retention: int
+) -> str | None:
+    """Keep this build's graph as the baseline for HEAD; return the line to print.
+
+    Only clean trees are stored: a snapshot taken with uncommitted changes describes the
+    working tree rather than the commit, and would silently report "no impact" when later
+    used as the baseline for exactly those changes. Nothing here can fail a build.
+    """
+    if retention <= 0:
+        # turning history off reclaims the disk on the next build, dirty tree or not
+        clear_snapshots(directory)
+        return None
+    if head is None:
+        return None
+    if dirty:
+        return (
+            "history: no snapshot stored -- the working tree has uncommitted changes "
+            "(baselines are keyed by commit)"
+        )
+    entry = store_snapshot(directory, head, graph, retention=retention)
+    if entry is None:
+        return None
+    kept = len(read_entries(directory))
+    return f"history: stored baseline for {entry.short_sha} ({kept}/{retention} kept)"
+
+
+def _history_baseline(base: str, graph_path: Path) -> Graph | None:
+    """The stored snapshot for `base`, if this repo has one. None -> use the committed baseline.
+
+    A snapshot that does not decompress is treated as absent: it is a cache, and falling
+    through to git is a better answer than an error about a file the user never made.
+    """
+    hit = resolve_baseline(graph_path.parent, history_dir(graph_path.parent), base)
+    if hit is None:
+        return None
+    try:
+        graph = load_snapshot(history_dir(graph_path.parent), hit.sha)
+    except (ValueError, OSError):
+        return None
+    err_console.print(hit.provenance, soft_wrap=True)
+    return graph
 
 
 def _baseline_graph(base: str, graph_path: Path) -> Graph:
+    """The baseline for `--base <ref>`: the local SHA-keyed history first (issue #87),
+    then the graph.json committed on that ref."""
+    local = _history_baseline(base, graph_path)
+    if local is not None:
+        return local
     ref_path = graph_path.as_posix()
     toplevel = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
@@ -595,8 +676,14 @@ def _baseline_graph(base: str, graph_path: Path) -> Graph:
                 "-- or pass --base <ref> that has one.",
                 soft_wrap=True,
             )
+            console.print(
+                f"  no local snapshot either: check out {base} with a clean working tree "
+                "and run 'stitch build' -- it stores one ('stitch history' lists them).",
+                soft_wrap=True,
+            )
             raise typer.Exit(code=1)
         _fail(f"could not load the baseline via 'git show {base}:{ref_path}' -- {stderr}")
+    err_console.print(f"baseline: graph.json committed at {base}:{ref_path}", soft_wrap=True)
     return Graph.model_validate_json(result.stdout)
 
 
@@ -610,12 +697,61 @@ def _plain_text(comment: str) -> str:
     return "\n".join(lines)
 
 
+def _fail_column_lookup(lookup: ColumnLookup, graph_path: Path) -> NoReturn:
+    """Turn a failed column lookup into an actionable error (issue #86)."""
+    if lookup.candidates:
+        console.print(
+            f"[red]error:[/red] '{lookup.query}' matches {len(lookup.candidates)} columns "
+            "-- qualify it as model.column:"
+        )
+        for candidate in lookup.candidates:
+            console.print(f"  {candidate.label}")
+        raise typer.Exit(code=1)
+
+    if lookup.matched_model:
+        console.print(
+            f"[red]error:[/red] '{lookup.query}' is a model, not a column "
+            "-- name one of its columns:"
+        )
+    else:
+        console.print(f"[red]error:[/red] no column matching '{lookup.query}' in {graph_path}")
+    if lookup.suggestions:
+        if not lookup.matched_model:
+            console.print("  did you mean:")
+        for suggestion in lookup.suggestions:
+            console.print(f"  {suggestion.label}  [dim]({suggestion.node_type.value})[/dim]")
+    console.print(f"  [dim]try 'stitch search {lookup.query}' for a full search.[/dim]")
+    raise typer.Exit(code=1)
+
+
+def _impact_column(graph: Graph, graph_path: Path, query: str, json_output: bool) -> None:
+    lookup = resolve_column_ref(graph, query)
+    if lookup.node_id is None:
+        _fail_column_lookup(lookup, graph_path)
+    radius = column_blast_radius(graph, lookup.node_id)
+    if json_output:
+        typer.echo(json.dumps(radius.model_dump(mode="json"), sort_keys=True))
+        return
+    typer.echo(format_blast_radius(radius))
+
+
 @app.command(hidden=True)
 def impact(
     base: Annotated[
         str,
         typer.Option("--base", help="Git ref whose committed graph.json is the baseline."),
     ] = "origin/main",
+    column: Annotated[
+        str | None,
+        typer.Option(
+            "--column",
+            help="Blast radius for one column ('model.column' or a node id) over the "
+            "current graph -- no baseline needed.",
+        ),
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit the --column blast radius as JSON.")
+    ] = False,
     output_format: Annotated[
         str,
         typer.Option("--format", help="Output format: text, github-comment or slack."),
@@ -631,12 +767,27 @@ def impact(
 ) -> None:
     """Diff the candidate graph against the baseline and walk the downstream blast radius.
 
+    --base resolves locally first: the SHA-keyed snapshot 'stitch build' stored for that
+    ref's merge-base with HEAD ('stitch history' lists them), and only then the graph.json
+    committed on the ref. The baseline used is printed to stderr.
+
     Shelved pending the committed-baseline workflow; invoke directly if you keep your own baselines.
+
+    --column skips the diff entirely: it walks the current graph.json downstream from one
+    column and prints the blast radius, so "what would a change here break" can be asked
+    before the edit. That path needs no baseline, no git and no Metabase credentials.
     """
     config = _resolve_config(config)
     if output_format not in ("text", "github-comment", "slack"):
         _fail(f"unsupported --format '{output_format}' (expected: text, github-comment, slack)")
     graph_path = _graph_path(config)
+    if column is not None:
+        if output_format != "text":
+            _fail(f"--format {output_format} is for the diff path; use --json with --column")
+        _impact_column(_read_graph_or_fail(graph_path), graph_path, column, json_output)
+        return
+    if json_output:
+        _fail("--json requires --column; the diff path uses --format github-comment or slack")
     candidate = _read_graph_or_fail(graph_path)
     baseline = _baseline_graph(base, graph_path)
     diff, report = impact_from_graphs(baseline, candidate)
@@ -647,6 +798,73 @@ def impact(
         typer.echo(comment if output_format == "github-comment" else _plain_text(comment))
     if fail_on_impact and (diff.removed or diff.type_changed):
         raise typer.Exit(code=1)
+
+
+def _history_settings(config: Path) -> tuple[Path, int]:
+    """(history directory, retention) -- usable without a stitch.yml, like _graph_path."""
+    if config.is_file():
+        cfg = _load_config_or_fail(config)
+        return history_dir(_output_dir(config, cfg)), cfg.output.history_retention
+    defaults = OutputConfig()
+    return history_dir(Path(defaults.dir)), defaults.history_retention
+
+
+def _history_row(entry: HistoryEntry, subject: str | None) -> str:
+    row = f"  {entry.short_sha}  {entry.stored_at}  {entry.nodes} nodes / {entry.edges} edges"
+    return f"{row}  {subject}" if subject else row
+
+
+@app.command()
+def history(
+    json_output: Annotated[bool, typer.Option("--json", help="Emit the listing as JSON.")] = False,
+    config: ConfigOpt = None,
+) -> None:
+    """List the graph baselines 'stitch build' stored locally, keyed by commit sha."""
+    config = _resolve_config(config)
+    directory, retention = _history_settings(config)
+    entries = list(reversed(read_entries(directory)))
+    subjects = {entry.sha: git.commit_subject(directory.parent, entry.sha) for entry in entries}
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "dir": directory.as_posix(),
+                    "retention": retention,
+                    "baselines": [
+                        {
+                            **entry.model_dump(mode="json"),
+                            "short_sha": entry.short_sha,
+                            "subject": subjects[entry.sha],
+                        }
+                        for entry in entries
+                    ],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+
+    if not entries:
+        console.print(f"no graph baselines stored in {directory}")
+        console.print(
+            "  every 'stitch build' on a clean working tree stores one, keyed by the HEAD "
+            "commit -- then 'stitch impact --base <ref>' needs nothing committed.",
+            soft_wrap=True,
+        )
+        if retention <= 0:
+            console.print("  history is off: set output.history_retention in stitch.yml")
+        return
+
+    plural = "" if len(entries) == 1 else "s"
+    console.print(
+        f"{len(entries)} baseline{plural} in {directory} (keeping {retention}), newest first"
+    )
+    # typer.echo, not console.print: commit subjects are user text and rich would read
+    # a square-bracketed one as markup
+    for entry in entries:
+        typer.echo(_history_row(entry, subjects.get(entry.sha)))
 
 
 def _score_tier(score: float) -> str:
