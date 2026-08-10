@@ -36,6 +36,7 @@ import {
   autoExpandedModels,
   cardinalityMarkers,
   erdClickHref,
+  erdColumnNodeId,
   erdForScope,
   initialScope,
   listScopes,
@@ -83,12 +84,14 @@ type ErdFlowNode = Node<
     onToggle: (id: string) => void
     /** Handles are inert (and invisible) unless this build can stage. */
     connectable: boolean
+    /** `model::column` keys the hovered relationship joins — lit up in the card. */
+    lit: ReadonlySet<string>
   },
   'erdModel'
 >
 
 function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
-  const { model, expanded, onToggle, connectable } = data
+  const { model, expanded, onToggle, connectable, lit } = data
   const pressedAt = useRef<Point | null>(null)
 
   const onPointerDown = (event: PointerEvent) => {
@@ -145,7 +148,9 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
         {visible.map((column) => (
           <li
             key={column.nodeId}
-            className={`erd-column${column.isKey ? ' key' : ''}${column.phantom ? ' phantom' : ''}`}
+            className={`erd-column${column.isKey ? ' key' : ''}${column.phantom ? ' phantom' : ''}${
+              lit.has(column.nodeId) ? ' lit' : ''
+            }`}
             role="link"
             tabIndex={0}
             title={column.phantom ? `${OPEN_HINT} · declared by a relationship, not in the catalog` : OPEN_HINT}
@@ -311,6 +316,16 @@ export function ErdPage({
   // spaces tables by what they actually measure rather than by an estimate of
   // the CSS box (#62). `measuredHeights` is a ref because it is layout input,
   // not render output; the counter is what re-runs the layout when it changes.
+  /**
+   * The relationship under the pointer. A permanent `user_id → user_id` label
+   * floating mid-canvas was noise on a real scope (#65); the pair belongs on the
+   * edge you are actually looking at, and on the two rows it joins.
+   */
+  const [hovered, setHovered] = useState<{
+    id: string
+    label: string
+    columns: string[]
+  } | null>(null)
   const measuredHeights = useRef<Record<string, number>>({})
   const measuredWidths = useRef<Record<string, number>>({})
   const [measuredVersion, setMeasuredVersion] = useState(0)
@@ -374,6 +389,10 @@ export function ErdPage({
 
   const resolved = useMemo(() => resolveStaged(index, staged), [index, staged])
   const stagedGroups = useMemo(() => groupStagedByTarget(staged), [staged])
+  const litColumns = useMemo<ReadonlySet<string>>(
+    () => new Set(hovered?.columns ?? []),
+    [hovered],
+  )
   // Suggestions arrive graph-wide (hundreds on a real project). Scope them to the
   // ERD first: both endpoints inside it, which is exactly what the canvas can draw.
   const inScopeIds = useMemo(
@@ -495,7 +514,11 @@ export function ErdPage({
           width: measuredWidths.current[model.node.node_id],
         }
       }),
-      [...erd.relationships, ...erd.staged].map((rel) => ({
+      // Suggestions the canvas actually DRAWS place tables too: an edge the
+      // reader can see is an edge that must be short, and leaving proposals out
+      // is what left long lines whipping across the scope (#65). The list is
+      // already capped, so the arrangement stays stable.
+      [...erd.relationships, ...erd.staged, ...erd.suggested].map((rel) => ({
         from: rel.fromModelId,
         to: rel.toModelId,
       })),
@@ -520,9 +543,15 @@ export function ErdPage({
       // a dragged table keeps where the reader put it until they reset the view
       position: manual[model.node.node_id] ??
         positions.get(model.node.node_id) ?? { x: i * 360, y: 0 },
-      data: { model, expanded: expanded.has(model.node.node_id), onToggle, connectable: canStage },
+      data: {
+        model,
+        expanded: expanded.has(model.node.node_id),
+        onToggle,
+        connectable: canStage,
+        lit: litColumns,
+      },
     }))
-  }, [erd, expanded, canStage, positions, manual])
+  }, [erd, expanded, canStage, positions, manual, litColumns])
 
   const edges = useMemo(() => {
     if (!erd) return [] as Edge[]
@@ -533,10 +562,17 @@ export function ErdPage({
       target: rel.toModelId,
       targetHandle: rel.toColumn,
       type: 'smoothstep',
-      className: 'erd-edge',
-      // "user_id → user_id ✓" beats a bare tick nobody can decode
-      label: `${rel.fromColumn} → ${rel.toColumn}${rel.validated ? ' ✓' : ''}`,
+      className: `erd-edge${hovered?.id === `rel-${i}` ? ' hovered' : ''}`,
+      // the pair is on the edge you point at, never floating over the canvas
+      label: hovered?.id === `rel-${i}` ? hovered.label : undefined,
       labelShowBg: true,
+      data: {
+        pair: `${rel.fromColumn} → ${rel.toColumn}${rel.validated ? ' ✓' : ''}`,
+        columns: [
+          erdColumnNodeId(rel.fromModelId, rel.fromColumn),
+          erdColumnNodeId(rel.toModelId, rel.toColumn),
+        ],
+      },
       // the graph never records a cardinality for a declared FK, so it reads as
       // the many-to-one it almost always is
       ...cardinalityMarkerProps(),
@@ -552,10 +588,17 @@ export function ErdPage({
         target: rel.toModelId,
         targetHandle: rel.toColumn,
         type: 'smoothstep',
-        className: 'erd-edge suggested',
+        className: `erd-edge suggested${hovered?.id === `suggested-${rel.id}` ? ' hovered' : ''}`,
         style: { strokeDasharray: '2 5', strokeWidth: 1 },
-        label: `${rel.fromColumn} → ${rel.toColumn} · suggested`,
+        label: hovered?.id === `suggested-${rel.id}` ? hovered.label : undefined,
         labelShowBg: true,
+        data: {
+          pair: `${rel.fromColumn} → ${rel.toColumn} · suggested`,
+          columns: [
+            erdColumnNodeId(rel.fromModelId, rel.fromColumn),
+            erdColumnNodeId(rel.toModelId, rel.toColumn),
+          ],
+        },
         ...cardinalityMarkerProps(rel.cardinality),
       })
     }
@@ -569,15 +612,22 @@ export function ErdPage({
         target: rel.toModelId,
         targetHandle: rel.toColumn,
         type: 'smoothstep',
-        className: 'erd-edge staged',
+        className: `erd-edge staged${hovered?.id === `staged-${rel.id}` ? ' hovered' : ''}`,
         style: { strokeDasharray: '5 4' },
-        label: `${rel.fromColumn} → ${rel.toColumn} · staged`,
+        label: hovered?.id === `staged-${rel.id}` ? hovered.label : undefined,
         labelShowBg: true,
+        data: {
+          pair: `${rel.fromColumn} → ${rel.toColumn} · staged`,
+          columns: [
+            erdColumnNodeId(rel.fromModelId, rel.fromColumn),
+            erdColumnNodeId(rel.toModelId, rel.toColumn),
+          ],
+        },
         ...cardinalityMarkerProps(rel.cardinality),
       })
     }
     return edges
-  }, [erd])
+  }, [erd, hovered])
 
   // React Flow owns node positions while a drag is in flight; the layout owns them
   // otherwise. `manual` is the reader's overrides, and resetting the view drops it.
@@ -728,6 +778,11 @@ export function ErdPage({
           connectionRadius={40}
           nodesDraggable
           onNodesChange={onNodesChange}
+          onEdgeMouseEnter={(_event, edge) => {
+            const data = edge.data as { pair?: string; columns?: string[] } | undefined
+            setHovered({ id: edge.id, label: data?.pair ?? '', columns: data?.columns ?? [] })
+          }}
+          onEdgeMouseLeave={() => setHovered(null)}
           onInit={(instance) => {
             flow.current = instance
           }}

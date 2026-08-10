@@ -1585,6 +1585,17 @@ kbd {
   text-decoration: underline;
 }
 
+/* the two rows a hovered relationship joins, so you can see what it connects
+   without a permanent label floating over the canvas (#65) */
+.erd-column.lit {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.erd-edge.hovered .react-flow__edge-path {
+  stroke-width: 3;
+}
+
 .erd-column.key .erd-column-name {
   font-weight: 650;
 }
