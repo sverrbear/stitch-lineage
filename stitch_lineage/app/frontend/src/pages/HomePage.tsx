@@ -3,7 +3,6 @@
 // untouched — the search box is still the first thing focused.
 
 import { useMemo, type RefObject } from 'react'
-import { MetabaseMark, SnowflakeMark } from '../components/badges'
 import { NodeChip } from '../components/bits'
 import { SearchPanel } from '../components/SearchPanel'
 import { useStitch } from '../data'
@@ -48,10 +47,9 @@ export function HomePage({ searchInputRef }: { searchInputRef: RefObject<HTMLInp
   return (
     <main className="home">
       <div className="home-hero">
+        {/* same rule as the header: the wordmark alone (#66) */}
         <h1 className="home-title">
-          <SnowflakeMark size={26} />
           <span>stitch</span>
-          <MetabaseMark size={26} />
         </h1>
         <p className="home-subtitle">
           dbt ↔ Metabase column lineage — search anything, follow it end to end.
