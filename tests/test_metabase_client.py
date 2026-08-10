@@ -34,6 +34,7 @@ def register_fetch_all() -> None:
     responses.get(f"{BASE}/api/dashboard/301", json=fixture("dashboard_301"))
     responses.get(f"{BASE}/api/dashboard/302", json=fixture("dashboard_302"))
     responses.get(f"{BASE}/api/collection", json=fixture("collections"))
+    responses.get(f"{BASE}/api/native-query-snippet", json=fixture("snippets"))
 
 
 @responses.activate
@@ -180,6 +181,7 @@ def test_cache_write_and_load_cached_round_trip(tmp_path):
         "dashboard_301.json",
         "dashboard_302.json",
         "collections.json",
+        "snippets.json",
         "payload.json",
     }
     assert json.loads((runs[0] / "databases.json").read_text())["total"] == 2

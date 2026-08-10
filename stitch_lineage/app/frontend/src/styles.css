@@ -753,49 +753,103 @@ kbd {
   font-size: 12px;
 }
 
-/* Dependency lists (#82). A chip wall gives every entry the same weight and no
-   order; these give the LAYER the weight (it is what a reader scans for) and one
-   quiet row per model, in pipeline order. */
-.dep-groups {
+/* Dependency lists (#82), as collapsed rows (#104). A chip wall gives every entry
+   the same weight and no order; a group ROW gives the layer (or the dashboard) the
+   weight, says how much and how far in the header, and hands over the entries only
+   when asked. Both kinds of group share the row; only their contents differ. */
+.group-rows {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 6px;
 }
 
-.dep-group-head {
+.group-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+}
+
+.group-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
-  margin: 0 0 4px;
-  font-size: 12px;
+  padding: 7px 10px;
+  cursor: pointer;
+  font-size: 13px;
   font-weight: 650;
+}
+
+.group-head::-webkit-details-marker {
+  display: none;
+}
+
+/* a row says whether it is open without a library: ▸ closed, ▾ open */
+.group-head::before {
+  content: '▸';
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.group-panel[open] > .group-head::before {
+  content: '▾';
+}
+
+.group-head:hover {
+  background: var(--bg-hover);
+  border-radius: 7px;
+}
+
+.group-panel[open] > .group-head:hover {
+  border-radius: 7px 7px 0 0;
+}
+
+.group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the dbt layer is a label, not a name: it reads as one */
+.dep-group-name {
   text-transform: uppercase;
   letter-spacing: 0.06em;
+  font-size: 12px;
 }
 
-.dep-group-count {
+.group-hint {
+  font-size: 11px;
   font-weight: 400;
-  letter-spacing: 0;
-  text-transform: none;
+  white-space: nowrap;
+}
+
+.group-count {
+  margin-left: auto;
+  font-weight: 400;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.group-link {
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.bi-group-link {
+  color: var(--metabase);
 }
 
 .dep-rows {
   list-style: none;
   margin: 0;
-  padding: 0;
-  border-left: 2px solid var(--border);
+  padding: 2px 10px 8px 26px;
 }
 
 .dep-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 2px 0 2px 10px;
+  padding: 2px 0;
   font-size: 13px;
-}
-
-.dep-row:hover {
-  background: var(--bg-hover);
 }
 
 .dep-row-name {
@@ -812,76 +866,10 @@ kbd {
   font-size: 11px;
 }
 
-/* BI usage, grouped by the dashboard a reader recognises (#82) */
-.bi-groups {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.bi-group {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-elev);
-}
-
-.bi-group-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.bi-group-head::-webkit-details-marker {
-  display: none;
-}
-
-/* a group says whether it is open without a library: ▸ closed, ▾ open */
-.bi-group-head::before {
-  content: '▸';
-  color: var(--text-muted);
-  font-size: 10px;
-}
-
-.bi-group[open] > .bi-group-head::before {
-  content: '▾';
-}
-
-.bi-group-name {
-  color: var(--text);
-  text-decoration: none;
-}
-
-.bi-group-name:hover {
-  text-decoration: underline;
-}
-
-.bi-group-count {
-  margin-left: auto;
-  font-weight: 400;
-  font-size: 12px;
-}
-
-.bi-group-link,
-.bi-card-link {
-  color: var(--metabase);
-  font-size: 11px;
-  font-weight: 400;
-  text-decoration: none;
-}
-
-.bi-group-link:hover,
-.bi-card-link:hover {
-  text-decoration: underline;
-}
-
 .bi-cards {
   list-style: none;
   margin: 0;
-  padding: 0 10px 8px 26px;
+  padding: 2px 10px 8px 26px;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -905,6 +893,14 @@ kbd {
 
 .bi-card-link {
   margin-left: auto;
+  color: var(--metabase);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.bi-card-link:hover,
+.group-link:hover {
+  text-decoration: underline;
 }
 
 .node-chip {
@@ -1494,6 +1490,278 @@ kbd {
   margin: 0 0 6px;
   color: var(--accent);
   overflow-wrap: anywhere;
+}
+
+/* The drawer became a workspace once a second change type existed (#70/#72): the
+   type is the outer grouping, and the footer is where a session ends. */
+.staged-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 12px 4px;
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.staged-section + .staged-section {
+  border-top: 1px solid var(--border);
+}
+
+.staged-row-desc {
+  flex-wrap: wrap;
+}
+
+.staged-desc-preview {
+  flex: 1 1 100%;
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.staged-edit {
+  padding: 0 5px;
+  line-height: 1.4;
+  font-size: 11px;
+}
+
+.staged-apply {
+  display: block;
+  width: 100%;
+  margin-bottom: 6px;
+  border-color: var(--accent);
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.staged-apply:disabled {
+  border-color: var(--border);
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.staged-kind {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* a staged edit is visibly NOT what the repo says yet (#70) */
+.staged-badge {
+  border: 1px dashed var(--accent);
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 10px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+/* ---- description editing (#70) ---- */
+
+.desc-shown.staged .desc-text {
+  border-left: 2px dashed var(--accent);
+  padding-left: 10px;
+}
+
+.desc-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+
+.desc-was summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.desc-was .desc-text {
+  margin: 4px 0 0;
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+}
+
+.desc-input {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  resize: vertical;
+}
+
+.desc-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+}
+
+.desc-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.desc-discard {
+  margin-left: auto;
+  color: var(--edge-weak);
+}
+
+/* ---- apply: the commit screen (#72) ---- */
+
+.apply-modal {
+  width: min(860px, 100%);
+  display: flex;
+  flex-direction: column;
+  max-height: min(84vh, 900px);
+}
+
+.apply-lead {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
+.apply-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+
+.diff-files {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.diff-file {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.diff-file-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--bg-hover);
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-file-path {
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-stat {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.diff-added {
+  color: var(--ok);
+}
+
+.diff-removed {
+  color: var(--edge-weak);
+}
+
+/* the diff is shown verbatim: a horizontal scroll, never a re-wrap */
+.diff-body {
+  margin: 0;
+  padding: 6px 0;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.diff-line {
+  display: block;
+  padding: 0 10px;
+  white-space: pre;
+}
+
+.diff-add {
+  background: color-mix(in srgb, var(--ok) 16%, transparent);
+  color: var(--text);
+}
+
+.diff-del {
+  background: color-mix(in srgb, var(--edge-weak) 16%, transparent);
+  color: var(--text);
+}
+
+.diff-hunk {
+  color: var(--accent);
+}
+
+.diff-meta {
+  color: var(--text-muted);
+}
+
+.apply-problems {
+  margin-top: 14px;
+}
+
+.apply-problem-rows,
+.apply-file-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.apply-problem,
+.apply-written,
+.apply-refused {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.apply-problem-label {
+  background: none;
+  padding: 0;
+}
+
+.apply-problem-reason {
+  font-size: 11px;
+}
+
+.apply-ok {
+  color: var(--ok);
+  font-weight: 700;
+}
+
+.apply-warn {
+  color: var(--edge-weak);
+  font-weight: 700;
 }
 
 .modal-backdrop {

@@ -30,7 +30,7 @@ Mature, MIT-licensed, reuse rather than reimplement.
 | dbt → Metabase FK / semantic type / description push | `dbt-metabase` (600★, v1.7.5, May 2026) | Reuse in CI. Our written relationships tests are its input — free FK sync to Metabase. |
 | Metabase cards → dbt exposures (model-level) | `dbt-metabase exposures` | Reuse; we extend the idea to column level. |
 | ERD conventions | `dbterd` | Match its `meta.relationship_type` convention for interop. |
-| SQL column lineage | `sqlglot` | Phase 3 dependency (native SQL cards). |
+| SQL column lineage | `sqlglot` | Compiled dbt SQL (§7.3) and Metabase native cards (§7.4). |
 
 Greenfield: **column-level BI lineage** and **the visual editor that writes back to dbt YAML**.
 
@@ -211,6 +211,8 @@ serve:
 output:
   dir: .stitch/
   retain_cache_runs: 3                  # raw Metabase payload snapshots
+  history_retention: 20                 # SHA-keyed graph baselines in .stitch/history/;
+                                        # 0 turns history off and clears the directory
 ```
 
 Rules carried forward:
@@ -238,6 +240,7 @@ A **model's column set** comes from its compiled SQL, not from the catalog: the 
 | `GET /api/card` | all cards: `dataset_query`, `collection_id`, `creator`, `archived` |
 | `GET /api/dashboard`, `/api/dashboard/:id` | dashcards → card ids |
 | `GET /api/collection` | tree, for collection filtering |
+| `GET /api/native-query-snippet` | snippet SQL behind a `{{snippet: name}}` tag (§7.4). Best-effort: an instance that will not serve it degrades those cards, not the build |
 
 Auth: API key header, Metabase 49+ asserted at startup. Raw responses land in `.stitch/cache/{timestamp}/` before parsing (gitignored, last 3 kept): resolution bugs get debugged against stored payloads, and `resolve/metabase.py` gets unit tests from real fixtures. Incremental via `updated_at` high-water mark; target 5k cards under 60s warm.
 
@@ -273,7 +276,9 @@ dbt column lineage   1,842/1,901 columns traced   (37 inferred via star-expansio
 
 **Card-on-card (exact, recursive).** `source-table: "card__123"`, MBQL 5 `source-card: 123` and `["metric", …]` refs (Metabase models and metrics) resolve transitively, cycle-guarded with a visited set.
 
-**Native SQL (Phase 3, `confidence: parsed`).** Substitute `{% snippet %}`, `{{var}}`, `[[optional]]`, `{{#123-card}}` template tags, then sqlglot with the Snowflake dialect; unqualified columns resolved against the catalog schema. Parse failure → degrade to table-level, record in the unresolved list. Never drop a card silently.
+**Native SQL (`confidence: parsed`).** Substitute the template tags, then sqlglot with the Snowflake dialect; unqualified columns and `select *` resolve against a schema map built from the Metabase field metadata of the tables the SQL names (the card's `database` id pins the connection, so the warehouse database in a three-part name is dropped rather than checked — it is not the Metabase display name). Substitution rules, each chosen for lineage rather than execution: `{{var}}` → a neutral literal by declared tag type; `[[optional]]` → **contents kept, brackets dropped**, because a column referenced only inside an optional filter still breaks the card when it is renamed and a blast radius that misses it is a false negative; `{{snippet: name}}` → the snippet's SQL inlined recursively from `GET /api/native-query-snippet` (best-effort: an instance that will not serve it degrades that card, not the build); `{{#123-card}}` → recorded as a card-on-card source and routed through the same transitive machinery MBQL uses, substituting a column-less subquery placeholder so nothing physical is attributed to it. A **field-filter (`dimension`) tag** names a field id outright, so that one edge is `exact` — it is metadata, not a parse.
+
+Edges are ordinary `consumed_by` (mb_field → mb_card): lineage composes through the existing `binds_to` hop with no new edge type, and a native card is a first-class source for card-on-card resolution. A `via` edge inheriting a native card's fields is downgraded to `parsed` — presenting a parsed chain as exact is the phantom-dependency failure mode of §5. Parse failure → degrade to table-level: the card keeps its node, records the physical tables its SQL names on `properties.native_tables`, and itemizes the reason in the unresolved list. A card that resolves only partly still emits what it resolved. Never drop a card silently, never invent a column.
 
 ### 7.5 Binding Metabase tables to dbt models
 
@@ -284,7 +289,7 @@ Match `(database, schema, table)` against manifest `relation_name`, honouring `a
 ```
 models bound       142/147   (5 unmatched → stitch doctor --unbound)
 MBQL cards         218/218   exact
-native SQL cards     0/41    unsupported in v0
+native SQL cards    38/41    parsed
 dashboards          19/19
 ```
 
@@ -418,6 +423,8 @@ Ship the GitHub Action in the repo. This is the feature that earns adoption; the
 
 A scheduled nightly job runs full `stitch build` (with Metabase) on main and commits the refreshed `graph.json` — so the baseline tracks Metabase-side drift (new cards, archived dashboards) without any human remembering to rebuild.
 
+**SHA-keyed local history — a baseline without committing one (#87).** Every `stitch build` on a clean working tree gzips the graph it just wrote into `.stitch/history/<commit-sha>.json.gz`, keyed by HEAD, retained `output.history_retention` deep (oldest pruned first, insertion order in an `index.json` — mtimes are not a contract). `stitch impact --base <ref>` then resolves *locally first*: `<ref>` → its merge-base with HEAD → that commit's snapshot, or the nearest stored ancestor of it; only on a miss does it fall back to the committed `graph.json` at the ref, and a miss on both names the fix. Which baseline was used is printed on stderr — never inferred, and never mixed into the stdout payload that `--format github-comment` pipes. Builds with a dirty tree store nothing and say so: such a snapshot describes the working tree rather than the commit, and used as a baseline it would report no impact on exactly the changes it contains. `stitch history` lists what is stored (sha, time, node/edge counts, commit subject). This is §12.2's "CI artifact keyed by commit SHA" fallback in local form — it restores §10's PR-diff workflow with nothing committed, inside the gitignored `.stitch/`.
+
 **The point query — ask before you edit.** `stitch impact --column fct_matches.match_intensity` (#86) runs the same downstream walk (`from → to`, `relates_to` excluded, depth-capped) over the *current* `graph.json`: no baseline, no git, no Metabase credentials, because one graph is all a point query needs. The diff answers "what did my change break"; this answers "what breaks if I change this" — the question that gets asked before the edit rather than after it. Same grouped counts as the comment above (models, columns, fields, cards with dashboard and owner), `--json` for piping; input is `model.column`, a bare column name when it is unique in the graph, or a full node id, and ambiguity lists the qualified candidates rather than guessing which of three `match_intensity` columns was meant. Local impact — this plus the previous-build baseline (#53), which is also what brings `impact` back onto `--help` — is the top of the priority order (§12.1).
 
 ## 11. Agent surface
@@ -431,7 +438,7 @@ A scheduled nightly job runs full `stitch build` (with Metabase) on main and com
 | **0** | `build`: dbt models **+ column lineage via sqlglot on compiled SQL** + MBQL cards; `graph.json` deterministic + `--check`; coverage report incl. lineage trace rate; recursive `impact` + GitHub Action; `stitch search` (CLI); `doctor` basics, plus `doctor --dead` for estate hygiene — unconsumed columns, models feeding nothing, archived-but-bound cards (#88) | **shipped** (impact shelved by default — see v0.5 deltas) |
 | **1** | `serve`: **search + detail panels** (the entry point), end-to-end column lineage view, catalog, read-only ERD; `export --format site` | **shipped** |
 | **2** | Editable canvas → **staged relationships + `stitch apply`** (§8.2, issues #24/#27), suggestion layer, `layout.yml` | next |
-| **3** | Metabase **native SQL** cards via sqlglot + template-tag substitution (NOTE: modern Metabase also emits **MBQL 5 lib/stages** for saved questions — issue #22, being fixed ahead of phase order), rename heuristics, `--verify-lineage` (ACCESS_HISTORY), Metabase version matrix | ongoing |
+| **3** | Metabase **native SQL** cards via sqlglot + template-tag substitution (#32, shipped; modern Metabase also emits **MBQL 5 lib/stages** for saved questions — #22, shipped ahead of phase order), rename heuristics, `--verify-lineage` (ACCESS_HISTORY), Metabase version matrix | ongoing |
 
 Work is tracked as GitHub issues; the tracker, not this table, is the operational truth.
 
@@ -441,7 +448,7 @@ Phases describe scope, not sequence. The current order of work cuts across them:
 
 1. **Local impact.** The previous-build baseline plus a blast-radius summary on every build (#53), then the point query `stitch impact --column` — a blast radius askable *before* an edit, not only as a diff after one (#86) — and SHA-keyed local history (#87). This returns §10's killer feature to the local-only world where the graph now lives; the committed baseline stays the CI variant for teams that keep one.
 2. **`stitch init`** (#29, §6.0). Every install after the first one starts here, and setup friction is a product feature.
-3. **Metabase native SQL cards** (#32, §7.4). `native SQL cards 0/41` is the honest headline limit of the tool for every shop that is not MBQL-only.
+3. ~~**Metabase native SQL cards** (#32, §7.4). `native SQL cards 0/41` was the honest headline limit of the tool for every shop that is not MBQL-only.~~ Shipped: native cards parse (§7.4).
 
 Canvas and ERD polish ranks below all three, and a broken core chain outranks all cosmetic work: while card detail shows no source columns (#25), how the ERD looks is not the problem.
 
@@ -458,7 +465,7 @@ Each of these was a reasonable-sounding idea. They are decided against, not defe
 ## 13. Risks
 
 - **Committed generated file friction.** `.stitch/graph.json` in git means occasional merge conflicts (regenerate-and-recommit resolves them — document it) and reviewers seeing a machine file in diffs. Deterministic ordering keeps diffs semantic; `--check` in CI keeps it honest. If it proves hateful in practice, the fallback is storing the baseline as a CI artifact keyed by commit SHA — costs the git-native diffing, keeps everything else. That is where it landed: v0.5 made the graph local, and #87 (§12.1) is that fallback in local form — snapshots keyed by SHA inside gitignored `.stitch/`.
-- **Native SQL coverage — not a configuration problem.** Smitten is MBQL-only; the tool gets built against its easiest case while most Metabase shops live in the hard one. Coverage reporting from Phase 0 makes the gap legible; sqlglot is Phase 3 and the README says so. Third in the priority order (§12.1) for exactly this reason — it is the difference between a tool for Smitten and a tool for Metabase shops.
+- **Native SQL coverage — not a configuration problem.** Smitten is *almost* MBQL-only (8 native cards of 953), so the tool gets built against its easiest case while most Metabase shops live in the hard one. Closed as a gap (§7.4 resolves native cards), but the *exposure* remains: the resolver is exercised by a handful of real cards, and a shop that is native-first will find its edges here first. Coverage reporting is what keeps that legible — a `native SQL cards 12/41` line is a bug report with a number attached.
 - **Frontend bundling.** Shipping a prebuilt SPA in the wheel means a JS build step in *release* CI and wheel size in the tens of MB. Acceptable; the alternative (npm at install time) is not, for a pip package.
 - **Metabase API drift.** Pin 49+ (API keys), keep a tested version matrix, treat every response shape as untrusted, keep raw payloads for repro.
 - **Adjacency to `dbt-metabase`.** If it grows column-level exposures, Phase 0's differentiation shrinks. Open an issue with the maintainer early — Phase 0 might be strongest as an upstream contribution plus this repo owning the viewer/editor.

@@ -1,0 +1,157 @@
+[
+  {
+    "id": 601,
+    "name": "Orders export",
+    "description": "Every value tag type, plus an optional clause",
+    "collection_id": 7,
+    "archived": false,
+    "display": "table",
+    "query_type": "native",
+    "creator_id": 6,
+    "creator": { "id": 6, "common_name": "Magnus", "email": "magnus@smitten.fun" },
+    "dataset_query": {
+      "type": "native",
+      "database": 2,
+      "native": {
+        "query": "select order_id, order_total from fct_orders where order_total > {{min_total}} [[and created_at >= {{start_date}}]] and customer_id = {{customer}} limit {{row_cap}}",
+        "template-tags": {
+          "min_total": { "name": "min_total", "display-name": "Min total", "type": "number" },
+          "start_date": { "name": "start_date", "display-name": "Start date", "type": "date" },
+          "customer": { "name": "customer", "display-name": "Customer", "type": "text" },
+          "row_cap": { "name": "row_cap", "display-name": "Row cap", "type": "number" }
+        }
+      }
+    }
+  },
+  {
+    "id": 602,
+    "name": "Orders by filter widget",
+    "description": "A field filter tag names its field outright",
+    "collection_id": 7,
+    "archived": false,
+    "display": "scalar",
+    "query_type": "native",
+    "creator_id": 6,
+    "creator": { "id": 6, "common_name": "Magnus", "email": "magnus@smitten.fun" },
+    "dataset_query": {
+      "type": "native",
+      "database": 2,
+      "native": {
+        "query": "select count(*) from marts.fct_orders where {{created}}",
+        "template-tags": {
+          "created": {
+            "name": "created",
+            "display-name": "Created",
+            "type": "dimension",
+            "dimension": ["field", 103, null],
+            "widget-type": "date/all-options"
+          }
+        }
+      }
+    }
+  },
+  {
+    "id": 603,
+    "name": "Orders with snippets",
+    "description": "A snippet that uses another snippet",
+    "collection_id": 7,
+    "archived": false,
+    "display": "table",
+    "query_type": "native",
+    "creator_id": 6,
+    "creator": { "id": 6, "common_name": "Magnus", "email": "magnus@smitten.fun" },
+    "dataset_query": {
+      "type": "native",
+      "database": 2,
+      "native": {
+        "query": "select o.order_id from marts.fct_orders o where {{snippet: recent orders}}",
+        "template-tags": {
+          "snippet: recent orders": {
+            "name": "snippet: recent orders",
+            "display-name": "Snippet: recent orders",
+            "type": "snippet",
+            "snippet-name": "recent orders",
+            "snippet-id": 5
+          }
+        }
+      }
+    }
+  },
+  {
+    "id": 604,
+    "name": "Customer order counts (MBQL 5)",
+    "description": "MBQL 5 native stage: CTE, star, join, fully qualified table",
+    "collection_id": 7,
+    "archived": false,
+    "display": "bar",
+    "query_type": "native",
+    "creator_id": 6,
+    "creator": { "id": 6, "common_name": "Magnus", "email": "magnus@smitten.fun" },
+    "dataset_query": {
+      "database": 2,
+      "lib/type": "mbql/query",
+      "stages": [
+        {
+          "lib/type": "mbql.stage/native",
+          "native": "with recent as (select * from analytics_wh.marts.fct_orders where created_at >= '2020-01-01') select c.customer_name, count(*) as orders from recent as r join marts.dim_customers as c on c.customer_id = r.customer_id group by c.customer_name"
+        }
+      ]
+    }
+  },
+  {
+    "id": 605,
+    "name": "Export of a saved card",
+    "description": "A card reference routes through the card-on-card machinery",
+    "collection_id": 7,
+    "archived": false,
+    "display": "table",
+    "query_type": "native",
+    "creator_id": 6,
+    "creator": { "id": 6, "common_name": "Magnus", "email": "magnus@smitten.fun" },
+    "dataset_query": {
+      "database": 2,
+      "lib/type": "mbql/query",
+      "stages": [
+        {
+          "lib/type": "mbql.stage/native",
+          "native": "select order_id from {{#601-orders-export}}",
+          "template-tags": {
+            "#601-orders-export": {
+              "name": "#601-orders-export",
+              "display-name": "#601 Orders Export",
+              "type": "card",
+              "card-id": 601
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": 606,
+    "name": "Orders with an unavailable snippet",
+    "description": "Snippet the instance did not serve: degrade, do not drop",
+    "collection_id": 7,
+    "archived": false,
+    "display": "table",
+    "query_type": "native",
+    "creator_id": 6,
+    "creator": { "id": 6, "common_name": "Magnus", "email": "magnus@smitten.fun" },
+    "dataset_query": {
+      "type": "native",
+      "database": 2,
+      "native": {
+        "query": "select order_id from marts.fct_orders where {{snippet: quarantined}}",
+        "template-tags": {
+          "snippet: quarantined": {
+            "name": "snippet: quarantined",
+            "display-name": "Snippet: quarantined",
+            "type": "snippet",
+            "snippet-name": "quarantined",
+            "snippet-id": 99
+          }
+        }
+      }
+    }
+  }
+]
