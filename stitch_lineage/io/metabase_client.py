@@ -176,9 +176,7 @@ class MetabaseClient:
         resolution, which is not worth failing a whole build over.
         """
         try:
-            return _as_list(
-                self._get("/api/native-query-snippet"), "/api/native-query-snippet"
-            )
+            return _as_list(self._get("/api/native-query-snippet"), "/api/native-query-snippet")
         except MetabaseAPIError:
             return []
 

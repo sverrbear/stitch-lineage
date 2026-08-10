@@ -72,9 +72,6 @@ class Snippets(NamedTuple):
     by_id: dict[int, str]
 
 
-EMPTY_SNIPPETS = Snippets({}, {})
-
-
 class TableIndex(NamedTuple):
     """One Metabase database's tables, indexed the way a SQL identifier arrives.
 
@@ -199,6 +196,7 @@ def resolve_native_sql(
         return result
 
     referenced = _canonicalize_tables(parsed, index, result)
+    unknown_table = bool(result.problems)
     result.tables = sorted(f"{schema}.{table}" for schema, table in referenced.values())
     mapping: dict[str, Any] = {}
     for table_id, (schema, table) in referenced.items():
@@ -220,7 +218,14 @@ def resolve_native_sql(
             {"ref": None, "reason": f"native SQL parse failure: {_error_text(exc)}"}
         )
         return result
-    _collect_columns(qualified, index, result)
+    # a card reference substitutes a column-less placeholder, so columns selected out of it
+    # are unattributable by construction -- the referenced card owns them, not a table
+    _collect_columns(
+        qualified,
+        index,
+        result,
+        report_unattributed=not unknown_table and not result.upstream_cards,
+    )
     # a field can arrive twice (a field filter on a column the SQL also names); the exact
     # ref wins, and sorting keeps the caller's edge order independent of walk order
     deduped: dict[int, NativeField] = {}
@@ -270,7 +275,9 @@ def _substitute_tag(
     tag = template_tags.get(inner) if isinstance(template_tags.get(inner), dict) else {}
     tag_type = str(tag.get("type") or "")
     if snippet_match or tag_type == "snippet":
-        name = snippet_match.group(1).strip() if snippet_match else str(tag.get("snippet-name") or "")
+        name = (
+            snippet_match.group(1).strip() if snippet_match else str(tag.get("snippet-name") or "")
+        )
         return _substitute_snippet(name, tag, template_tags, snippets, index, result, depth)
     if tag_type == "card":
         card_id = tag.get("card-id")
@@ -362,6 +369,20 @@ def _canonicalize_tables(
     return referenced
 
 
+def _is_alias_reference(column: exp.Column, outputs: set[str]) -> bool:
+    """True for a bare column that names one of the query's own outputs from a clause where
+    an output alias is legal. In the projection itself an alias is not in scope, so a column
+    there that happens to share an output's name is still a column that failed to resolve."""
+    if column.name.casefold() not in outputs:
+        return False
+    node = column.parent
+    while node is not None and not isinstance(node, exp.Select):
+        if isinstance(node, exp.Order | exp.Group | exp.Having | exp.Qualify | exp.Distinct):
+            return True
+        node = node.parent
+    return False
+
+
 def _lookup_table(db: str, name: str, index: TableIndex) -> int | None:
     """Table id for a written reference; a bare name only when it is unambiguous."""
     if db:
@@ -371,13 +392,27 @@ def _lookup_table(db: str, name: str, index: TableIndex) -> int | None:
 
 
 def _collect_columns(
-    qualified: exp.Expression, index: TableIndex, result: NativeResolution
+    qualified: exp.Expression,
+    index: TableIndex,
+    result: NativeResolution,
+    report_unattributed: bool,
 ) -> None:
     """Every column of the qualified query that lands on a physical table.
 
     sqlglot's scopes carry the alias -> source map, so a column's table alias resolves to
     the exp.Table it came from (or to a CTE/subquery scope, which is not a consumption --
     the columns it selects were already collected in its own scope).
+
+    A column can still be unqualified after the qualify pass for two very different
+    reasons, and they must not be conflated: it is an ORDER BY/GROUP BY/HAVING/QUALIFY
+    reference to one of this query's own output aliases (nothing to resolve, and normal),
+    or the field map has no such column so qualification had nothing to attach it to (a
+    real gap, reported). In the second case a lone physical source in scope still tells
+    us which table it was meant to be, which is the more useful thing to say.
+
+    report_unattributed is False when the query already explains its own unattributable
+    columns -- a table reported unknown, or a card reference standing in for a whole
+    subquery. Itemizing each column then adds noise to `stitch doctor`, not information.
     """
     seen: set[int] = set()
     for scope in traverse_scope(qualified):
@@ -385,13 +420,16 @@ def _collect_columns(
         for column in scope.columns:
             source = scope.sources.get(column.table)
             if not isinstance(source, exp.Table):
-                if not column.table and column.name.casefold() not in outputs:
-                    result.problems.append(
-                        {"ref": column.sql(dialect=_DIALECT), "reason": "column matches no source"}
-                    )
-                # an unqualified column that IS an output name is an order-by/having
-                # reference to a select alias, not a table column: nothing to resolve
-                continue
+                if column.table or _is_alias_reference(column, outputs):
+                    continue
+                physical = [src for src in scope.sources.values() if isinstance(src, exp.Table)]
+                if len(physical) != 1:
+                    if report_unattributed:
+                        result.problems.append(
+                            {"ref": column.name, "reason": "column matches no source"}
+                        )
+                    continue
+                source = physical[0]
             table_id = index.by_qualified.get((source.db.casefold(), source.name.casefold()))
             if table_id is None:
                 continue  # its table was already reported unknown
