@@ -11,7 +11,6 @@ export type Route =
   | { page: 'node'; nodeId: string }
   | { page: 'lineage'; nodeId: string; grain: Grain }
   | { page: 'erd'; scopeKind?: 'schema' | 'tag'; scopeValue?: string }
-  | { page: 'overview' }
   | { page: 'coverage'; kind: CoverageListKind }
 
 const COVERAGE_KINDS: CoverageListKind[] = [
@@ -27,7 +26,6 @@ export function parseHash(hash: string): Route {
   if (segments[0] === 'lineage' && segments[1]) {
     return { page: 'lineage', nodeId: segments[1], grain: segments[2] === 'table' ? 'table' : 'column' }
   }
-  if (segments[0] === 'overview') return { page: 'overview' }
   if (segments[0] === 'coverage' && COVERAGE_KINDS.includes(segments[1] as CoverageListKind)) {
     return { page: 'coverage', kind: segments[1] as CoverageListKind }
   }
@@ -57,10 +55,6 @@ export function nodeHref(nodeId: string): string {
 export function lineageHref(nodeId: string, grain: Grain = 'column'): string {
   const base = `#/lineage/${encodeURIComponent(nodeId)}`
   return grain === 'table' ? `${base}/table` : base
-}
-
-export function overviewHref(): string {
-  return '#/overview'
 }
 
 export function coverageHref(kind: CoverageListKind): string {
