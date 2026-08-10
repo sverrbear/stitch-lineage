@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { coverageHref, erdHref, lineageHref, nodeHref, overviewHref, parseHash } from './router'
+import { coverageHref, erdHref, lineageHref, nodeHref, parseHash } from './router'
 
 describe('parseHash', () => {
   it('routes the basics', () => {
@@ -32,8 +32,11 @@ describe('parseHash', () => {
     expect(parseHash('#/lineage/x/sideways')).toEqual({ page: 'lineage', nodeId: 'x', grain: 'column' })
   })
 
-  it('routes the map and the coverage lists', () => {
-    expect(parseHash('#/overview')).toEqual({ page: 'overview' })
+  it('sends the retired map route home rather than nowhere (#83)', () => {
+    expect(parseHash('#/overview')).toEqual({ page: 'home' })
+  })
+
+  it('routes the coverage lists', () => {
     expect(parseHash('#/coverage/unbound-models')).toEqual({
       page: 'coverage',
       kind: 'unbound-models',
@@ -56,7 +59,6 @@ describe('parseHash', () => {
       scopeKind: 'schema',
       scopeValue: 'my schema',
     })
-    expect(parseHash(overviewHref())).toEqual({ page: 'overview' })
     expect(parseHash(coverageHref('unresolved-cards'))).toEqual({
       page: 'coverage',
       kind: 'unresolved-cards',

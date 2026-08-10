@@ -29,7 +29,7 @@ import {
 } from 'react'
 import { SystemBadge } from '../components/badges'
 import { GraphLegend } from '../components/bits'
-import { ErdRoutedEdge } from '../components/ErdEdge'
+import { ErdMarkers, ErdRoutedEdge } from '../components/ErdEdge'
 import { StageRelationshipModal, type StageTarget } from '../components/StageRelationshipModal'
 import { useStitch } from '../data'
 import { CLICK_SLOP_PX, isClickNotDrag, type Point } from '../lib/canvas'
@@ -227,48 +227,6 @@ const EDGE_TYPE = 'erdRouted'
 function cardinalityMarkerProps(cardinality?: string | null) {
   const { start, end } = cardinalityMarkers(cardinality)
   return { markerStart: start, markerEnd: end }
-}
-
-/**
- * The `1` and `*` glyphs a model view puts on each end of a relationship. They
- * are defined once per page and referenced by id; `orient="0"` keeps them
- * upright whatever direction the edge runs, and the two `refX` values nudge each
- * glyph clear of the card it belongs to (sources leave from the right edge,
- * targets arrive at the left).
- */
-function ErdMarkers() {
-  return (
-    <svg className="erd-markers" aria-hidden="true" focusable="false">
-      <defs>
-        <marker
-          id="erd-card-many"
-          viewBox="0 0 14 14"
-          markerWidth="14"
-          markerHeight="14"
-          refX="0"
-          refY="7"
-          orient="0"
-        >
-          <text className="erd-marker-glyph" x="7" y="11" textAnchor="middle">
-            *
-          </text>
-        </marker>
-        <marker
-          id="erd-card-one"
-          viewBox="0 0 14 14"
-          markerWidth="14"
-          markerHeight="14"
-          refX="14"
-          refY="7"
-          orient="0"
-        >
-          <text className="erd-marker-glyph" x="7" y="11" textAnchor="middle">
-            1
-          </text>
-        </marker>
-      </defs>
-    </svg>
-  )
 }
 
 function scopeKey(scope: ErdScope): string {

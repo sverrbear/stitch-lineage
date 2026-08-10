@@ -10,7 +10,6 @@ import { useRoute } from './router'
 // The React Flow canvases are the heavy chunk; keep search/detail first-load light.
 const LineagePage = lazy(() => import('./pages/LineagePage').then((m) => ({ default: m.LineagePage })))
 const ErdPage = lazy(() => import('./pages/ErdPage').then((m) => ({ default: m.ErdPage })))
-const OverviewPage = lazy(() => import('./pages/OverviewPage').then((m) => ({ default: m.OverviewPage })))
 
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
@@ -67,7 +66,6 @@ function Shell() {
           </main>
         )}
         {route.page === 'lineage' && <LineagePage nodeId={route.nodeId} grain={route.grain} />}
-        {route.page === 'overview' && <OverviewPage />}
         {route.page === 'erd' && <ErdPage scopeKind={route.scopeKind} scopeValue={route.scopeValue} />}
       </Suspense>
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
