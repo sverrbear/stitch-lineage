@@ -235,6 +235,7 @@ def create_app(
     descriptions_path: Path | None = None,
     apply_context: apply_service.ApplyContext | None = None,
     strip_model_prefixes: list[str] | None = None,
+    table_prefixes: list[str] | None = None,
 ) -> FastAPI:
     """Build the local app serving `graph_path`; `metabase_url` powers card deep links.
 
@@ -254,6 +255,10 @@ def create_app(
     `apply_context` enables the apply endpoints -- the only routes that write the dbt repo.
     They run the same engine as `stitch apply` and refuse dirty files with no force path
     (SPEC.md section 8.2), and /api/meta reports apply_enabled so the SPA can hide the button.
+
+    `table_prefixes` are the per-database metabase.databases[].table_prefix values. Binding
+    already strips them (resolve/bind.py); passing them on lets the app hide them from the
+    physical names it DISPLAYS too, which on a dev target are the reader's own initials.
     """
     dist = frontend_dist()
     layout = layout_path or (staged_path.parent / LAYOUT_FILENAME if staged_path else None)
@@ -277,6 +282,7 @@ def create_app(
                 "schema_version": graph.schema_version,
                 "erd_default_scope": erd_default_scope,
                 "strip_model_prefixes": list(strip_model_prefixes or []),
+                "table_prefixes": list(table_prefixes or []),
                 "staging_enabled": staged_path is not None,
                 "apply_enabled": apply_context is not None,
             }

@@ -135,7 +135,10 @@ export function layoutErd(
     // zoom-to-fit rather than a 40-storey tower
     const columns = Math.max(1, options.isolatedColumns ?? Math.ceil(Math.sqrt(isolated.length)))
     const pitchY = Math.max(...isolated.map((id) => size.get(id)?.h ?? 0)) + gap
-    const pitchX = cardWidth + gap
+    // the widest card sets the column pitch, not the fallback width: cards measure what
+    // their content needs (a long model name buys a wider card, #80), and a fixed 300
+    // pitch overlapped every card that came out wider than that
+    const pitchX = Math.max(cardWidth, ...isolated.map((id) => size.get(id)?.w ?? 0)) + gap
     isolated.forEach((id, i) => {
       positions.set(id, {
         x: (i % columns) * pitchX,
