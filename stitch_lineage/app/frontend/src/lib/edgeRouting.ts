@@ -93,8 +93,27 @@ function inflate(rect: RoutingRect, margin: number): Box {
   }
 }
 
-function holds(box: Box, point: Point): boolean {
-  return point.x > box.left && point.x < box.right && point.y > box.top && point.y < box.bottom
+/**
+ * The card as a wall, with as much of `margin` as the route can afford: a card
+ * 25px from the one an edge leaves would otherwise swallow that edge's own start
+ * point in its clearance ring, and a wall you are already standing inside has to
+ * be dropped — which is how a line ended up straight through the neighbour. So
+ * the clearance shrinks to whatever keeps the anchors outside instead, and the
+ * card itself stays off limits. `null` when even that is impossible.
+ */
+function wallOf(rect: RoutingRect, margin: number, anchors: readonly Point[]): Box | null {
+  let allowed = margin
+  for (const point of anchors) {
+    const gap = Math.max(
+      rect.x - point.x,
+      point.x - (rect.x + rect.width),
+      rect.y - point.y,
+      point.y - (rect.y + rect.height),
+    )
+    if (gap <= 0) return null
+    allowed = Math.min(allowed, gap)
+  }
+  return inflate(rect, Math.max(0, allowed))
 }
 
 /** Liang–Barsky: does the segment reach the inside of the box? */
@@ -325,18 +344,15 @@ export function routeEdge(
   const start = stubPoint(from, stub)
   const end = stubPoint(to, stub)
 
-  // A card whose clearance swallows an anchor cannot be respected — routing out of
-  // it is impossible, and pretending otherwise would lose the edge entirely.
-  const hard = obstacles
-    .map((rect) => inflate(rect, margin))
-    .filter(
-      (box) => !holds(box, start) && !holds(box, end) && !holds(box, from) && !holds(box, to),
-    )
-  // The edge's own cards are judged from the stub points only: the handles sit ON
-  // those cards, so testing them there would discard every soft box there is.
-  const soft = (options.soft ?? [])
-    .map((rect) => inflate(rect, margin))
-    .filter((box) => !holds(box, start) && !holds(box, end))
+  // Both walls and own-cards are measured from the two stub points: the handles
+  // themselves sit ON their cards, so judging by those would discard every card.
+  const anchors = [start, end]
+  const walls = (rects: readonly RoutingRect[]) =>
+    rects
+      .map((rect) => wallOf(rect, margin, anchors))
+      .filter((box): box is Box => box !== null)
+  const hard = walls(obstacles)
+  const soft = walls(options.soft ?? [])
 
   const blocked = (a: Point, b: Point, boxes: readonly Box[]): boolean => {
     for (const box of boxes) if (segmentHitsBox(a, b, box)) return true

@@ -29,6 +29,7 @@ import {
 } from 'react'
 import { SystemBadge } from '../components/badges'
 import { GraphLegend } from '../components/bits'
+import { ErdRoutedEdge } from '../components/ErdEdge'
 import { StageRelationshipModal, type StageTarget } from '../components/StageRelationshipModal'
 import { useStitch } from '../data'
 import { CLICK_SLOP_PX, isClickNotDrag, type Point } from '../lib/canvas'
@@ -199,6 +200,9 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
 }
 
 const nodeTypes = { erdModel: ErdModelNode }
+// every relationship is routed around the cards rather than drawn through them (#79)
+const edgeTypes = { erdRouted: ErdRoutedEdge }
+const EDGE_TYPE = 'erdRouted'
 
 /** `markerStart`/`markerEnd` for an edge, from its cardinality (see ErdMarkers). */
 function cardinalityMarkerProps(cardinality?: string | null) {
@@ -562,7 +566,7 @@ export function ErdPage({
       sourceHandle: rel.fromColumn,
       target: rel.toModelId,
       targetHandle: rel.toColumn,
-      type: 'smoothstep',
+      type: EDGE_TYPE,
       className: `erd-edge${hovered?.id === `rel-${i}` ? ' hovered' : ''}`,
       // the pair is on the edge you point at, never floating over the canvas
       label: hovered?.id === `rel-${i}` ? hovered.label : undefined,
@@ -588,9 +592,9 @@ export function ErdPage({
         sourceHandle: rel.fromColumn,
         target: rel.toModelId,
         targetHandle: rel.toColumn,
-        type: 'smoothstep',
+        type: EDGE_TYPE,
         className: `erd-edge suggested${hovered?.id === `suggested-${rel.id}` ? ' hovered' : ''}`,
-        style: { strokeDasharray: '2 5', strokeWidth: 1 },
+        style: { strokeDasharray: '2 5', strokeWidth: 1.6 },
         label: hovered?.id === `suggested-${rel.id}` ? hovered.label : undefined,
         labelShowBg: true,
         data: {
@@ -612,7 +616,7 @@ export function ErdPage({
         sourceHandle: rel.fromColumn,
         target: rel.toModelId,
         targetHandle: rel.toColumn,
-        type: 'smoothstep',
+        type: EDGE_TYPE,
         className: `erd-edge staged${hovered?.id === `staged-${rel.id}` ? ' hovered' : ''}`,
         style: { strokeDasharray: '5 4' },
         label: hovered?.id === `staged-${rel.id}` ? hovered.label : undefined,
@@ -772,6 +776,7 @@ export function ErdPage({
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           fitView
           minZoom={0.05}
           nodesConnectable={canStage}

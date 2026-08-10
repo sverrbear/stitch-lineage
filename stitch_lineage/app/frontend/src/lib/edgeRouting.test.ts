@@ -135,6 +135,22 @@ describe('routeEdge — obstacle avoidance', () => {
     }
   })
 
+  it('still avoids a card standing only a stub-length away', () => {
+    // the case that survived the first cut: the neighbour is 25px off, so its
+    // clearance ring swallows the point the route starts from. Dropping it there
+    // is what drew a line straight through it; the clearance shrinks instead.
+    const source = card('a', 376, 1276, 247, 266)
+    const wall = card('wall', 648, 1116, 300, 266)
+    const target = card('b', 976, 928, 236, 266)
+    const path = routeEdge(
+      { x: source.x + source.width, y: 1348, side: 'right' },
+      { x: target.x, y: 998, side: 'left' },
+      [wall],
+      { soft: [source, target] },
+    )
+    expect(pathHitsRects(path, [wall])).toEqual([])
+  })
+
   it('still returns a drawable path when an end is walled in', () => {
     const source = card('a', 0, 0)
     const target = card('b', 900, 0)
