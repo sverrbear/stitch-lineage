@@ -43,6 +43,7 @@ MB_ENDPOINTS = (
     ("/api/dashboard/301", "dashboard_301"),
     ("/api/dashboard/302", "dashboard_302"),
     ("/api/collection", "collections"),
+    ("/api/native-query-snippet", "snippets"),
 )
 
 ORDER_TOTAL = "model.demo.fct_orders::order_total"
@@ -128,10 +129,13 @@ def test_full_build_produces_unbroken_end_to_end_chain(project):
     assert cov.models_total == 7
     assert "model.demo.fct_orders" not in cov.unbound_models
     assert (cov.mbql_cards_resolved, cov.mbql_cards_total) == (7, 8)
-    assert (cov.native_cards_resolved, cov.native_cards_total) == (0, 1)
+    assert (cov.native_cards_resolved, cov.native_cards_total) == (1, 1)
     assert (cov.dashboards, cov.dashboards_total) == (2, 2)
     assert (cov.columns_traced, cov.columns_total) == (24, 27)
-    assert set(cov.unresolved_cards) == {205, 208}
+    assert set(cov.unresolved_cards) == {208}
+    # the native card parses, so its columns reach the same dbt column the MBQL
+    # cards bind to -- one chain, two card kinds
+    assert ("mb_field::102", "mb_card::205", "consumed_by") in edges
     ghost = [r for r in cov.unresolved_field_refs if r.get("card_id") == 208]
     assert ghost and ghost[0]["reason"] == "unresolvable field name"
     assert graph.metabase_version == "v0.53.2"
@@ -372,6 +376,112 @@ def test_impact_bad_base_ref_keeps_the_raw_git_error(project):
     assert "no committed baseline" not in result.output
 
 
+# --- local history (issue #87) ----------------------------------------------
+
+
+def _gitignored_repo(project: Path) -> str:
+    """A repo that gitignores .stitch/, committed once. Returns the HEAD sha."""
+    (project / ".gitignore").write_text(".stitch/\n")
+    _git(project, "init", "-b", "main")
+    _git(project, "add", ".")
+    _git(project, "commit", "-m", "project sources")
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=project, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def test_impact_base_resolves_from_local_history_with_nothing_committed(project, monkeypatch):
+    base_sha = _gitignored_repo(project)
+    build = _full_build()  # clean tree -> the graph is kept as the baseline for base_sha
+    assert f"history: stored baseline for {base_sha[:7]} (1/20 kept)" in build.output
+    assert not subprocess.run(
+        ["git", "ls-files", ".stitch"], cwd=project, capture_output=True, text=True, check=True
+    ).stdout.strip(), "the graph must stay uncommitted for this test to mean anything"
+
+    _git(project, "checkout", "-b", "feature")
+    _drop_stg_payments_amount_usd(project)
+    with responses.RequestsMock():
+        rebuild = runner.invoke(app, ["build", "--no-metabase"])
+    assert rebuild.exit_code == 0, rebuild.output
+    assert "history: no snapshot stored" in rebuild.output  # dirty tree
+
+    monkeypatch.delenv("STITCH_METABASE_URL")
+    monkeypatch.delenv("STITCH_METABASE_API_KEY")
+    result = runner.invoke(app, ["impact", "--base", "main", "--format", "github-comment"])
+    assert result.exit_code == 0, result.output
+    assert "2 columns removed or renamed" in result.output
+    assert "stg_payments.amount_usd" in result.output
+    assert "#201 Orders overview" in result.output
+    # provenance goes to stderr, so the comment on stdout stays pipeable
+    assert result.stderr.strip() == (
+        f"baseline: local history snapshot for {base_sha[:7]} ('main')"
+    )
+    assert "baseline:" not in result.stdout
+
+
+def test_impact_prefers_local_history_over_the_committed_graph(project):
+    _gitignored_repo(project)
+    _full_build()
+    result = runner.invoke(app, ["impact", "--base", "main"])
+    assert result.exit_code == 0, result.output
+    assert "no downstream-impacting column changes" in result.output
+    assert "local history snapshot" in result.stderr
+
+
+def test_history_lists_stored_baselines(project):
+    base_sha = _gitignored_repo(project)
+    _full_build()
+    graph = _graph(project)
+
+    listing = runner.invoke(app, ["history"])
+    assert listing.exit_code == 0, listing.output
+    assert "1 baseline in .stitch/history (keeping 20), newest first" in listing.output
+    assert f"  {base_sha[:7]}  " in listing.output
+    assert f"{len(graph.nodes)} nodes / {len(graph.edges)} edges" in listing.output
+    assert "project sources" in listing.output  # the commit subject
+
+    as_json = runner.invoke(app, ["history", "--json"])
+    assert as_json.exit_code == 0, as_json.output
+    payload = json.loads(as_json.output)
+    assert payload["retention"] == 20
+    assert payload["dir"] == ".stitch/history"
+    assert [b["sha"] for b in payload["baselines"]] == [base_sha]
+    assert payload["baselines"][0]["subject"] == "project sources"
+
+
+def test_history_retention_prunes_and_can_be_turned_off(project):
+    (project / "stitch.yml").write_text(STITCH_YML + "  history_retention: 1\n")
+    _gitignored_repo(project)
+    _full_build()
+    (project / "extra.txt").write_text("x")
+    _git(project, "add", ".")
+    _git(project, "commit", "-m", "second commit")
+    second = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=project, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    _full_build()
+
+    listing = runner.invoke(app, ["history"])
+    assert listing.exit_code == 0, listing.output
+    assert f"  {second[:7]}  " in listing.output
+    assert len([line for line in listing.output.splitlines() if line.startswith("  ")]) == 1
+
+    (project / "stitch.yml").write_text(STITCH_YML + "  history_retention: 0\n")
+    _full_build()
+    off = runner.invoke(app, ["history"])
+    assert "no graph baselines stored in .stitch/history" in off.output
+    assert "history is off" in off.output
+
+
+def test_history_without_a_repo_stores_nothing_and_says_how(project):
+    build = _full_build()
+    assert "history:" not in build.output
+    listing = runner.invoke(app, ["history"])
+    assert listing.exit_code == 0, listing.output
+    assert "no graph baselines stored" in listing.output
+    assert "clean working tree" in listing.output
+
+
 # --- search / export / doctor ------------------------------------------------
 
 
@@ -429,8 +539,7 @@ def test_doctor_unresolved_cards_without_env(project, monkeypatch):
     monkeypatch.delenv("STITCH_METABASE_API_KEY")
     result = runner.invoke(app, ["doctor", "--unresolved-cards"])
     assert result.exit_code == 0, result.output
-    assert "unresolved cards (2)" in result.output
-    assert "card 205: native SQL" in result.output
+    assert "unresolved cards (1)" in result.output
     assert "card 208: unresolvable field name" in result.output
     assert "ghost_column" in result.output
 

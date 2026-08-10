@@ -45,6 +45,7 @@ serve:
 
 output:
   dir: .stitch/
+  history_retention: 20                 # graph baselines kept in .stitch/history/ (0 = off)
 ```
 
 Then, with `auto_docs: true`, one command does everything:
@@ -62,6 +63,9 @@ dbt docs generate                # produce target/manifest.json + catalog.json
 stitch build --no-docs           # resolve only; --docs/--no-docs overrides auto_docs either way
 
 stitch build --no-metabase       # dbt side only; reuses the existing Metabase side
+
+stitch history                   # graph baselines stored per commit, newest first
+stitch history --json            # the same listing as one JSON object
 
 stitch search order_total        # find models, columns, fields, cards, dashboards
 stitch search order_total --json # JSON lines for piping
@@ -87,7 +91,7 @@ stitch export --format jsonl     # flat nodes.jsonl/edges.jsonl for agents/wareh
 stitch export --format site      # static build of the app, graph inlined, host anywhere
 ```
 
-Commands that don't call the Metabase API (`build --no-metabase`, `search`, `suggest`, `export`, `doctor --unbound/--untraced/--dead`) work without the `STITCH_METABASE_*` env vars set. Add `.stitch/` to your `.gitignore` — the graph is a local artifact.
+Commands that don't call the Metabase API (`build --no-metabase`, `history`, `search`, `suggest`, `export`, `doctor --unbound/--untraced/--dead`) work without the `STITCH_METABASE_*` env vars set. Add `.stitch/` to your `.gitignore` — the graph is a local artifact.
 
 ### `doctor --dead`: estate hygiene
 
@@ -192,12 +196,40 @@ Every build prints what it could and couldn't resolve, so a thin graph is a docu
 ```
 models bound         142/147   (5 unmatched -> stitch doctor --unbound)
 MBQL cards           218/218
-native SQL cards     0/41   unsupported in v0
+native SQL cards     38/41   parsed
 dashboards           19/19
 dbt column lineage   1842/1901 columns traced   (37 inferred via star-expansion, 22 unresolved -> stitch doctor --untraced)
 ```
 
-Native SQL cards are counted but not resolved in Phase 0 (they are Phase 3); MBQL cards resolve exactly, including card-on-card sources. Both query formats are handled: the legacy `dataset_query.query` shape and the MBQL 5 (`lib/type` + `stages`) shape modern Metabase returns.
+MBQL cards resolve exactly, including card-on-card sources. Native SQL cards resolve by parsing: stitch substitutes the card's template tags (`{{variable}}`, `[[optional clauses]]`, `{{snippet: name}}`, `{{#123-card}}`), parses the result with sqlglot, and maps every column that lands on a table Metabase knows to that table's field — so a hand-written card's columns join the same lineage chain an MBQL card's do, marked `parsed` rather than `exact`. A field-filter tag names its field outright and stays `exact`. Anything that will not parse degrades to the tables it reads (`stitch doctor --unresolved-cards` says which card and why); no card is ever dropped, and no column is ever invented. Both query formats are handled on both paths: the legacy `dataset_query.query` shape and the MBQL 5 (`lib/type` + `stages`) shape modern Metabase returns.
+
+## Baselines without committing anything
+
+Every `stitch build` on a clean working tree keeps a gzipped copy of the graph in `.stitch/history/<commit-sha>.json.gz`, keyed by the commit you built. Nothing is committed — `.stitch/` stays gitignored — but `stitch impact --base <ref>` now has somewhere local to look:
+
+```bash
+git switch main && stitch build     # history: stored baseline for a1b2c3d (1/20 kept)
+git switch -c feat/rename-columns   # ... edit models, dbt docs generate ...
+stitch build --no-metabase
+stitch impact --base main           # diffed against main's stored snapshot
+```
+
+`--base <ref>` resolves the ref to its merge-base with `HEAD` — the commit your branch actually diverged from — then takes that commit's snapshot, or the nearest stored ancestor of it. The baseline it picked is always printed, on stderr, so it can never be a guess (and so stdout stays a clean payload for `--format github-comment`):
+
+```
+baseline: local history snapshot for a1b2c3d ('main')
+baseline: local history snapshot for a1b2c3d -- nearest stored ancestor of the merge-base of 'origin/main' and HEAD, 3 commits back
+```
+
+With no snapshot in the ancestry it falls back to the `graph.json` committed on that ref, and a miss on both names the fix. `stitch history` lists what is stored:
+
+```
+2 baselines in .stitch/history (keeping 20), newest first
+  a1b2c3d  2026-08-10T09:12:04+00:00  1904 nodes / 3120 edges  feat: split fct_matches
+  9f4e0b1  2026-08-09T16:40:11+00:00  1901 nodes / 3117 edges  chore: bump dbt
+```
+
+Builds with uncommitted changes store nothing and say so: that graph describes your working tree, not the commit, and as a baseline it would quietly report no impact at all. `output.history_retention` caps how many are kept (oldest pruned first; `0` turns history off and clears the directory).
 
 ## Phases
 
@@ -210,7 +242,25 @@ Native SQL cards are counted but not resolved in Phase 0 (they are Phase 3); MBQ
 
 ## Shelved: PR impact comments
 
-stitch can diff two graphs and walk the downstream blast radius — "this rename breaks 4 cards on 2 dashboards" — as a PR comment (`stitch impact --format github-comment`) or a Slack deploy alert (`--format slack`; templates in [`action/`](action/)). That workflow needs a baseline `graph.json` committed on the base branch, which conflicts with keeping the graph purely local, so it's shelved as the default story for now: the command is hidden from `--help` but fully functional if you keep your own baselines.
+stitch can diff two graphs and walk the downstream blast radius — "this rename breaks 4 cards on 2 dashboards" — as a PR comment (`stitch impact --format github-comment`) or a Slack deploy alert (`--format slack`; templates in [`action/`](action/)). That workflow needs a baseline `graph.json` committed on the base branch, which conflicts with keeping the graph purely local, so it's shelved as the default story for now: the command is hidden from `--help` but fully functional if you keep your own baselines. Locally it needs none of that — `--base` reads the SHA-keyed history above first.
+
+The point query needs no baseline at all — it walks the current `graph.json` downstream from one column, so you can ask "what would a change here break" *before* the edit:
+
+```
+$ stitch impact --column fct_matches.match_intensity
+fct_matches.match_intensity
+  ├ 2 downstream models: mart_board_kpis, mart_engagement
+  ├ 2 downstream columns:
+      mart_board_kpis.match_intensity
+      mart_engagement.match_intensity
+  ├ 1 Metabase field: Match Intensity
+  ├ 2 Metabase cards:
+      #412 Match intensity by country  (Board dashboard, sverrir)
+      #418 Weekly intensity trend  (Board dashboard)
+  └ 1 dashboard: Board dashboard
+```
+
+It takes `model.column`, a bare column name when that is unique, or a full node id; anything unknown or ambiguous gets `stitch search`-style suggestions. Add `--json` to pipe it. No git, no baseline, no Metabase credentials.
 
 ## Built on
 

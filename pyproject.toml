@@ -25,7 +25,10 @@ dependencies = [
     "pydantic>=2",
     "requests>=2.31",
     "ruamel.yaml>=0.18",
-    "sqlglot>=25",
+    # 25.26 is the floor for qualify(allow_partial_qualification=...) -- what lets a native
+    # card whose SQL outran the Metabase metadata sync resolve partly instead of not at all
+    # (resolve/native_sql.py)
+    "sqlglot>=25.26",
     "rich>=13",
     "fastapi>=0.110",
     "uvicorn>=0.29",
@@ -121,7 +124,9 @@ source_modules = [
     "stitch_lineage.app",
     "stitch_lineage.io.artifacts",
     "stitch_lineage.io.dbt_runner",
+    "stitch_lineage.io.git",
     "stitch_lineage.io.graph_store",
+    "stitch_lineage.io.history_store",
     "stitch_lineage.io.staged_store",
     "stitch_lineage.write",
 ]

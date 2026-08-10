@@ -1,7 +1,7 @@
 // Loads the graph once, builds the index + search index once, and provides
 // them app-wide via context.
 
-import { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { buildIndex, type GraphIndex } from './lib/graph'
 import { loadData, type LoadedData } from './lib/load'
@@ -14,6 +14,12 @@ export interface StitchData {
   search: GraphSearch
   meta: StitchMeta
   origin: LoadedData['origin']
+  /**
+   * Re-read the graph and rebuild the index. `stitch apply` from the app patches
+   * `graph.json` server-side (#68), so this is how the canvas and the panels show
+   * the result without a page reload (#72).
+   */
+  reload: () => Promise<void>
 }
 
 type LoadState =
@@ -54,6 +60,17 @@ export function DataProvider({
     }
   }, [])
 
+  // A reload keeps the last good graph on failure: an apply that wrote the repo
+  // must not leave the app on an error screen because the re-read hiccuped.
+  const reload = useCallback(async () => {
+    try {
+      const data = await loadData()
+      setState({ status: 'ready', data })
+    } catch {
+      // keep what is on screen
+    }
+  }, [])
+
   const value = useMemo<StitchData | null>(() => {
     if (state.status !== 'ready') return null
     // display names first: the search index is built from them (#69)
@@ -65,8 +82,9 @@ export function DataProvider({
       search: new GraphSearch(index),
       meta: state.data.meta,
       origin: state.data.origin,
+      reload,
     }
-  }, [state])
+  }, [state, reload])
 
   if (state.status === 'loading') return <>{fallback({ loading: true })}</>
   if (state.status === 'error') return <>{fallback({ loading: false, error: state.message })}</>

@@ -27,10 +27,12 @@ import {
   type MouseEvent,
   type PointerEvent,
 } from 'react'
+import { ApplyDialog } from '../components/ApplyDialog'
 import { SystemBadge } from '../components/badges'
 import { GraphLegend } from '../components/bits'
 import { ErdMarkers, ErdRoutedEdge } from '../components/ErdEdge'
 import { StageRelationshipModal, type StageTarget } from '../components/StageRelationshipModal'
+import { StagedWorkspace } from '../components/StagedWorkspace'
 import { useStitch } from '../data'
 import { CLICK_SLOP_PX, isClickNotDrag, type Point } from '../lib/canvas'
 import {
@@ -57,12 +59,16 @@ import {
   fullName,
 } from '../lib/present'
 import {
-  groupStagedByTarget,
+  editRelationship,
   listStaged,
+  listStagedDescriptions,
+  probeApply,
   probeStaging,
   stageRelationship,
+  unstageDescription,
   unstageRelationship,
   type Cardinality,
+  type StagedDescription,
   type StagedRelationship,
 } from '../lib/staging'
 import {
@@ -78,7 +84,8 @@ import {
   type SourceFilter,
   type Suggestion,
 } from '../lib/suggestions'
-import { erdHref, navigate } from '../router'
+import { workspaceView } from '../lib/workspace'
+import { erdHref, navigate, nodeHref } from '../router'
 
 const COLLAPSED_LIMIT = 8
 const OPEN_HINT = 'Open details · ⌘/Ctrl-click for lineage'
@@ -262,7 +269,7 @@ export function ErdPage({
   scopeKind?: 'schema' | 'tag'
   scopeValue?: string
 }) {
-  const { index, meta } = useStitch()
+  const { index, meta, reload } = useStitch()
   const scopes = useMemo(() => listScopes(index), [index])
   const routed =
     (scopeKind && scopeValue && scopes.find((s) => s.kind === scopeKind && s.value === scopeValue)) ||
@@ -277,6 +284,11 @@ export function ErdPage({
   // without the endpoint, must read as a plain read-only ERD -- not as a broken one.
   const [canStage, setCanStage] = useState(false)
   const [staged, setStaged] = useState<StagedRelationship[]>([])
+  const [descriptions, setDescriptions] = useState<StagedDescription[]>([])
+  // Applying is a separate capability from staging: `stitch serve` without a
+  // stitch.yml can stage but has nothing to write into (#72).
+  const [canApply, setCanApply] = useState(false)
+  const [applyOpen, setApplyOpen] = useState(false)
   const [draft, setDraft] = useState<StageTarget | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [suggestions, setSuggestions] = useState<Suggestion[]>([])
@@ -342,6 +354,15 @@ export function ErdPage({
     }
   }, [])
 
+  const refreshDescriptions = useCallback(async () => {
+    try {
+      setDescriptions(await listStagedDescriptions())
+    } catch {
+      // a serve older than #70 has no such endpoint: no description edits exist
+      setDescriptions([])
+    }
+  }, [])
+
   const refreshSuggestions = useCallback(async () => {
     try {
       setSuggestions(rankSuggestions(await listSuggestions()))
@@ -356,6 +377,10 @@ export function ErdPage({
       if (cancelled || !enabled) return
       setCanStage(true)
       await refreshStaged()
+      // description edits and applying are later additions than staging: probe each
+      // separately, so an older serve shows no such control rather than a broken one
+      await refreshDescriptions()
+      if (!cancelled && (await probeApply(meta.apply_enabled))) setCanApply(true)
       // the suggestion engine is a later addition than staging: probe separately,
       // so a serve without it shows no panel rather than an empty one
       const suggests = await probeSuggestions(meta.staging_enabled)
@@ -366,10 +391,16 @@ export function ErdPage({
     return () => {
       cancelled = true
     }
-  }, [meta.staging_enabled, refreshStaged, refreshSuggestions])
+  }, [
+    meta.staging_enabled,
+    meta.apply_enabled,
+    refreshStaged,
+    refreshDescriptions,
+    refreshSuggestions,
+  ])
 
   const resolved = useMemo(() => resolveStaged(index, staged), [index, staged])
-  const stagedGroups = useMemo(() => groupStagedByTarget(staged), [staged])
+  const workspace = useMemo(() => workspaceView(staged, descriptions), [staged, descriptions])
   const litColumns = useMemo<ReadonlySet<string>>(
     () => new Set(hovered?.columns ?? []),
     [hovered],
@@ -417,16 +448,34 @@ export function ErdPage({
     [index],
   )
 
+  /**
+   * One path for staging and for editing (#71): the modal is the same, and which
+   * verb runs depends on whether the draft carries the id of an existing entry.
+   */
   const confirmStage = async (cardinality: Cardinality): Promise<string | null> => {
     if (!draft) return null
+    const request = {
+      from_model: draft.fromModel,
+      from_column: draft.fromColumn,
+      to_model: draft.toModel,
+      to_column: draft.toColumn,
+      cardinality,
+    }
     try {
-      const result = await stageRelationship({
-        from_model: draft.fromModel,
-        from_column: draft.fromColumn,
-        to_model: draft.toModel,
-        to_column: draft.toColumn,
-        cardinality,
-      })
+      if (draft.id) {
+        const result = await editRelationship(draft.id, request)
+        await refreshStaged()
+        if (canSuggest) await refreshSuggestions()
+        setDraft(null)
+        setNotice(
+          result.moved
+            ? 'edited — the declaration moved to a different column pair'
+            : 'edited the staged declaration',
+        )
+        relayout()
+        return null
+      }
+      const result = await stageRelationship(request)
       await refreshStaged()
       if (canSuggest) await refreshSuggestions()
       setDraft(null)
@@ -449,6 +498,51 @@ export function ErdPage({
     await refreshStaged()
     if (canSuggest) await refreshSuggestions()
     setNotice(null)
+    relayout()
+  }
+
+  /** Editing reopens the staging modal, prefilled — the same decision, revisited. */
+  const editStaged = (entry: StagedRelationship) => {
+    setNotice(null)
+    setDraft({
+      id: entry.id,
+      fromModel: entry.from_model,
+      fromColumn: entry.from_column,
+      toModel: entry.to_model,
+      toColumn: entry.to_column,
+      cardinality: entry.cardinality,
+    })
+  }
+
+  const removeDescription = async (id: string) => {
+    await unstageDescription(id)
+    await refreshDescriptions()
+    setNotice(null)
+  }
+
+  /**
+   * A description is edited where it is read — on the table's own page — so the
+   * workspace sends you there rather than growing a second editor (SPEC §12.2).
+   */
+  const openDescription = (entry: StagedDescription) => {
+    const model = index.nodes.find(
+      (node) =>
+        (node.node_type === 'model' || node.node_type === 'source') &&
+        fullName(node).toLowerCase() === entry.entity.toLowerCase(),
+    )
+    if (!model) {
+      setNotice(`${entry.entity} is not in this graph — open it after the next build`)
+      return
+    }
+    navigate(nodeHref(entry.column ? erdColumnNodeId(model.node_id, entry.column) : model.node_id))
+  }
+
+  /** After a real apply the repo AND the graph changed: re-read everything. */
+  const afterApply = async () => {
+    await reload()
+    await refreshStaged()
+    await refreshDescriptions()
+    if (canSuggest) await refreshSuggestions()
     relayout()
   }
 
@@ -720,14 +814,14 @@ export function ErdPage({
           Reset view
           {movedCount > 0 ? ` (${movedCount} moved)` : ''}
         </button>
-        {canStage && !stagedOpen && staged.length > 0 && (
+        {canStage && !stagedOpen && workspace.total > 0 && (
           <button
             type="button"
             className="ghost-button"
             onClick={() => setStagedOpen(true)}
-            title="the relationships waiting for `stitch apply`"
+            title="everything waiting for `stitch apply` — relationships and description edits"
           >
-            Staged ({staged.length})
+            Staged changes ({workspace.total})
           </button>
         )}
         {canSuggest && !panelOpen && (
@@ -793,70 +887,19 @@ export function ErdPage({
           <MiniMap pannable zoomable />
         </ReactFlow>
         {canStage && stagedOpen && (
-          <aside className="staged-panel" aria-label="Staged relationships">
-            <div className="staged-panel-head">
-              <span className="staged-panel-title">Staged ({staged.length})</span>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={() => setStagedOpen(false)}
-                aria-label="Hide staged relationships"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="staged-panel-body">
-              {stagedGroups.length === 0 ? (
-                <p className="muted staged-empty">
-                  Nothing staged yet — drag a column handle onto another, or accept a suggestion.
-                </p>
-              ) : (
-                stagedGroups.map((group) => (
-                  <section key={group.target} className="staged-group">
-                    {/* the unit a reader scans for is "everything that joins to dim_users" */}
-                    <h3 className="staged-group-head">
-                      → {displayModelName(group.target)}{' '}
-                      <span className="muted">({group.entries.length})</span>
-                    </h3>
-                    <ul className="staged-rows">
-                      {group.entries.map((entry) => (
-                        <li key={entry.id} className="staged-row">
-                          <code
-                            className="staged-pair"
-                            title={`${entry.from_model}.${entry.from_column} → ${entry.to_model}.${entry.to_column}`}
-                          >
-                            {displayModelName(entry.from_model)}.{entry.from_column} →{' '}
-                            {entry.to_column}
-                          </code>
-                          <span className="muted staged-cardinality">{entry.cardinality}</span>
-                          {resolved.unresolvedIds.includes(entry.id) && (
-                            <span className="muted" title="its model is not in this graph">
-                              not in this graph
-                            </span>
-                          )}
-                          <button
-                            type="button"
-                            className="ghost-button staged-remove"
-                            onClick={() => void removeStaged(entry.id)}
-                            title="remove this staged relationship"
-                            aria-label={`Remove staged relationship ${entry.from_model}.${entry.from_column}`}
-                          >
-                            ✕
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                ))
-              )}
-            </div>
-            <div className="staged-panel-foot">
-              {notice && <p className="staged-notice">{notice}</p>}
-              <span className="muted">
-                run <code>stitch apply</code> to write these into the dbt repo
-              </span>
-            </div>
-          </aside>
+          <StagedWorkspace
+            view={workspace}
+            unresolvedIds={resolved.unresolvedIds}
+            canApply={canApply}
+            busy={applyOpen}
+            notice={notice}
+            onClose={() => setStagedOpen(false)}
+            onEditRelationship={editStaged}
+            onDiscardRelationship={(id) => void removeStaged(id)}
+            onEditDescription={openDescription}
+            onDiscardDescription={(id) => void removeDescription(id)}
+            onApply={() => setApplyOpen(true)}
+          />
         )}
         {canSuggest && panelOpen && (
           <aside className="suggest-panel" aria-label="Suggested relationships">
@@ -962,6 +1005,19 @@ export function ErdPage({
           target={draft}
           onCancel={() => setDraft(null)}
           onConfirm={confirmStage}
+        />
+      )}
+      {applyOpen && (
+        <ApplyDialog
+          onClose={() => setApplyOpen(false)}
+          onApplied={async (outcome) => {
+            await afterApply()
+            setNotice(
+              outcome.refused.length > 0
+                ? `applied — ${outcome.refused.length} file${outcome.refused.length === 1 ? '' : 's'} refused, still staged`
+                : `applied ${outcome.applied} change${outcome.applied === 1 ? '' : 's'}`,
+            )
+          }}
         />
       )}
     </main>
