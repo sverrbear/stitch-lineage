@@ -13,6 +13,8 @@ import type { Reach } from '../lib/graph'
 import {
   NODE_TYPE_NAME,
   displayName,
+  fullName,
+  hasHiddenPrefix,
   isPlaceholder,
   metabaseRelation,
   nodeContext,
@@ -86,6 +88,11 @@ function ColumnPanel({ nodeId }: { nodeId: string }) {
           {detail.model ? <NodeChip node={detail.model} /> : '—'}
         </Fact>
         <Fact label="data type">{node.data_type ?? 'unknown'}</Fact>
+        {/* the display name may hide a routing prefix, so the real dbt name
+            stays one line away (#69) */}
+        <Fact label="dbt name">
+          {hasHiddenPrefix(node) ? <code>{fullName(node)}</code> : null}
+        </Fact>
         <Fact label="in the warehouse">
           {warehouseRelation(node) && (
             <code>
@@ -218,6 +225,11 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
         </Fact>
         <Fact label="materialization">
           {typeof materialization === 'string' ? materialization : null}
+        </Fact>
+        {/* the display name may hide a routing prefix, so the real dbt name
+            stays one line away (#69) */}
+        <Fact label="dbt name">
+          {hasHiddenPrefix(node) ? <code>{fullName(node)}</code> : null}
         </Fact>
         <Fact label="in the warehouse">
           {warehouseRelation(node) ? <code>{warehouseRelation(node)}</code> : null}

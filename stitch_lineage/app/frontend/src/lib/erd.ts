@@ -4,7 +4,7 @@
 import { lineageHref, nodeHref } from '../router'
 import type { GraphEdge, GraphNode } from '../types'
 import { type GraphIndex, modelIdOfColumn } from './graph'
-import { displayName, isPlaceholder, packageOf } from './present'
+import { displayName, fullName, isPlaceholder, packageOf } from './present'
 
 export interface ErdScope {
   kind: 'schema' | 'tag'
@@ -379,7 +379,9 @@ export function resolveStaged(
   const byName = new Map<string, string>()
   for (const node of index.nodes) {
     if (!isErdModel(node)) continue
-    const key = displayName(node).toLowerCase()
+    // the staging API speaks real dbt names, so match on those, never on a
+    // display name that may have had a routing prefix hidden (#69)
+    const key = fullName(node).toLowerCase()
     // a model wins over a source of the same name, and the first model wins over later ones
     if (!byName.has(key) || node.node_type === 'model') byName.set(key, node.node_id)
   }
@@ -487,4 +489,23 @@ export function erdColumnNodeId(modelId: string, columnName: string): string {
 /** Where a click on an ERD table header / column row goes. ⌘/ctrl skips to lineage. */
 export function erdClickHref(nodeId: string, modifiers: { metaKey?: boolean; ctrlKey?: boolean } = {}): string {
   return modifiers.metaKey || modifiers.ctrlKey ? lineageHref(nodeId) : nodeHref(nodeId)
+}
+
+/**
+ * Which endpoint glyphs an edge carries (#65): the FK side gets `*`, the side it
+ * points at gets `1`, exactly as a model view draws it. Declared `relates_to`
+ * edges carry no cardinality in the graph, so they read as the overwhelmingly
+ * common many-to-one; a staged declaration says what it is.
+ */
+export function cardinalityMarkers(cardinality?: string | null): { start: string; end: string } {
+  const one = 'url(#erd-card-one)'
+  const many = 'url(#erd-card-many)'
+  switch ((cardinality ?? '').toLowerCase()) {
+    case 'one-to-many':
+      return { start: one, end: many }
+    case 'one-to-one':
+      return { start: one, end: one }
+    default:
+      return { start: many, end: one }
+  }
 }

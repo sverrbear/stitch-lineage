@@ -13,6 +13,7 @@
   --snowflake: #29b5e8;
   --metabase: #509ee3;
   --edge: #9aa4b1;
+  --edge-strong: #6b7787;
   --edge-weak: #b8845c;
   --ok: #2e9e63;
   --shadow: 0 8px 30px rgba(20, 30, 50, 0.12);
@@ -27,6 +28,7 @@
   --border: #303a46;
   --accent: #7d8ff0;
   --edge: #5d6976;
+  --edge-strong: #8e9cab;
   --edge-weak: #c08a55;
   --ok: #46c98a;
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
@@ -122,11 +124,6 @@ kbd {
 
 .app-brand:hover {
   text-decoration: none;
-}
-
-.app-brand-marks {
-  display: inline-flex;
-  gap: 2px;
 }
 
 .app-nav {
@@ -1065,11 +1062,59 @@ kbd {
 
 /* staging: drawable handles, the staged bar, the confirm modal */
 
+/* A relationship is drawn from a column's edge. The strip is the target you
+   actually hit: full row height, 16px wide, inside the card (so nothing clips
+   it) — roughly 40x the old dot's area, and it still reads as an edge anchor
+   because the dot is drawn at its centre. */
+.erd-handle {
+  width: 16px;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  top: 0;
+  transform: none;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.erd-handle.react-flow__handle-left {
+  left: 0;
+}
+
+.erd-handle.react-flow__handle-right {
+  right: 0;
+  left: auto;
+}
+
 .erd-handle.drawable {
-  width: 9px;
-  height: 9px;
-  background: var(--accent);
   cursor: crosshair;
+}
+
+.erd-handle.drawable::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.3;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+/* hovering the row is what tells you the row can be dragged from */
+.erd-column:hover .erd-handle.drawable::after {
+  opacity: 0.85;
+}
+
+.erd-handle.drawable:hover::after,
+.erd-handle.react-flow__handle-connecting::after,
+.erd-handle.react-flow__handle-valid::after {
+  opacity: 1;
+  transform: scale(1.5);
 }
 
 .erd-edge.staged .react-flow__edge-path {
@@ -1219,6 +1264,16 @@ kbd {
   font-size: 12px;
   line-height: 1.55;
   margin: 14px 0 0;
+}
+
+/* the declaration in plain English, under the cardinality picker (#73) */
+.modal-sentence {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent);
+  background: var(--bg-hover);
+  border-radius: 0 6px 6px 0;
+  font-size: 13px;
 }
 
 .modal-error {
@@ -1437,7 +1492,17 @@ kbd {
   min-width: 230px;
   max-width: 300px;
   box-shadow: 0 1px 3px rgba(10, 20, 35, 0.12);
-  overflow: hidden;
+  /* NOT `overflow: hidden`: it clipped React Flow's connection handles, and a
+     clipped region is not hit-testable, so pointer-down landed on the card and
+     no connection ever started (#64). The children round their own corners. */
+}
+
+.erd-node-title {
+  border-radius: 9px 9px 0 0;
+}
+
+.erd-node > :last-child {
+  border-radius: 0 0 9px 9px;
 }
 
 .erd-node.external {
@@ -1530,6 +1595,17 @@ kbd {
   text-decoration: underline;
 }
 
+/* the two rows a hovered relationship joins, so you can see what it connects
+   without a permanent label floating over the canvas (#65) */
+.erd-column.lit {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.erd-edge.hovered .react-flow__edge-path {
+  stroke-width: 3;
+}
+
 .erd-column.key .erd-column-name {
   font-weight: 650;
 }
@@ -1552,15 +1628,6 @@ kbd {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-.erd-handle {
-  width: 5px;
-  height: 5px;
-  background: var(--edge);
-  border: none;
-  min-width: 0;
-  min-height: 0;
-}
-
 .erd-expand {
   display: block;
   width: 100%;
@@ -1577,9 +1644,29 @@ kbd {
   background: var(--bg-hover);
 }
 
+/* A relationship has to be followable across a busy model, so a declared one is
+   drawn at the text colour's weight rather than the faint canvas grey (#65). */
 .erd-edge .react-flow__edge-path {
-  stroke: var(--edge);
-  stroke-width: 1.8;
+  stroke: var(--edge-strong);
+  stroke-width: 2;
+}
+
+/* the `1` / `*` a model view puts at each end of a relationship */
+.erd-markers {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.erd-marker-glyph {
+  fill: var(--edge-strong);
+  font: 650 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.erd-edge.staged ~ .erd-marker-glyph,
+.erd-edge.suggested .react-flow__edge-path {
+  opacity: 0.75;
 }
 
 .erd-edge .react-flow__edge-text {

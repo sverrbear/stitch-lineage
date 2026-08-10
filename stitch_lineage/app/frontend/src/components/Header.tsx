@@ -1,6 +1,5 @@
 import { useStitch } from '../data'
 import { useTheme } from '../theme'
-import { MetabaseMark, SnowflakeMark } from './badges'
 
 export function Header({ onOpenPalette }: { onOpenPalette: () => void }) {
   const { meta, origin } = useStitch()
@@ -8,11 +7,10 @@ export function Header({ onOpenPalette }: { onOpenPalette: () => void }) {
 
   return (
     <header className="app-header">
+      {/* The wordmark stands alone: stitch is not a Snowflake or Metabase
+          product, so their marks never appear in its own identity. They stay as
+          badges ON their objects, which is nominative use (#66). */}
       <a className="app-brand" href="#/">
-        <span className="app-brand-marks">
-          <SnowflakeMark size={16} />
-          <MetabaseMark size={16} />
-        </span>
         stitch
       </a>
       <nav className="app-nav">

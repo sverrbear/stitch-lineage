@@ -1,8 +1,9 @@
 import json
 
-from stitch_lineage.graph.schema import Graph
+from stitch_lineage.graph.schema import Confidence, Edge, EdgeType, Graph
 from stitch_lineage.io.graph_store import (
     graphs_semantically_equal,
+    merge_edges,
     previous_graph_path,
     read_graph,
     snapshot_previous,
@@ -143,3 +144,55 @@ def test_snapshot_previous_tolerates_an_unparseable_graph(tmp_path):
     path.write_text("{not json")
     assert snapshot_previous(path) is None
     assert previous_graph_path(path).read_text() == "{not json"
+
+
+# --- merge_edges: the `stitch apply` graph patch ------------------------------------------
+
+
+def _relates(from_id="a::x", to_id="b::y", confidence=Confidence.VALIDATED, **evidence):
+    return Edge(
+        from_=from_id,
+        to=to_id,
+        edge_type=EdgeType.RELATES_TO,
+        confidence=confidence,
+        evidence=evidence,
+    )
+
+
+def test_merge_edges_adds_new_edges(sample_graph):
+    before = len(sample_graph.edges)
+    added = merge_edges(sample_graph, [_relates(), _relates(to_id="c::z")])
+    assert added == 2
+    assert len(sample_graph.edges) == before + 2
+
+
+def test_merge_edges_skips_an_edge_already_in_the_graph(sample_graph):
+    merge_edges(sample_graph, [_relates()])
+    before = list(sample_graph.edges)
+
+    added = merge_edges(sample_graph, [_relates(confidence=Confidence.DECLARED, source="other")])
+    assert added == 0
+    # identity is (from, to, edge_type): the existing edge is kept, not rewritten
+    assert sample_graph.edges == before
+
+
+def test_merge_edges_dedupes_within_its_own_input(sample_graph):
+    assert merge_edges(sample_graph, [_relates(), _relates()]) == 1
+
+
+def test_merge_edges_keeps_a_different_edge_type_between_the_same_nodes(sample_graph):
+    merge_edges(sample_graph, [_relates()])
+    same_nodes = Edge(
+        from_="a::x", to="b::y", edge_type=EdgeType.FEEDS, confidence=Confidence.PARSED
+    )
+    assert merge_edges(sample_graph, [same_nodes]) == 1
+
+
+def test_a_patched_graph_still_writes_deterministically(tmp_path, sample_graph):
+    patched = tmp_path / "patched.json"
+    merge_edges(sample_graph, [_relates(to_id="z::z"), _relates()])
+    write_graph(sample_graph, patched)
+
+    rebuilt = tmp_path / "rebuilt.json"
+    write_graph(read_graph(patched), rebuilt)
+    assert patched.read_bytes() == rebuilt.read_bytes()

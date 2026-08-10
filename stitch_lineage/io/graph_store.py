@@ -12,7 +12,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from stitch_lineage.graph.schema import Graph
+from stitch_lineage.graph.schema import Edge, Graph
 
 _VOLATILE_FIELDS = ("generated_at", "dbt_invocation_id", "metabase_version")
 _HEADER_FIELDS = ("schema_version", *_VOLATILE_FIELDS)
@@ -74,6 +74,30 @@ def snapshot_previous(graph_path: Path) -> Graph | None:
         return read_graph(destination)
     except ValueError:
         return None
+
+
+def merge_edges(graph: Graph, edges: list[Edge]) -> int:
+    """Add every edge of `edges` the graph does not already carry; return how many were added.
+
+    The patch primitive behind `stitch apply`'s graph update (issue #68): identity is
+    (from, to, edge_type), so re-patching an edge that is already there -- because the last
+    build read it from the manifest, or because apply ran twice -- is a no-op rather than a
+    duplicate. An existing edge is never rewritten either: the next real build is what
+    reconciles confidence and evidence from the manifest.
+
+    Mutates `graph` and leaves persistence to the caller (write_graph re-sorts everything,
+    so the determinism contract above survives a patch).
+    """
+    known = {(edge.from_, edge.to, edge.edge_type) for edge in graph.edges}
+    added = 0
+    for edge in edges:
+        key = (edge.from_, edge.to, edge.edge_type)
+        if key in known:
+            continue
+        known.add(key)
+        graph.edges.append(edge)
+        added += 1
+    return added
 
 
 def graphs_semantically_equal(a: Graph, b: Graph) -> bool:
