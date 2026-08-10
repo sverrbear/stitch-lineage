@@ -6,7 +6,7 @@
 **Status:** v0.5 — supersedes v0.4. Deltas from v0.4, decided during real-world rollout:
 
 - **The graph is a purely local artifact.** `.stitch/` is gitignored in consumer repos; nothing generated is committed. The committed-baseline design (§3, §5, §10) remains documented but optional — teams that want git history of the graph can commit it, nothing requires it.
-- **`stitch impact` is shelved by default** (hidden from `--help`, fully functional for teams that keep their own baselines) because the default PR-comment workflow required the committed baseline.
+- **`stitch impact` is a local command.** Every build snapshots the graph it overwrites to `.stitch/graph.prev.json` — the default baseline — and closes with a one-line blast-radius summary whenever the two differ, so impact needs no committed graph and no git. `--base-file <path>` and `--base <git-ref>` still take an explicit baseline, in that precedence order. Only the PR-comment CI workflow (§10) stays shelved, since that one does require the committed baseline.
 - **Phase 2 is a plan/apply model, not direct write-back** — §8.2 below. Drawings stage locally; an explicit `stitch apply` writes dbt `relationships` tests.
 - **Phases 0 and 1 are shipped**, including `stitch build --docs/auto_docs`, per-database `table_prefix` (dev artifacts bind to a prod-pointed BI database), manifest-columns fallback for the sqlglot schema map, and system badges (Snowflake/Metabase marks) on every node in the app.
 - **Amended 2026-08-10** (product review): the order of work and the boundaries of the product are written down — §12.1 priority order, §12.2 scope guardrails. Phases are unchanged.

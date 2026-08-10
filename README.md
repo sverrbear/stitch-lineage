@@ -64,6 +64,10 @@ stitch build --no-docs           # resolve only; --docs/--no-docs overrides auto
 
 stitch build --no-metabase       # dbt side only; reuses the existing Metabase side
 
+stitch impact                    # what did my last build change, and what does it hit?
+stitch impact --base main        # ... since main instead, off the local per-commit history
+stitch impact --column fct.col   # blast radius of one column, no baseline needed
+
 stitch history                   # graph baselines stored per commit, newest first
 stitch history --json            # the same listing as one JSON object
 
@@ -91,7 +95,7 @@ stitch export --format jsonl     # flat nodes.jsonl/edges.jsonl for agents/wareh
 stitch export --format site      # static build of the app, graph inlined, host anywhere
 ```
 
-Commands that don't call the Metabase API (`build --no-metabase`, `history`, `search`, `suggest`, `export`, `doctor --unbound/--untraced/--dead`) work without the `STITCH_METABASE_*` env vars set. Add `.stitch/` to your `.gitignore` — the graph is a local artifact.
+Commands that don't call the Metabase API (`build --no-metabase`, `impact`, `history`, `search`, `suggest`, `export`, `doctor --unbound/--untraced/--dead`) work without the `STITCH_METABASE_*` env vars set. Add `.stitch/` to your `.gitignore` — the graph is a local artifact.
 
 ### `doctor --dead`: estate hygiene
 
@@ -203,6 +207,42 @@ dbt column lineage   1842/1901 columns traced   (37 inferred via star-expansion,
 
 MBQL cards resolve exactly, including card-on-card sources. Native SQL cards resolve by parsing: stitch substitutes the card's template tags (`{{variable}}`, `[[optional clauses]]`, `{{snippet: name}}`, `{{#123-card}}`), parses the result with sqlglot, and maps every column that lands on a table Metabase knows to that table's field — so a hand-written card's columns join the same lineage chain an MBQL card's do, marked `parsed` rather than `exact`. A field-filter tag names its field outright and stays `exact`. Anything that will not parse degrades to the tables it reads (`stitch doctor --unresolved-cards` says which card and why); no card is ever dropped, and no column is ever invented. Both query formats are handled on both paths: the legacy `dataset_query.query` shape and the MBQL 5 (`lib/type` + `stages`) shape modern Metabase returns.
 
+## What did my last build change?
+
+Every build first copies the graph it is about to overwrite to `.stitch/graph.prev.json`, then closes with the blast radius of the difference:
+
+```
+since last build: 2 columns removed, 1 type-changed -> 3 cards on 2 dashboards affected (run 'stitch impact' for the tree)
+```
+
+Silent when nothing changed. `stitch impact` prints the tree behind that line — each changed column with the downstream models, Metabase cards and dashboards it reaches — diffing against that snapshot by default, so there is nothing to commit and no git ceremony:
+
+```bash
+stitch impact                              # vs your previous build (.stitch/graph.prev.json)
+stitch impact --base-file path/graph.json  # vs a graph file you kept
+stitch impact --base origin/main           # vs a git ref (local history first, see below)
+```
+
+A rename shows up as a removal plus an addition: ids are name-based, so a rename is indistinguishable from remove + add — and the downstream card breaks either way until it is repointed.
+
+The mirror question — *what would a change here break* — is `--column`, askable before the edit. It needs no baseline at all: it walks the current `graph.json` downstream from one column.
+
+```
+$ stitch impact --column fct_matches.match_intensity
+fct_matches.match_intensity
+  ├ 2 downstream models: mart_board_kpis, mart_engagement
+  ├ 2 downstream columns:
+      mart_board_kpis.match_intensity
+      mart_engagement.match_intensity
+  ├ 1 Metabase field: Match Intensity
+  ├ 2 Metabase cards:
+      #412 Match intensity by country  (Board dashboard, sverrir)
+      #418 Weekly intensity trend  (Board dashboard)
+  └ 1 dashboard: Board dashboard
+```
+
+It takes `model.column`, a bare column name when that is unique, or a full node id; anything unknown or ambiguous gets `stitch search`-style suggestions. Add `--json` to pipe it. No git, no baseline, no Metabase credentials.
+
 ## Baselines without committing anything
 
 Every `stitch build` on a clean working tree keeps a gzipped copy of the graph in `.stitch/history/<commit-sha>.json.gz`, keyed by the commit you built. Nothing is committed — `.stitch/` stays gitignored — but `stitch impact --base <ref>` now has somewhere local to look:
@@ -231,36 +271,20 @@ With no snapshot in the ancestry it falls back to the `graph.json` committed on 
 
 Builds with uncommitted changes store nothing and say so: that graph describes your working tree, not the commit, and as a baseline it would quietly report no impact at all. `output.history_retention` caps how many are kept (oldest pruned first; `0` turns history off and clears the directory).
 
+The two local stores answer different questions, so neither replaces the other: `graph.prev.json` is *the graph my last build overwrote* (kept on every build, whatever the tree and commit), while `.stitch/history/` is *the graph as of commit `<sha>`* (clean trees only) and is what `--base` reads.
+
 ## Phases
 
 | Phase | Scope | Status |
 |---|---|---|
-| **0** | `build` (dbt column lineage via sqlglot + MBQL cards), deterministic `graph.json` + `--check`, coverage report, recursive `impact` + GitHub Action template (impact shelved by default), `search` CLI, `doctor` | **shipped** |
+| **0** | `build` (dbt column lineage via sqlglot + MBQL cards), deterministic `graph.json` + `--check`, coverage report, recursive `impact` against the previous build + GitHub Action template (the PR-comment workflow is shelved), `search` CLI, `doctor` | **shipped** |
 | **1** | `serve`: search + detail panels, end-to-end lineage view, catalog, read-only ERD; `export --format site` | **shipped** |
 | 2 | Editable ERD canvas: YAML write-back with diff preview, suggestion layer | planned |
 | 3 | Native SQL cards via sqlglot, rename heuristics, `--verify-lineage` | planned |
 
 ## Shelved: PR impact comments
 
-stitch can diff two graphs and walk the downstream blast radius — "this rename breaks 4 cards on 2 dashboards" — as a PR comment (`stitch impact --format github-comment`) or a Slack deploy alert (`--format slack`; templates in [`action/`](action/)). That workflow needs a baseline `graph.json` committed on the base branch, which conflicts with keeping the graph purely local, so it's shelved as the default story for now: the command is hidden from `--help` but fully functional if you keep your own baselines. Locally it needs none of that — `--base` reads the SHA-keyed history above first.
-
-The point query needs no baseline at all — it walks the current `graph.json` downstream from one column, so you can ask "what would a change here break" *before* the edit:
-
-```
-$ stitch impact --column fct_matches.match_intensity
-fct_matches.match_intensity
-  ├ 2 downstream models: mart_board_kpis, mart_engagement
-  ├ 2 downstream columns:
-      mart_board_kpis.match_intensity
-      mart_engagement.match_intensity
-  ├ 1 Metabase field: Match Intensity
-  ├ 2 Metabase cards:
-      #412 Match intensity by country  (Board dashboard, sverrir)
-      #418 Weekly intensity trend  (Board dashboard)
-  └ 1 dashboard: Board dashboard
-```
-
-It takes `model.column`, a bare column name when that is unique, or a full node id; anything unknown or ambiguous gets `stitch search`-style suggestions. Add `--json` to pipe it. No git, no baseline, no Metabase credentials.
+The same blast radius can be posted as a PR comment (`stitch impact --format github-comment`) or a Slack deploy alert (`--format slack`; workflow templates in [`action/`](action/)). Both formats work today, but that CI workflow needs a baseline `graph.json` committed on the base branch — which conflicts with keeping the graph purely local — so it stays shelved as a default story. Locally, `stitch impact` needs none of it: the previous-build snapshot and the SHA-keyed history above cover both questions without committing anything.
 
 ## Built on
 
