@@ -7,7 +7,8 @@
 // than anything this component could infer.
 
 import { useEffect, useState } from 'react'
-import { CARDINALITIES, type Cardinality } from '../lib/staging'
+import { displayModelName } from '../lib/present'
+import { CARDINALITIES, cardinalitySentence, type Cardinality } from '../lib/staging'
 
 export interface StageTarget {
   fromModel: string
@@ -64,11 +65,11 @@ export function StageRelationshipModal({
         </h2>
         <p className="modal-endpoints">
           <code>
-            {target.fromModel}.{target.fromColumn}
+            {displayModelName(target.fromModel)}.{target.fromColumn}
           </code>
           <span className="rel-arrow"> → </span>
           <code>
-            {target.toModel}.{target.toColumn}
+            {displayModelName(target.toModel)}.{target.toColumn}
           </code>
         </p>
 
@@ -77,6 +78,8 @@ export function StageRelationshipModal({
         <label className="modal-field" htmlFor="stage-cardinality">
           Cardinality
         </label>
+        {/* the same declaration in words, live: "many-to-one" does not say which
+            end is which, and this is where somebody catches a backwards FK (#73) */}
         <select
           id="stage-cardinality"
           className="scope-select"
@@ -95,6 +98,16 @@ export function StageRelationshipModal({
           This stages the declaration in <code>.stitch/</code> only. Run{' '}
           <code>stitch apply</code> to write it into the model’s <code>_schema.yml</code> — nothing
           touches the repo before that.
+        </p>
+
+        <p className="modal-sentence" aria-live="polite">
+          {cardinalitySentence({
+            fromModel: displayModelName(target.fromModel),
+            fromColumn: target.fromColumn,
+            toModel: displayModelName(target.toModel),
+            toColumn: target.toColumn,
+            cardinality,
+          })}
         </p>
 
         {error && <p className="modal-error">{error}</p>}

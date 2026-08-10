@@ -48,7 +48,7 @@ import {
   type ErdScope,
 } from '../lib/erd'
 import { erdNodeHeight, layoutErd } from '../lib/erdLayout'
-import { NODE_TYPE_NAME, displayName } from '../lib/present'
+import { NODE_TYPE_NAME, displayModelName, displayName, fullName } from '../lib/present'
 import {
   groupStagedByTarget,
   listStaged,
@@ -430,7 +430,8 @@ export function ErdPage({
   const modelNameOf = useCallback(
     (nodeId: string | null | undefined): string | null => {
       const node = nodeId ? index.nodesById.get(nodeId) : null
-      return node ? displayName(node) : null
+      // the staging API needs the real dbt name, prefix and all
+      return node ? fullName(node) : null
     },
     [index],
   )
@@ -832,7 +833,8 @@ export function ErdPage({
                   <section key={group.target} className="staged-group">
                     {/* the unit a reader scans for is "everything that joins to dim_users" */}
                     <h3 className="staged-group-head">
-                      → {group.target} <span className="muted">({group.entries.length})</span>
+                      → {displayModelName(group.target)}{' '}
+                      <span className="muted">({group.entries.length})</span>
                     </h3>
                     <ul className="staged-rows">
                       {group.entries.map((entry) => (
@@ -841,7 +843,8 @@ export function ErdPage({
                             className="staged-pair"
                             title={`${entry.from_model}.${entry.from_column} → ${entry.to_model}.${entry.to_column}`}
                           >
-                            {entry.from_model}.{entry.from_column} → {entry.to_column}
+                            {displayModelName(entry.from_model)}.{entry.from_column} →{' '}
+                            {entry.to_column}
                           </code>
                           <span className="muted staged-cardinality">{entry.cardinality}</span>
                           {resolved.unresolvedIds.includes(entry.id) && (
@@ -927,7 +930,8 @@ export function ErdPage({
                   return (
                     <li key={entry.id} className="suggest-entry">
                       <code className="suggest-pair">
-                        {entry.from_model}.{entry.from_column} → {entry.to_model}.{entry.to_column}
+                        {displayModelName(entry.from_model)}.{entry.from_column} →{' '}
+                        {displayModelName(entry.to_model)}.{entry.to_column}
                       </code>
                       <div className="suggest-meta">
                         <span className="suggest-source" title={SOURCE_HELP[entry.source]}>

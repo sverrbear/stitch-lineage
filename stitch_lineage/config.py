@@ -87,6 +87,10 @@ class ServeConfig(BaseModel):
     # checked here -- whether the scope exists is a property of the graph, which
     # is not loaded yet, so `stitch serve` warns about that at startup instead.
     erd_default_scope: str | None = None
+    # Routing prefixes the app strips from a model's DISPLAY name, e.g.
+    # ["viz_", "sv_"] so `viz_dim_users` reads as `dim_users`. Purely cosmetic:
+    # ids, search keys and everything written back keep the real dbt name.
+    strip_model_prefixes: list[str] = Field(default_factory=list)
 
     @field_validator("erd_default_scope")
     @classmethod
