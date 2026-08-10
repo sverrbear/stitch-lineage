@@ -11,6 +11,11 @@ import { displayModelName } from '../lib/present'
 import { CARDINALITIES, cardinalitySentence, type Cardinality } from '../lib/staging'
 
 export interface StageTarget {
+  /**
+   * Set when an ALREADY staged declaration is being revisited (#71): the same
+   * decision, so the same modal, and the save is a PUT rather than a POST.
+   */
+  id?: string
   fromModel: string
   fromColumn: string
   toModel: string
@@ -61,7 +66,11 @@ export function StageRelationshipModal({
         onClick={(event) => event.stopPropagation()}
       >
         <h2 id="stage-modal-title">
-          {target.provenance ? 'Accept this relationship' : 'Stage a relationship'}
+          {target.id
+            ? 'Edit this staged relationship'
+            : target.provenance
+              ? 'Accept this relationship'
+              : 'Stage a relationship'}
         </h2>
         <p className="modal-endpoints">
           <code>
@@ -117,7 +126,13 @@ export function StageRelationshipModal({
             Cancel
           </button>
           <button type="button" className="button" onClick={submit} disabled={busy}>
-            {busy ? 'Staging…' : 'Stage relationship'}
+            {busy
+              ? target.id
+                ? 'Saving…'
+                : 'Staging…'
+              : target.id
+                ? 'Save edit'
+                : 'Stage relationship'}
           </button>
         </div>
       </div>
