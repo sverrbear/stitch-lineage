@@ -21,6 +21,7 @@ def export_site(
     metabase_url: str | None,
     erd_default_scope: str | None = None,
     strip_model_prefixes: list[str] | None = None,
+    table_prefixes: list[str] | None = None,
 ) -> Path:
     """Copy the built SPA into out_dir with the graph inlined; return out_dir.
 
@@ -42,6 +43,7 @@ def export_site(
         "schema_version": graph.get("schema_version", 1),
         "erd_default_scope": erd_default_scope,
         "strip_model_prefixes": list(strip_model_prefixes or []),
+        "table_prefixes": list(table_prefixes or []),
         # a hosted export has no server to stage against: the SPA hides drawing entirely
         "staging_enabled": False,
     }

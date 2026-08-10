@@ -162,6 +162,20 @@ def _strip_model_prefixes(config: Path) -> list[str]:
     return _load_config_or_fail(config).serve.strip_model_prefixes
 
 
+def _table_prefixes(config: Path) -> list[str]:
+    """The per-database metabase.databases[].table_prefix values, for display (#80).
+
+    Binding already strips these so dev-target artifacts (sis_fct_matches) match a
+    prod-pointed Metabase (fct_matches); the app hides them from the physical names it
+    SHOWS for the same reason. An unresolved ${VAR} is dropped rather than shown.
+    """
+    if not config.is_file():
+        return []
+    cfg = _load_config_or_fail(config)
+    prefixes = (db.table_prefix for db in cfg.metabase.databases if db.table_prefix)
+    return list(dict.fromkeys(prefix for prefix in prefixes if "${" not in prefix))
+
+
 def _warn_unknown_erd_scope(scope: str | None, graph_path: Path) -> None:
     """Whether the scope exists is a property of the graph, so it is checked here
     rather than at config load. The app still opens -- on its auto-picked scope."""
@@ -911,6 +925,7 @@ def export(
                 _metabase_url(config),
                 scope,
                 strip_model_prefixes=_strip_model_prefixes(config),
+                table_prefixes=_table_prefixes(config),
             )
         except (StitchAppError, ValueError) as exc:
             _fail(str(exc))
@@ -1211,6 +1226,7 @@ def serve(
             descriptions,
             context,
             strip_model_prefixes=_strip_model_prefixes(config),
+            table_prefixes=_table_prefixes(config),
         )
     except StitchAppError as exc:
         _fail(str(exc))

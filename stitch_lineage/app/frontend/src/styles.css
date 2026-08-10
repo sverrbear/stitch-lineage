@@ -1490,7 +1490,11 @@ kbd {
   border: 1px solid var(--border);
   border-radius: 10px;
   min-width: 230px;
-  max-width: 300px;
+  /* 300px of card, plus room for a LONG NAME to finish: `mart_content_feed_impressions_daily`
+     ellipsised into noise at 300 (#80). Only the title can claim the extra width — the
+     detail line and the column rows are capped below — and the layout and the edge routing
+     both work off measured widths, so a wider card simply gets more space around it. */
+  max-width: 348px;
   box-shadow: 0 1px 3px rgba(10, 20, 35, 0.12);
   /* NOT `overflow: hidden`: it clipped React Flow's connection handles, and a
      clipped region is not hit-testable, so pointer-down landed on the card and
@@ -1532,10 +1536,19 @@ kbd {
   font-weight: 650;
 }
 
+/* the name owns the header line and ellipsises there (tooltip carries the full name)
+   rather than pushing anything out of the card (#80) */
+.erd-node-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the type reads on the detail line, where it cannot collide with a long name (#80) */
 .erd-node-kind {
-  font-size: 10px;
-  font-weight: 400;
-  color: var(--text-muted);
+  flex: none;
+  font-weight: 500;
 }
 
 .erd-external-tag {
@@ -1558,9 +1571,19 @@ kbd {
   border-bottom: 1px solid var(--border);
 }
 
-/* physical relation: present, but visibly subordinate to the dbt name */
+/* the dbt schema, between the type and the physical relation */
+.erd-node-scope {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* physical relation: present, but visibly subordinate to the dbt name — and never
+   the reason a card is wide (max-width caps what it contributes) */
 .erd-node-relation {
   margin-left: auto;
+  max-width: 150px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 10px;
   opacity: 0.75;
@@ -1575,12 +1598,14 @@ kbd {
   padding: 4px 0;
 }
 
+/* 20px of side padding, not 12: the drag handle's dot is drawn at the centre of a
+   16px strip inside the row, so at 12px the text sat flush against it (#80) */
 .erd-column {
   position: relative;
   display: flex;
   align-items: baseline;
   gap: 10px;
-  padding: 2px 12px;
+  padding: 2px 20px;
   font-size: 12px;
   cursor: pointer;
 }
@@ -1619,7 +1644,10 @@ kbd {
   color: var(--text-muted);
 }
 
+/* capped so the column list never claims the width reserved for a long title (#80);
+   the tooltip carries the full name when it does not fit */
 .erd-column-name {
+  max-width: 168px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
