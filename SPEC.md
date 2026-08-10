@@ -9,6 +9,7 @@
 - **`stitch impact` is shelved by default** (hidden from `--help`, fully functional for teams that keep their own baselines) because the default PR-comment workflow required the committed baseline.
 - **Phase 2 is a plan/apply model, not direct write-back** — §8.2 below. Drawings stage locally; an explicit `stitch apply` writes dbt `relationships` tests.
 - **Phases 0 and 1 are shipped**, including `stitch build --docs/auto_docs`, per-database `table_prefix` (dev artifacts bind to a prod-pointed BI database), manifest-columns fallback for the sqlglot schema map, and system badges (Snowflake/Metabase marks) on every node in the app.
+- **Amended 2026-08-10** (product review): the order of work and the boundaries of the product are written down — §12.1 priority order, §12.2 scope guardrails. Phases are unchanged.
 
 ---
 
@@ -163,10 +164,12 @@ Setup friction is a product feature. `init` derives everything derivable and ask
 2. From the manifest: quoting/casing policy, databases and schemas models land in, model inventory. **Never ask a question the manifest answers.**
 3. Ask the two unknowables: Metabase URL, API key. Key is env-only from the first second — init writes the `${STITCH_METABASE_API_KEY}` reference into config and a line into `.env.example`, never the value.
 4. Immediately call Metabase, list its databases, and **propose the database mapping** by name-similarity against the manifest ("Metabase *Analytics* ↔ dbt *ANALYTICS* — confirm? [Y/n]"). Ambiguity → a real question; the common case → one keystroke.
-5. Propose `include_schemas` from where marts actually live; write `stitch.yml`; append `.stitch/cache/` to `.gitignore`; drop the GitHub Action into `.github/workflows/` with a commented-out trigger.
+5. Propose `include_schemas` from where marts actually live; write `stitch.yml`; append `.stitch/` to `.gitignore` — the whole directory, since v0.5 made all of it local; drop the GitHub Action into `.github/workflows/` with its real trigger commented out and `workflow_dispatch` standing in (a workflow with no `on:` block is an Actions error, not a disarmed workflow).
 6. Finish with a mini-doctor (Metabase reachable, version ≥ 49, manifest parses, model counts on both sides) and print the next command.
 
-Target: repo → configured in under two minutes with four human inputs (URL, key, one mapping confirm, later un-commenting the Action). Every derived value is written into `stitch.yml` explicitly rather than defaulted invisibly, so the config file remains the full, inspectable truth.
+The Action drop is best-effort: `action/` lives in the repo, not in the wheel (`packages = ["stitch_lineage"]`), so a pip-installed `init` skips that step and says so rather than pretending. Open question, not decided here: promote `action/` to package data, or leave the templates a source-checkout convenience and let pip users copy them from the repo.
+
+Target: repo → configured in under two minutes with four human inputs (URL, key, one mapping confirm, one schemas confirm) — arming the Action is a later manual step, not one of the four. Every derived value is written into `stitch.yml` explicitly rather than defaulted invisibly, so the config file remains the full, inspectable truth.
 
 ### 6.1 `stitch.yml`
 
@@ -176,6 +179,9 @@ Target: repo → configured in under two minutes with four human inputs (URL, ke
 dbt:
   project_dir: .
   target_path: target/
+  auto_docs: true                       # run `dbt docs generate` at the start of
+                                        # every build; default false, and
+                                        # --docs/--no-docs overrides it either way
   # Identifier quoting/casing is NOT configurable — it is read from the
   # manifest's quoting config. dbt already knows; asking the user invites a
   # silent 0% bind rate that looks exactly like a broken tool.
@@ -412,6 +418,8 @@ Ship the GitHub Action in the repo. This is the feature that earns adoption; the
 
 A scheduled nightly job runs full `stitch build` (with Metabase) on main and commits the refreshed `graph.json` — so the baseline tracks Metabase-side drift (new cards, archived dashboards) without any human remembering to rebuild.
 
+**The point query — ask before you edit.** `stitch impact --column fct_matches.match_intensity` (#86) runs the same downstream walk (`from → to`, `relates_to` excluded, depth-capped) over the *current* `graph.json`: no baseline, no git, no Metabase credentials, because one graph is all a point query needs. The diff answers "what did my change break"; this answers "what breaks if I change this" — the question that gets asked before the edit rather than after it. Same grouped counts as the comment above (models, columns, fields, cards with dashboard and owner), `--json` for piping; input is `model.column`, a bare column name when it is unique in the graph, or a full node id, and ambiguity lists the qualified candidates rather than guessing which of three `match_intensity` columns was meant. Local impact — this plus the previous-build baseline (#53), which is also what brings `impact` back onto `--help` — is the top of the priority order (§12.1).
+
 ## 11. Agent surface
 
 `graph.json` has a stable documented schema — that alone makes it agent-consumable (Claude, Cortex, whatever reads files). `stitch export --format jsonl` additionally emits flat one-record-per-line nodes and edges for easy loading anywhere, including a `COPY INTO` recipe for teams that want it queryable in Snowflake. A recipe in the docs, not a product surface — the lesson of v0.2/v0.3 is that the warehouse backend is a consumer of this tool's output, not its home.
@@ -420,18 +428,39 @@ A scheduled nightly job runs full `stitch build` (with Metabase) on main and com
 
 | Phase | Scope | Status |
 |---|---|---|
-| **0** | `build`: dbt models **+ column lineage via sqlglot on compiled SQL** + MBQL cards; `graph.json` deterministic + `--check`; coverage report incl. lineage trace rate; recursive `impact` + GitHub Action; `stitch search` (CLI); `doctor` basics | **shipped** (impact shelved by default — see v0.5 deltas) |
+| **0** | `build`: dbt models **+ column lineage via sqlglot on compiled SQL** + MBQL cards; `graph.json` deterministic + `--check`; coverage report incl. lineage trace rate; recursive `impact` + GitHub Action; `stitch search` (CLI); `doctor` basics, plus `doctor --dead` for estate hygiene — unconsumed columns, models feeding nothing, archived-but-bound cards (#88) | **shipped** (impact shelved by default — see v0.5 deltas) |
 | **1** | `serve`: **search + detail panels** (the entry point), end-to-end column lineage view, catalog, read-only ERD; `export --format site` | **shipped** |
 | **2** | Editable canvas → **staged relationships + `stitch apply`** (§8.2, issues #24/#27), suggestion layer, `layout.yml` | next |
 | **3** | Metabase **native SQL** cards via sqlglot + template-tag substitution (NOTE: modern Metabase also emits **MBQL 5 lib/stages** for saved questions — issue #22, being fixed ahead of phase order), rename heuristics, `--verify-lineage` (ACCESS_HISTORY), Metabase version matrix | ongoing |
 
 Work is tracked as GitHub issues; the tracker, not this table, is the operational truth.
 
+### 12.1 Priority order (2026-08-10)
+
+Phases describe scope, not sequence. The current order of work cuts across them:
+
+1. **Local impact.** The previous-build baseline plus a blast-radius summary on every build (#53), then the point query `stitch impact --column` — a blast radius askable *before* an edit, not only as a diff after one (#86) — and SHA-keyed local history (#87). This returns §10's killer feature to the local-only world where the graph now lives; the committed baseline stays the CI variant for teams that keep one.
+2. **`stitch init`** (#29, §6.0). Every install after the first one starts here, and setup friction is a product feature.
+3. **Metabase native SQL cards** (#32, §7.4). `native SQL cards 0/41` is the honest headline limit of the tool for every shop that is not MBQL-only.
+
+Canvas and ERD polish ranks below all three, and a broken core chain outranks all cosmetic work: while card detail shows no source columns (#25), how the ERD looks is not the problem.
+
+### 12.2 Scope guardrails — what stitch is not
+
+Each of these was a reasonable-sounding idea. They are decided against, not deferred.
+
+- **No third canvas.** The ERD is the canvas; the column lineage view is the flow view. The global overview/pipeline map is removed (#83) — its rollup lib survives because the lineage grain toggle uses it. Home's entry points are ERD and lineage.
+- **Not a dbt YAML IDE.** `stitch apply` writes **relationships** (§8). Description editing exists only because it rides the same staged store, the same writer and the same diff preview (§8.2); it earns no UI surface of its own, and no further YAML key follows it in on that precedent.
+- **The home page stays a search box and a few numbers.** Search is the entry point (§9). A home page that grows tiles is a dashboard, and a dashboard is a thing nobody opens twice.
+- **One BI tool until the Metabase story is complete.** Looker, Tableau and the rest are a new `resolve/` module by construction (§4) — that is what the seam is for, not an invitation to use it while column lineage into Metabase is unfinished.
+- **No warehouse backend, no hosted anything.** Standing since v0.2/v0.3 (§3, §11): the warehouse is a consumer of `graph.json`, not its home.
+
 ## 13. Risks
 
-- **Committed generated file friction.** `.stitch/graph.json` in git means occasional merge conflicts (regenerate-and-recommit resolves them — document it) and reviewers seeing a machine file in diffs. Deterministic ordering keeps diffs semantic; `--check` in CI keeps it honest. If it proves hateful in practice, the fallback is storing the baseline as a CI artifact keyed by commit SHA — costs the git-native diffing, keeps everything else.
-- **Native SQL coverage — not a configuration problem.** Smitten is MBQL-only; the tool gets built against its easiest case while most Metabase shops live in the hard one. Coverage reporting from Phase 0 makes the gap legible; sqlglot is Phase 3 and the README says so.
+- **Committed generated file friction.** `.stitch/graph.json` in git means occasional merge conflicts (regenerate-and-recommit resolves them — document it) and reviewers seeing a machine file in diffs. Deterministic ordering keeps diffs semantic; `--check` in CI keeps it honest. If it proves hateful in practice, the fallback is storing the baseline as a CI artifact keyed by commit SHA — costs the git-native diffing, keeps everything else. That is where it landed: v0.5 made the graph local, and #87 (§12.1) is that fallback in local form — snapshots keyed by SHA inside gitignored `.stitch/`.
+- **Native SQL coverage — not a configuration problem.** Smitten is MBQL-only; the tool gets built against its easiest case while most Metabase shops live in the hard one. Coverage reporting from Phase 0 makes the gap legible; sqlglot is Phase 3 and the README says so. Third in the priority order (§12.1) for exactly this reason — it is the difference between a tool for Smitten and a tool for Metabase shops.
 - **Frontend bundling.** Shipping a prebuilt SPA in the wheel means a JS build step in *release* CI and wheel size in the tens of MB. Acceptable; the alternative (npm at install time) is not, for a pip package.
 - **Metabase API drift.** Pin 49+ (API keys), keep a tested version matrix, treat every response shape as untrusted, keep raw payloads for repro.
 - **Adjacency to `dbt-metabase`.** If it grows column-level exposures, Phase 0's differentiation shrinks. Open an issue with the maintainer early — Phase 0 might be strongest as an upstream contribution plus this repo owning the viewer/editor.
 - **Sole maintainer with a day job.** One maintainer is a repo, not a project, unless the CI feature earns contributors. Optimize the README for the impact-comment screenshot.
+- **Scope creep, one reasonable feature at a time.** No single addition looks like a mistake; the cost shows up as a second half-finished surface competing for the same maintainer. §12.2 is the answer, and its test is the core chain — a new surface waits until column → field → card → dashboard is complete and correct, not until the backlog is empty.
