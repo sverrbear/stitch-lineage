@@ -34,6 +34,7 @@ import { useStitch } from '../data'
 import { CLICK_SLOP_PX, isClickNotDrag, type Point } from '../lib/canvas'
 import {
   autoExpandedModels,
+  cardinalityMarkers,
   erdClickHref,
   erdForScope,
   initialScope,
@@ -187,6 +188,54 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
 
 const nodeTypes = { erdModel: ErdModelNode }
 
+/** `markerStart`/`markerEnd` for an edge, from its cardinality (see ErdMarkers). */
+function cardinalityMarkerProps(cardinality?: string | null) {
+  const { start, end } = cardinalityMarkers(cardinality)
+  return { markerStart: start, markerEnd: end }
+}
+
+/**
+ * The `1` and `*` glyphs a model view puts on each end of a relationship. They
+ * are defined once per page and referenced by id; `orient="0"` keeps them
+ * upright whatever direction the edge runs, and the two `refX` values nudge each
+ * glyph clear of the card it belongs to (sources leave from the right edge,
+ * targets arrive at the left).
+ */
+function ErdMarkers() {
+  return (
+    <svg className="erd-markers" aria-hidden="true" focusable="false">
+      <defs>
+        <marker
+          id="erd-card-many"
+          viewBox="0 0 14 14"
+          markerWidth="14"
+          markerHeight="14"
+          refX="0"
+          refY="7"
+          orient="0"
+        >
+          <text className="erd-marker-glyph" x="7" y="11" textAnchor="middle">
+            *
+          </text>
+        </marker>
+        <marker
+          id="erd-card-one"
+          viewBox="0 0 14 14"
+          markerWidth="14"
+          markerHeight="14"
+          refX="14"
+          refY="7"
+          orient="0"
+        >
+          <text className="erd-marker-glyph" x="7" y="11" textAnchor="middle">
+            1
+          </text>
+        </marker>
+      </defs>
+    </svg>
+  )
+}
+
 function scopeKey(scope: ErdScope): string {
   return `${scope.kind}:${scope.value}`
 }
@@ -256,6 +305,7 @@ export function ErdPage({
   // the CSS box (#62). `measuredHeights` is a ref because it is layout input,
   // not render output; the counter is what re-runs the layout when it changes.
   const measuredHeights = useRef<Record<string, number>>({})
+  const measuredWidths = useRef<Record<string, number>>({})
   const [measuredVersion, setMeasuredVersion] = useState(0)
 
   const fitSoon = () => {
@@ -435,6 +485,7 @@ export function ErdPage({
         return {
           id: model.node.node_id,
           height: measuredHeights.current[sizeKey(model.node.node_id, open)] ?? estimate,
+          width: measuredWidths.current[model.node.node_id],
         }
       }),
       [...erd.relationships, ...erd.staged].map((rel) => ({
@@ -479,6 +530,9 @@ export function ErdPage({
       // "user_id → user_id ✓" beats a bare tick nobody can decode
       label: `${rel.fromColumn} → ${rel.toColumn}${rel.validated ? ' ✓' : ''}`,
       labelShowBg: true,
+      // the graph never records a cardinality for a declared FK, so it reads as
+      // the many-to-one it almost always is
+      ...cardinalityMarkerProps(),
     }))
 
     // Suggestions are proposals: thinner, fainter and further from solid than a
@@ -495,6 +549,7 @@ export function ErdPage({
         style: { strokeDasharray: '2 5', strokeWidth: 1 },
         label: `${rel.fromColumn} → ${rel.toColumn} · suggested`,
         labelShowBg: true,
+        ...cardinalityMarkerProps(rel.cardinality),
       })
     }
 
@@ -511,6 +566,7 @@ export function ErdPage({
         style: { strokeDasharray: '5 4' },
         label: `${rel.fromColumn} → ${rel.toColumn} · staged`,
         labelShowBg: true,
+        ...cardinalityMarkerProps(rel.cardinality),
       })
     }
     return edges
@@ -535,6 +591,11 @@ export function ErdPage({
     let changed = false
     for (const node of nodes) {
       const height = node.measured?.height
+      const width = node.measured?.width
+      if (width && Math.abs((measuredWidths.current[node.id] ?? 0) - width) > 1) {
+        measuredWidths.current[node.id] = width
+        changed = true
+      }
       if (!height) continue
       const key = sizeKey(node.id, node.data.expanded)
       if (Math.abs((measuredHeights.current[key] ?? 0) - height) > 1) {
@@ -678,6 +739,7 @@ export function ErdPage({
             })
           }}
         >
+          <ErdMarkers />
           <Background gap={24} />
           <Controls showInteractive={false} />
           <MiniMap pannable zoomable />

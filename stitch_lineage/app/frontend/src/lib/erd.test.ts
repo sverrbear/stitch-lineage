@@ -3,6 +3,7 @@ import {
   AUTO_EXPAND_MAX_MODELS,
   MAX_DRAWN_SUGGESTIONS,
   autoExpandedModels,
+  cardinalityMarkers,
   resolveStaged,
   defaultScope,
   erdClickHref,
@@ -419,5 +420,27 @@ describe('auto-expanding a small scope (#62)', () => {
 
   it('expands nothing when the scope is empty', () => {
     expect(autoExpandedModels([])).toEqual(new Set())
+  })
+})
+
+describe('cardinality endpoint markers (#65)', () => {
+  it('reads a declared FK as many-to-one', () => {
+    expect(cardinalityMarkers()).toEqual({ start: 'url(#erd-card-many)', end: 'url(#erd-card-one)' })
+    expect(cardinalityMarkers('many-to-one')).toEqual(cardinalityMarkers(null))
+  })
+
+  it('flips for one-to-many and doubles up for one-to-one', () => {
+    expect(cardinalityMarkers('one-to-many')).toEqual({
+      start: 'url(#erd-card-one)',
+      end: 'url(#erd-card-many)',
+    })
+    expect(cardinalityMarkers('one-to-one')).toEqual({
+      start: 'url(#erd-card-one)',
+      end: 'url(#erd-card-one)',
+    })
+  })
+
+  it('falls back rather than drawing nothing for an unknown value', () => {
+    expect(cardinalityMarkers('who-knows')).toEqual(cardinalityMarkers('many-to-one'))
   })
 })
