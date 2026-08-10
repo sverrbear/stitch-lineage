@@ -43,12 +43,18 @@ def _sort_keys(value: Any) -> Any:
     return value
 
 
-def write_graph(graph: Graph, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def serialize_graph(graph: Graph) -> str:
+    """The canonical file contents, for writers other than write_graph (the history
+    snapshots of issue #87) -- one serializer, so every copy of a graph is identical."""
     payload = _sort_keys(_canonical_payload(graph))
     ordered = {key: payload.pop(key) for key in _HEADER_FIELDS if key in payload}
     ordered.update(payload)
-    path.write_text(json.dumps(ordered, indent=2) + "\n", encoding="utf-8")
+    return json.dumps(ordered, indent=2) + "\n"
+
+
+def write_graph(graph: Graph, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(serialize_graph(graph), encoding="utf-8")
 
 
 def read_graph(path: Path) -> Graph:

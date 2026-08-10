@@ -4,9 +4,10 @@
 // as their Metabase display name, and the physical warehouse relation is only
 // ever a secondary fact row.
 
-import { Suspense, lazy, useEffect, useMemo, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { SystemBadge } from '../components/badges'
 import { ChipList, ConfidenceTag, Fact, NodeChip, Section } from '../components/bits'
+import { DescriptionEditor } from '../components/DescriptionEditor'
 import { DashboardGroups, LayerGroups } from '../components/fanout'
 import { useStitch } from '../data'
 import {
@@ -21,7 +22,13 @@ import { dashboardCount, dashboardGroups, layerGroups } from '../lib/fanout'
 import { metabaseLink } from '../lib/graph'
 import type { GraphIndex, Reach } from '../lib/graph'
 import { modelStar } from '../lib/modelStar'
-import { listStaged, probeStaging, type StagedRelationship } from '../lib/staging'
+import {
+  listStaged,
+  listStagedDescriptions,
+  probeStaging,
+  type StagedDescription,
+  type StagedRelationship,
+} from '../lib/staging'
 import {
   NODE_TYPE_NAME,
   displayName,
@@ -51,32 +58,85 @@ function plural(n: number, word: string): string {
  * static export or a serve too old for the endpoint — a read-only build must read
  * as read-only, not as broken (same probe the ERD uses).
  */
-function useStagedRelationships(index: GraphIndex): ErdStagedRelationship[] {
+interface Staging {
+  canStage: boolean
+  /** Staged relationships, resolved onto the graph (what the mini star draws). */
+  relationships: ErdStagedRelationship[]
+  descriptions: StagedDescription[]
+  refresh: () => Promise<void>
+}
+
+/**
+ * What is staged, for this page. Empty and read-only on a static export or a serve
+ * too old for the endpoints — a read-only build must read as read-only, not as
+ * broken (the same probe the ERD uses).
+ */
+function useStaging(index: GraphIndex): Staging {
   const { meta } = useStitch()
+  const [canStage, setCanStage] = useState(false)
   const [staged, setStaged] = useState<StagedRelationship[]>([])
+  const [descriptions, setDescriptions] = useState<StagedDescription[]>([])
+
+  const refresh = useCallback(async () => {
+    try {
+      setStaged(await listStaged())
+    } catch {
+      setStaged([])
+    }
+    try {
+      setDescriptions(await listStagedDescriptions())
+    } catch {
+      // a serve older than #70 has no description store
+      setDescriptions([])
+    }
+  }, [])
+
   useEffect(() => {
     let cancelled = false
     void probeStaging(meta.staging_enabled).then(async (enabled) => {
       if (cancelled || !enabled) return
-      try {
-        const entries = await listStaged()
-        if (!cancelled) setStaged(entries)
-      } catch {
-        // no staging on this build
-      }
+      setCanStage(true)
+      await refresh()
     })
     return () => {
       cancelled = true
     }
-  }, [meta.staging_enabled])
-  return useMemo(() => resolveStaged(index, staged).drawable, [index, staged])
+  }, [meta.staging_enabled, refresh])
+
+  const relationships = useMemo(() => resolveStaged(index, staged).drawable, [index, staged])
+  return { canStage, relationships, descriptions, refresh }
+}
+
+/** The staged edit sitting over this entity's description, if there is one. */
+function stagedFor(
+  descriptions: readonly StagedDescription[],
+  entity: string,
+  column: string | null,
+): StagedDescription | null {
+  const wanted = column?.toLowerCase() ?? null
+  return (
+    descriptions.find(
+      (entry) =>
+        entry.entity.toLowerCase() === entity.toLowerCase() &&
+        (entry.column?.toLowerCase() ?? null) === wanted,
+    ) ?? null
+  )
 }
 
 function reachChips(reaches: Reach[]) {
   return <ChipList nodes={reaches.map((r) => ({ node: r.node, confidence: r.confidence }))} />
 }
 
-function PanelHeader({ node, subtitle }: { node: GraphNode; subtitle?: string | null }) {
+function PanelHeader({
+  node,
+  subtitle,
+  description,
+}: {
+  node: GraphNode
+  subtitle?: string | null
+  /** Replaces the read-only description line — the editor, where one is offered (#70). */
+  description?: ReactNode
+}) {
   const { meta, index } = useStitch()
   const link = metabaseLink(meta.metabase_url, node)
   const archived = node.properties?.archived === true
@@ -91,7 +151,7 @@ function PanelHeader({ node, subtitle }: { node: GraphNode; subtitle?: string | 
         {archived && <span className="archived-tag">archived</span>}
       </div>
       {shown && <p className="panel-subtitle">{shown}</p>}
-      {node.description && <p className="panel-description">{node.description}</p>}
+      {description ?? (node.description && <p className="panel-description">{node.description}</p>)}
       {isPlaceholder(node) && (
         <p className="muted panel-placeholder">
           Only referenced by an edge — this build never resolved a definition for it.
@@ -113,9 +173,13 @@ function PanelHeader({ node, subtitle }: { node: GraphNode; subtitle?: string | 
 
 function ColumnPanel({ nodeId }: { nodeId: string }) {
   const { index } = useStitch()
+  const staging = useStaging(index)
   const detail = columnDetail(index, nodeId)
   if (!detail) return <NotFound nodeId={nodeId} />
   const { node } = detail
+  // A column's description is written on its MODEL's schema entry, so the staging
+  // API is addressed by the model's dbt name plus the column name.
+  const entity = detail.model ? fullName(detail.model) : null
   const headline =
     detail.cards.length > 0
       ? `Consumed by ${plural(detail.cards.length, 'card')} on ${plural(detail.dashboards.length, 'dashboard')}.`
@@ -126,6 +190,18 @@ function ColumnPanel({ nodeId }: { nodeId: string }) {
       <PanelHeader
         node={node}
         subtitle={detail.model ? `column of ${displayName(detail.model)}` : nodeContext(index, node)}
+        description={
+          entity ? (
+            <DescriptionEditor
+              entity={entity}
+              column={node.column ?? displayName(node)}
+              applied={node.description}
+              staged={stagedFor(staging.descriptions, entity, node.column ?? displayName(node))}
+              canStage={staging.canStage}
+              onChanged={staging.refresh}
+            />
+          ) : undefined
+        }
       />
       <dl className="fact-list">
         <Fact label={detail.model?.node_type === 'source' ? 'source' : 'model'}>
@@ -338,9 +414,12 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
   const { index } = useStitch()
   // Staged declarations belong on the canvas too: a relationship drawn a minute ago
   // is a relationship, and this page would otherwise deny it exists (#81).
-  const staged = useStagedRelationships(index)
+  const staging = useStaging(index)
   const detail = modelDetail(index, nodeId)
-  const star = useMemo(() => modelStar(index, nodeId, staged), [index, nodeId, staged])
+  const star = useMemo(
+    () => modelStar(index, nodeId, staging.relationships),
+    [index, nodeId, staging.relationships],
+  )
   const upstreamGroups = useMemo(() => layerGroups(detail?.upstream ?? [], 'up'), [detail])
   const downstreamGroups = useMemo(() => layerGroups(detail?.downstream ?? [], 'down'), [detail])
   const biGroups = useMemo(() => dashboardGroups(index, detail?.cards ?? []), [index, detail])
@@ -350,9 +429,22 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
   const path = node.properties?.path
   const tags = Array.isArray(node.properties?.tags) ? (node.properties.tags as unknown[]).map(String) : []
 
+  const entity = fullName(node)
   return (
     <article className="panel">
-      <PanelHeader node={node} />
+      <PanelHeader
+        node={node}
+        description={
+          <DescriptionEditor
+            entity={entity}
+            column={null}
+            applied={node.description}
+            staged={stagedFor(staging.descriptions, entity, null)}
+            canStage={staging.canStage}
+            onChanged={staging.refresh}
+          />
+        }
+      />
       <dl className="fact-list">
         <Fact label={node.node_type === 'source' ? 'dbt source' : 'schema'}>
           {nodeContext(index, node)}

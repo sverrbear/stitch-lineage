@@ -45,6 +45,7 @@ serve:
 
 output:
   dir: .stitch/
+  history_retention: 20                 # graph baselines kept in .stitch/history/ (0 = off)
 ```
 
 Then, with `auto_docs: true`, one command does everything:
@@ -64,6 +65,11 @@ stitch build --no-docs           # resolve only; --docs/--no-docs overrides auto
 stitch build --no-metabase       # dbt side only; reuses the existing Metabase side
 
 stitch impact                    # what did my last build change, and what does it hit?
+stitch impact --base main        # ... since main instead, off the local per-commit history
+stitch impact --column fct.col   # blast radius of one column, no baseline needed
+
+stitch history                   # graph baselines stored per commit, newest first
+stitch history --json            # the same listing as one JSON object
 
 stitch search order_total        # find models, columns, fields, cards, dashboards
 stitch search order_total --json # JSON lines for piping
@@ -89,7 +95,7 @@ stitch export --format jsonl     # flat nodes.jsonl/edges.jsonl for agents/wareh
 stitch export --format site      # static build of the app, graph inlined, host anywhere
 ```
 
-Commands that don't call the Metabase API (`build --no-metabase`, `impact`, `search`, `suggest`, `export`, `doctor --unbound/--untraced/--dead`) work without the `STITCH_METABASE_*` env vars set. Add `.stitch/` to your `.gitignore` — the graph is a local artifact.
+Commands that don't call the Metabase API (`build --no-metabase`, `impact`, `history`, `search`, `suggest`, `export`, `doctor --unbound/--untraced/--dead`) work without the `STITCH_METABASE_*` env vars set. Add `.stitch/` to your `.gitignore` — the graph is a local artifact.
 
 ### `doctor --dead`: estate hygiene
 
@@ -214,10 +220,58 @@ Silent when nothing changed. `stitch impact` prints the tree behind that line �
 ```bash
 stitch impact                              # vs your previous build (.stitch/graph.prev.json)
 stitch impact --base-file path/graph.json  # vs a graph file you kept
-stitch impact --base origin/main           # vs the graph.json committed on a git ref
+stitch impact --base origin/main           # vs a git ref (local history first, see below)
 ```
 
 A rename shows up as a removal plus an addition: ids are name-based, so a rename is indistinguishable from remove + add — and the downstream card breaks either way until it is repointed.
+
+The mirror question — *what would a change here break* — is `--column`, askable before the edit. It needs no baseline at all: it walks the current `graph.json` downstream from one column.
+
+```
+$ stitch impact --column fct_matches.match_intensity
+fct_matches.match_intensity
+  ├ 2 downstream models: mart_board_kpis, mart_engagement
+  ├ 2 downstream columns:
+      mart_board_kpis.match_intensity
+      mart_engagement.match_intensity
+  ├ 1 Metabase field: Match Intensity
+  ├ 2 Metabase cards:
+      #412 Match intensity by country  (Board dashboard, sverrir)
+      #418 Weekly intensity trend  (Board dashboard)
+  └ 1 dashboard: Board dashboard
+```
+
+It takes `model.column`, a bare column name when that is unique, or a full node id; anything unknown or ambiguous gets `stitch search`-style suggestions. Add `--json` to pipe it. No git, no baseline, no Metabase credentials.
+
+## Baselines without committing anything
+
+Every `stitch build` on a clean working tree keeps a gzipped copy of the graph in `.stitch/history/<commit-sha>.json.gz`, keyed by the commit you built. Nothing is committed — `.stitch/` stays gitignored — but `stitch impact --base <ref>` now has somewhere local to look:
+
+```bash
+git switch main && stitch build     # history: stored baseline for a1b2c3d (1/20 kept)
+git switch -c feat/rename-columns   # ... edit models, dbt docs generate ...
+stitch build --no-metabase
+stitch impact --base main           # diffed against main's stored snapshot
+```
+
+`--base <ref>` resolves the ref to its merge-base with `HEAD` — the commit your branch actually diverged from — then takes that commit's snapshot, or the nearest stored ancestor of it. The baseline it picked is always printed, on stderr, so it can never be a guess (and so stdout stays a clean payload for `--format github-comment`):
+
+```
+baseline: local history snapshot for a1b2c3d ('main')
+baseline: local history snapshot for a1b2c3d -- nearest stored ancestor of the merge-base of 'origin/main' and HEAD, 3 commits back
+```
+
+With no snapshot in the ancestry it falls back to the `graph.json` committed on that ref, and a miss on both names the fix. `stitch history` lists what is stored:
+
+```
+2 baselines in .stitch/history (keeping 20), newest first
+  a1b2c3d  2026-08-10T09:12:04+00:00  1904 nodes / 3120 edges  feat: split fct_matches
+  9f4e0b1  2026-08-09T16:40:11+00:00  1901 nodes / 3117 edges  chore: bump dbt
+```
+
+Builds with uncommitted changes store nothing and say so: that graph describes your working tree, not the commit, and as a baseline it would quietly report no impact at all. `output.history_retention` caps how many are kept (oldest pruned first; `0` turns history off and clears the directory).
+
+The two local stores answer different questions, so neither replaces the other: `graph.prev.json` is *the graph my last build overwrote* (kept on every build, whatever the tree and commit), while `.stitch/history/` is *the graph as of commit `<sha>`* (clean trees only) and is what `--base` reads.
 
 ## Phases
 
@@ -230,7 +284,7 @@ A rename shows up as a removal plus an addition: ids are name-based, so a rename
 
 ## Shelved: PR impact comments
 
-The same blast radius can be posted as a PR comment (`stitch impact --format github-comment`) or a Slack deploy alert (`--format slack`; workflow templates in [`action/`](action/)). Both formats work today, but that CI workflow needs a baseline `graph.json` committed on the base branch — which conflicts with keeping the graph purely local — so it stays shelved as a default story. Locally, `stitch impact` needs none of it.
+The same blast radius can be posted as a PR comment (`stitch impact --format github-comment`) or a Slack deploy alert (`--format slack`; workflow templates in [`action/`](action/)). Both formats work today, but that CI workflow needs a baseline `graph.json` committed on the base branch — which conflicts with keeping the graph purely local — so it stays shelved as a default story. Locally, `stitch impact` needs none of it: the previous-build snapshot and the SHA-keyed history above cover both questions without committing anything.
 
 ## Built on
 
