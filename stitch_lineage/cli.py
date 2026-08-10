@@ -28,6 +28,7 @@ from stitch_lineage.app import StitchAppError
 from stitch_lineage.config import StitchConfig, StitchConfigError, load_config
 from stitch_lineage.export.jsonl import export_jsonl
 from stitch_lineage.export.static_site import export_site
+from stitch_lineage.graph.dead import dead_report, format_dead_report
 from stitch_lineage.graph.impact import (
     format_github_comment,
     format_slack_comment,
@@ -752,9 +753,22 @@ def doctor(
             "--unresolved-cards", help="List unresolved cards with per-field-ref reasons."
         ),
     ] = False,
+    dead: Annotated[
+        bool,
+        typer.Option(
+            "--dead",
+            help="Report dead weight: unconsumed columns, models feeding nothing, "
+            "archived-but-bound cards.",
+        ),
+    ] = False,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit the --dead report as a JSON object.")
+    ] = False,
     config: ConfigOpt = None,
 ) -> None:
     """Diagnose configuration, connectivity, and coverage gaps."""
+    if json_output and not dead:
+        _fail("--json is only supported with --dead")
     config = _resolve_config(config)
     cfg = _load_config_or_fail(config)
     graph_path = _output_dir(config, cfg) / "graph.json"
@@ -768,7 +782,7 @@ def doctor(
             console.print(str(database.get("name", "?")))
         return
 
-    if unbound or untraced or unresolved_cards:
+    if unbound or untraced or unresolved_cards or dead:
         graph = _read_graph_or_fail(graph_path)
         if unbound:
             _print_list("unbound models", graph.coverage.unbound_models)
@@ -776,6 +790,8 @@ def doctor(
             _print_list("untraced columns", graph.coverage.untraced_columns)
         if unresolved_cards:
             _print_unresolved_cards(graph)
+        if dead:
+            _print_dead(graph, json_output)
         return
 
     failed = False
@@ -832,6 +848,16 @@ def _print_list(label: str, items: list[str]) -> None:
     console.print(f"{label} ({len(items)}):")
     for item in items:
         console.print(f"  {item}", soft_wrap=True)
+
+
+def _print_dead(graph: Graph, json_output: bool) -> None:
+    """typer.echo, not console.print: card titles are Metabase user input, and rich
+    would swallow a square-bracketed one as markup."""
+    report = dead_report(graph)
+    if json_output:
+        typer.echo(json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True))
+        return
+    typer.echo(format_dead_report(report))
 
 
 def _print_unresolved_cards(graph: Graph) -> None:
