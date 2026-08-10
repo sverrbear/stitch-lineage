@@ -512,6 +512,14 @@ def test_prev_build_and_commit_history_answer_different_questions(project, monke
     assert "2 columns removed or renamed" in since_main.output
     assert f"local history snapshot for {base_sha[:7]}" in since_main.stderr
 
+    # an explicit file outranks --base: same two baselines on disk, provenance says which
+    kept = project / "kept-graph.json"
+    shutil.copy(project / ".stitch" / "graph.prev.json", kept)
+    both = runner.invoke(app, ["impact", "--base", "main", "--base-file", str(kept)])
+    assert both.exit_code == 0, both.output
+    assert both.stdout == bare.stdout
+    assert both.stderr.strip() == f"baseline: {kept}"
+
     # and --column asks neither question: it walks the current graph, so no baseline
     point = runner.invoke(app, ["impact", "--column", "raw_payments.amount"])
     assert point.exit_code == 0, point.output
