@@ -112,3 +112,39 @@ export async function unstageRelationship(id: string, fetcher: Fetcher = fetch):
     throw new StagingError(await errorMessage(response))
   }
 }
+
+// ---------------------------------------------------------------------------
+// Presentation
+
+export interface StagedGroup {
+  /** The dbt model every entry in this group points at. */
+  target: string
+  entries: StagedRelationship[]
+}
+
+/**
+ * Staged entries grouped by the model they point at (#61). A real session stages
+ * a dozen FKs at once and most of them land on the same handful of dimensions —
+ * "everything that joins to dim_users" is the unit a reader scans for, and a flat
+ * list of seventeen is the unit they cannot. Biggest group first; ties by name,
+ * so the panel never reshuffles between refreshes.
+ */
+export function groupStagedByTarget(entries: StagedRelationship[]): StagedGroup[] {
+  const byTarget = new Map<string, StagedRelationship[]>()
+  for (const entry of entries) {
+    const group = byTarget.get(entry.to_model)
+    if (group) group.push(entry)
+    else byTarget.set(entry.to_model, [entry])
+  }
+  const groups: StagedGroup[] = [...byTarget.entries()].map(([target, group]) => ({
+    target,
+    entries: group.sort(
+      (a, b) =>
+        a.from_model.localeCompare(b.from_model) ||
+        a.from_column.localeCompare(b.from_column) ||
+        a.id.localeCompare(b.id),
+    ),
+  }))
+  groups.sort((a, b) => b.entries.length - a.entries.length || a.target.localeCompare(b.target))
+  return groups
+}
