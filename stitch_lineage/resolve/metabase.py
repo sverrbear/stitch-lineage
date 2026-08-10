@@ -17,6 +17,13 @@ from stitch_lineage.graph.schema import (
     mb_field_node_id,
 )
 from stitch_lineage.payloads import MetabasePayload
+from stitch_lineage.resolve.native_sql import (
+    NativeResolution,
+    Snippets,
+    TableIndex,
+    native_text,
+    resolve_native_sql,
+)
 
 # Metabase ships two dataset_query shapes and both are live in the wild:
 #   legacy  {"type": "query", "query": {...}}      -- nested one level per source-query
@@ -410,6 +417,22 @@ def _resolve_by_name(
     return None, exact
 
 
+def _snippet_index(snippets: list[dict[str, Any]]) -> Snippets:
+    """Native-query snippets keyed by casefolded name and by id -- a snippet tag names one
+    either way, and older Metabase versions only carry the name."""
+    by_name: dict[str, str] = {}
+    by_id: dict[int, str] = {}
+    for snippet in snippets:
+        if not isinstance(snippet, dict) or not isinstance(snippet.get("content"), str):
+            continue
+        content = snippet["content"]
+        if isinstance(snippet.get("name"), str):
+            by_name.setdefault(snippet["name"].casefold(), content)
+        if isinstance(snippet.get("id"), int):
+            by_id[snippet["id"]] = content
+    return Snippets(by_name, by_id)
+
+
 def _record(consumed: dict[int, dict[str, Any]], field_id: int, clause: str, **flags: bool) -> None:
     entry = consumed.setdefault(field_id, {"clauses": set()})
     entry["clauses"].add(clause)
@@ -446,10 +469,19 @@ def resolve_metabase(
         whose join-alias cannot be mapped to its joined table) is a heuristic and
         ships confidence `parsed`. Card-on-card (source-table "card__123", MBQL 5
         source-card, and ["metric", ...] refs to saved metric cards) resolves
-        transitively, cycle-guarded with a visited set. Native SQL cards are Phase 3
-        -- in either shape (legacy type "native", MBQL 5 first stage
-        mbql.stage/native): count them in native_cards_total, resolve none, add their
-        ids to unresolved_cards -- never drop a card silently.
+        transitively, cycle-guarded with a visited set. Native SQL cards (legacy type
+        "native", MBQL 5 first stage mbql.stage/native) resolve through
+        resolve.native_sql: template tags are substituted, sqlglot parses the result
+        with the Snowflake dialect, and every column landing on a table Metabase knows
+        becomes a `consumed_by` edge at confidence `parsed`. A field named by a field
+        filter tag is exact -- that is a field id, not a parse. The edges are the same
+        shape MBQL produces, so lineage composes through the existing binds_to hop
+        (dbt column -> mb_field -> mb_card) with no new edge type. A native card that
+        parsed only partly still emits what it resolved, records the rest in
+        unresolved_field_refs and carries the physical tables it reads on
+        properties.native_tables -- never a dropped card, never a fabricated column.
+        Native cards are walked before MBQL cards resolve, so an MBQL card sourcing one
+        (card__N) inherits its fields through the same transitive machinery.
       * `appears_on` edges (mb_card -> mb_dashboard) from dashcards, confidence exact.
         A dashboard counts as resolved in coverage only when every non-virtual
         dashcard points at a known in-scope card.
@@ -476,8 +508,13 @@ def resolve_metabase(
     }
     fields_by_id: dict[int, dict[str, Any]] = {}
     table_columns: dict[int, dict[str, int]] = {}
+    # per database, the same field map indexed by written table name -- what native SQL
+    # resolution needs and MBQL (which has field ids) does not
+    native_index: dict[Any, TableIndex] = {}
     for db_id, metadata in payload.database_metadata.items():
         db_name = db_names.get(db_id, str(metadata.get("name", "")))
+        index = TableIndex({}, {}, {}, table_columns, set())
+        native_index[db_id] = index
         tables = metadata.get("tables")
         for table in tables if isinstance(tables, list) else []:
             if not isinstance(table, dict):
@@ -517,7 +554,13 @@ def resolve_metabase(
                     )
                 )
             if isinstance(table.get("id"), int):
-                table_columns[table["id"]] = columns
+                table_id = table["id"]
+                table_columns[table_id] = columns
+                schema_name, name = str(table.get("schema") or ""), str(table.get("name") or "")
+                index.by_qualified[(schema_name.casefold(), name.casefold())] = table_id
+                index.by_name.setdefault(name.casefold(), []).append(table_id)
+                index.location[table_id] = (schema_name, name)
+                index.field_ids.update(columns.values())
     field_ids = set(fields_by_id)
 
     cards_in_scope: list[dict[str, Any]] = []
@@ -530,8 +573,11 @@ def resolve_metabase(
         cards_in_scope.append(card)
         cards_by_id[card["id"]] = card
 
+    snippets = _snippet_index(payload.snippets)
+
     walks: dict[int, _CardWalk] = {}
     kinds: dict[int, str | None] = {}
+    natives: dict[int, NativeResolution] = {}
     deferred: list[tuple[int, _Ref, tuple[str, Any] | None]] = []
     for card in cards_in_scope:
         card_id = card["id"]
@@ -548,6 +594,25 @@ def resolve_metabase(
             stages = dataset_query["stages"]
             context = _stage_context(stages)
             _walk_stages(stages, "", refs, walk.upstream_cards)
+        elif kind == _NATIVE_QUERY:
+            # the native SQL sits on dataset_query.native (legacy) or on the first stage
+            # (MBQL 5); both shapes carry their template tags beside it
+            stages = dataset_query.get("stages")
+            source = stages[0] if isinstance(stages, list) and stages else dataset_query
+            sql, template_tags = native_text(source)
+            native = resolve_native_sql(
+                sql,
+                template_tags,
+                snippets,
+                native_index.get(dataset_query.get("database")),
+            )
+            natives[card_id] = native
+            walk.upstream_cards.extend(native.upstream_cards)
+            walk.problems.extend({"card_id": card_id, **problem} for problem in native.problems)
+            for field in native.fields:
+                walk.consumed.setdefault(field.field_id, {"clauses": set()})
+            walks[card_id] = walk
+            continue
         else:
             continue
         for ref in refs:
@@ -596,6 +661,23 @@ def resolve_metabase(
                 {"card_id": card_id, "ref": ref.raw, "reason": "unresolvable field name"}
             )
 
+    # Cards whose field set came, anywhere upstream, out of parsed native SQL. A `via`
+    # edge is only `exact` when nothing in the chain was parsed -- inheriting a native
+    # card's fields and presenting them as exact is the phantom-dependency failure mode
+    # (SPEC.md section 5). Computed as a reachability closure rather than during the
+    # transitive walk so a card cycle cannot memoize a truncated answer.
+    parsed_sources: set[int] = set(natives)
+    while True:
+        grown = {
+            card_id
+            for card_id, walk in walks.items()
+            if card_id not in parsed_sources
+            and any(upstream in parsed_sources for upstream in walk.upstream_cards)
+        }
+        if not grown:
+            break
+        parsed_sources |= grown
+
     transitive: dict[int, set[int]] = {}
 
     def _transitive_fields(card_id: int, visiting: set[int]) -> tuple[set[int], bool]:
@@ -628,6 +710,7 @@ def resolve_metabase(
         card_node_id = mb_card_node_id(card_id)
         dataset_query = card.get("dataset_query")
         kind = kinds.get(card_id)
+        native = natives.get(card_id)
         declared = dataset_query.get("type") if isinstance(dataset_query, dict) else None
         query_type = _QUERY_TYPES.get(kind, declared)
         creator = card.get("creator")
@@ -636,28 +719,31 @@ def resolve_metabase(
             if isinstance(creator, dict)
             else card.get("creator_id")
         )
+        properties: dict[str, Any] = {
+            "archived": bool(card.get("archived", False)),
+            "collection_id": card.get("collection_id"),
+            "creator": creator_name,
+            "display": card.get("display"),
+            "query_type": query_type,
+        }
+        # the table-level degrade: a native card whose columns did not fully resolve still
+        # says which physical tables it reads, which the column edges no longer cover
+        if native is not None and native.problems and native.tables:
+            properties["native_tables"] = native.tables
         result.nodes.append(
             Node(
                 node_id=card_node_id,
                 node_type=NodeType.MB_CARD,
                 name=str(card.get("name", "")),
                 description=card.get("description"),
-                properties={
-                    "archived": bool(card.get("archived", False)),
-                    "collection_id": card.get("collection_id"),
-                    "creator": creator_name,
-                    "display": card.get("display"),
-                    "query_type": query_type,
-                },
+                properties=properties,
             )
         )
 
         if kind == _NATIVE_QUERY:
             result.native_cards_total += 1
-            result.unresolved_cards.append(card_id)
-            return
-
-        result.mbql_cards_total += 1
+        else:
+            result.mbql_cards_total += 1
         walk = walks.get(card_id)
         if walk is None:
             result.unresolved_cards.append(card_id)
@@ -666,28 +752,40 @@ def resolve_metabase(
             )
             return
 
-        for field_id in sorted(walk.consumed):
-            entry = walk.consumed[field_id]
-            evidence: dict[str, Any] = {"clauses": sorted(entry["clauses"])}
-            for flag in ("implicit_join", "by_name"):
-                if entry.get(flag):
-                    evidence[flag] = True
-            result.edges.append(
-                Edge(
-                    from_=mb_field_node_id(field_id),
-                    to=card_node_id,
-                    edge_type=EdgeType.CONSUMED_BY,
-                    confidence=Confidence.PARSED if entry.get("parsed") else Confidence.EXACT,
-                    evidence=evidence,
+        if native is not None:
+            for field in native.fields:
+                result.edges.append(
+                    Edge(
+                        from_=mb_field_node_id(field.field_id),
+                        to=card_node_id,
+                        edge_type=EdgeType.CONSUMED_BY,
+                        confidence=Confidence.EXACT if field.exact else Confidence.PARSED,
+                        evidence=field.evidence,
+                    )
                 )
-            )
+        else:
+            for field_id in sorted(walk.consumed):
+                entry = walk.consumed[field_id]
+                evidence: dict[str, Any] = {"clauses": sorted(entry["clauses"])}
+                for flag in ("implicit_join", "by_name"):
+                    if entry.get(flag):
+                        evidence[flag] = True
+                result.edges.append(
+                    Edge(
+                        from_=mb_field_node_id(field_id),
+                        to=card_node_id,
+                        edge_type=EdgeType.CONSUMED_BY,
+                        confidence=Confidence.PARSED if entry.get("parsed") else Confidence.EXACT,
+                        evidence=evidence,
+                    )
+                )
 
         problems = list(walk.problems)
         emitted = set(walk.consumed)
         for upstream_id in dict.fromkeys(walk.upstream_cards):
             if upstream_id not in walks:
                 reason = (
-                    "referenced card is native or has no MBQL query"
+                    "referenced card has no query stitch could walk"
                     if upstream_id in cards_by_id
                     else "referenced card missing or excluded"
                 )
@@ -696,6 +794,9 @@ def resolve_metabase(
                 )
                 continue
             upstream_fields, _ = _transitive_fields(upstream_id, set())
+            via_confidence = (
+                Confidence.PARSED if upstream_id in parsed_sources else Confidence.EXACT
+            )
             for field_id in sorted(upstream_fields - emitted):
                 emitted.add(field_id)
                 result.edges.append(
@@ -703,7 +804,7 @@ def resolve_metabase(
                         from_=mb_field_node_id(field_id),
                         to=card_node_id,
                         edge_type=EdgeType.CONSUMED_BY,
-                        confidence=Confidence.EXACT,
+                        confidence=via_confidence,
                         evidence={"via": f"card__{upstream_id}"},
                     )
                 )
@@ -711,6 +812,8 @@ def resolve_metabase(
         if problems:
             result.unresolved_cards.append(card_id)
             result.unresolved_field_refs.extend(problems)
+        elif kind == _NATIVE_QUERY:
+            result.native_cards_resolved += 1
         else:
             result.mbql_cards_resolved += 1
 
