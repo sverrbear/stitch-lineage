@@ -4,8 +4,10 @@
 // as their Metabase display name, and the physical warehouse relation is only
 // ever a secondary fact row.
 
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react'
 import { SystemBadge } from '../components/badges'
 import { ChipList, ConfidenceTag, Fact, NodeChip, Section } from '../components/bits'
+import { DashboardGroups, LayerGroups } from '../components/fanout'
 import { useStitch } from '../data'
 import {
   biDetail,
@@ -14,8 +16,12 @@ import {
   type ChainGap,
   type RelationshipRef,
 } from '../lib/details'
+import { resolveStaged, type ErdStagedRelationship } from '../lib/erd'
+import { dashboardCount, dashboardGroups, layerGroups } from '../lib/fanout'
 import { metabaseLink } from '../lib/graph'
-import type { Reach } from '../lib/graph'
+import type { GraphIndex, Reach } from '../lib/graph'
+import { modelStar } from '../lib/modelStar'
+import { listStaged, probeStaging, type StagedRelationship } from '../lib/staging'
 import {
   NODE_TYPE_NAME,
   displayName,
@@ -30,8 +36,40 @@ import {
 import { lineageHref } from '../router'
 import type { GraphNode } from '../types'
 
+// React Flow is the heavy chunk and a detail panel must stay light: the mini star
+// loads with the section, not with the page (same reasoning as App's canvases).
+const ModelStar = lazy(() =>
+  import('../components/ModelStar').then((m) => ({ default: m.ModelStar })),
+)
+
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`
+}
+
+/**
+ * The staged declarations this build can see, resolved onto the graph. Empty on a
+ * static export or a serve too old for the endpoint — a read-only build must read
+ * as read-only, not as broken (same probe the ERD uses).
+ */
+function useStagedRelationships(index: GraphIndex): ErdStagedRelationship[] {
+  const { meta } = useStitch()
+  const [staged, setStaged] = useState<StagedRelationship[]>([])
+  useEffect(() => {
+    let cancelled = false
+    void probeStaging(meta.staging_enabled).then(async (enabled) => {
+      if (cancelled || !enabled) return
+      try {
+        const entries = await listStaged()
+        if (!cancelled) setStaged(entries)
+      } catch {
+        // no staging on this build
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [meta.staging_enabled])
+  return useMemo(() => resolveStaged(index, staged).drawable, [index, staged])
 }
 
 function reachChips(reaches: Reach[]) {
@@ -298,7 +336,14 @@ function BiPanel({ nodeId }: { nodeId: string }) {
 
 function ModelPanel({ nodeId }: { nodeId: string }) {
   const { index } = useStitch()
+  // Staged declarations belong on the canvas too: a relationship drawn a minute ago
+  // is a relationship, and this page would otherwise deny it exists (#81).
+  const staged = useStagedRelationships(index)
   const detail = modelDetail(index, nodeId)
+  const star = useMemo(() => modelStar(index, nodeId, staged), [index, nodeId, staged])
+  const upstreamGroups = useMemo(() => layerGroups(detail?.upstream ?? [], 'up'), [detail])
+  const downstreamGroups = useMemo(() => layerGroups(detail?.downstream ?? [], 'down'), [detail])
+  const biGroups = useMemo(() => dashboardGroups(index, detail?.cards ?? []), [index, detail])
   if (!detail) return <NotFound nodeId={nodeId} />
   const { node } = detail
   const materialization = node.properties?.materialization
@@ -335,28 +380,40 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
         </div>
       )}
 
-      <Section
-        title={`Fan-in / fan-out — ${plural(detail.upstreamModels.length, 'upstream model')}, ${plural(detail.downstreamModels.length, 'downstream model')}, ${plural(detail.cards.length, 'card')} on ${plural(detail.dashboards.length, 'dashboard')}`}
-      >
-        <h4 className="subhead">upstream</h4>
-        <ChipList nodes={detail.upstreamModels.map((node) => ({ node }))} />
-        <h4 className="subhead">downstream models</h4>
-        <ChipList nodes={detail.downstreamModels.map((node) => ({ node }))} />
-        {(detail.cards.length > 0 || detail.dashboards.length > 0) && (
-          <>
-            <h4 className="subhead">cards</h4>
-            {reachChips(detail.cards)}
-            <h4 className="subhead">dashboards</h4>
-            {reachChips(detail.dashboards)}
-          </>
+      {/* Relationships get the canvas, dependencies get the lists below (#81/#82). */}
+      <Section title={`Relationships — ${star?.joinCount ?? 0}`}>
+        <Suspense fallback={<div className="star-canvas" />}>
+          <ModelStar star={star} />
+        </Suspense>
+        {detail.relationships.length > 0 && (
+          <RelationshipList relationships={detail.relationships} />
         )}
       </Section>
 
-      {detail.relationships.length > 0 && (
-        <Section title={`Declared relationships — ${detail.relationships.length}`}>
-          <RelationshipList relationships={detail.relationships} />
-        </Section>
-      )}
+      <Section
+        title={`Dependencies — ${plural(detail.upstream.length, 'model')} upstream, ${plural(detail.downstream.length, 'model')} downstream`}
+      >
+        <h4 className="subhead">upstream</h4>
+        <LayerGroups
+          groups={upstreamGroups}
+          empty={
+            node.node_type === 'source'
+              ? 'nothing upstream — this is where the data enters'
+              : 'nothing upstream in this graph'
+          }
+        />
+        <h4 className="subhead">downstream</h4>
+        <LayerGroups groups={downstreamGroups} empty="nothing downstream — this is a leaf" />
+      </Section>
+
+      <Section
+        title={`BI usage — ${plural(detail.cards.length, 'card')} on ${plural(dashboardCount(biGroups), 'dashboard')}`}
+      >
+        <DashboardGroups
+          groups={biGroups}
+          empty="no Metabase card reads this table in this graph"
+        />
+      </Section>
 
       <Section title={`Columns — ${detail.columns.length}`}>
         <table className="columns-table">
