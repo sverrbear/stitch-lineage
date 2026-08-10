@@ -124,7 +124,9 @@ def test_edge_direction_and_confidence(resolution):
         if edge.edge_type == EdgeType.CONSUMED_BY:
             assert edge.from_.startswith("mb_field::")
             assert edge.to.startswith("mb_card::")
-            assert edge.confidence == Confidence.EXACT
+            # an MBQL ref names a field id; card 205 is native SQL, parsed and graded so
+            native = edge.to == mb_card_node_id(205)
+            assert edge.confidence == (Confidence.PARSED if native else Confidence.EXACT)
         elif edge.edge_type == EdgeType.APPEARS_ON:
             assert edge.from_.startswith("mb_card::")
             assert edge.to.startswith("mb_dash::")
@@ -157,12 +159,13 @@ def test_nested_source_query(resolution):
     assert edges[mb_field_node_id(101)]["by_name"] is True
 
 
-def test_native_card_counted_not_resolved(resolution):
-    assert mb_card_node_id(205) in {n.node_id for n in resolution.nodes}
-    assert consumed_by(resolution, 205) == {}
-    assert resolution.native_cards_total == 1
-    assert resolution.native_cards_resolved == 0
-    assert 205 in resolution.unresolved_cards
+def test_native_card_resolves_its_own_columns(resolution):
+    """The legacy native card selects two columns and filters on a third."""
+    edges = consumed_by(resolution, 205)
+    assert set(edges) == {mb_field_node_id(i) for i in (100, 102, 103)}
+    assert edges[mb_field_node_id(100)] == {"source": "native_sql", "table": "marts.fct_orders"}
+    assert (resolution.native_cards_resolved, resolution.native_cards_total) == (1, 1)
+    assert 205 not in resolution.unresolved_cards
 
 
 def test_unresolvable_name_ref_recorded_not_crashed(resolution):
@@ -214,10 +217,10 @@ def test_coverage_numbers(resolution):
     assert resolution.mbql_cards_total == 6
     assert resolution.mbql_cards_resolved == 5
     assert resolution.native_cards_total == 1
-    assert resolution.native_cards_resolved == 0
+    assert resolution.native_cards_resolved == 1
     assert resolution.dashboards == 2
     assert resolution.dashboards_total == 2
-    assert sorted(resolution.unresolved_cards) == [205, 208]
+    assert sorted(resolution.unresolved_cards) == [208]
 
 
 # --- MBQL 5 ("lib") shape: dataset_query.stages, opts map in the middle of a ref ----
@@ -284,9 +287,11 @@ def test_mbql5_chained_stages_label_later_stages(mixed):
     assert edges[mb_field_node_id(101)]["by_name"] is True
 
 
-def test_mbql5_native_stage_counted_not_resolved(mixed):
-    assert consumed_by(mixed, 405) == {}
-    assert 405 in mixed.unresolved_cards
+def test_mbql5_native_stage_resolves_like_its_legacy_twin(mixed):
+    """A native stage is still native SQL: same resolver, same confidence."""
+    assert set(consumed_by(mixed, 405)) == {mb_field_node_id(100), mb_field_node_id(102)}
+    assert consumed_edge(mixed, 405, 100).confidence == Confidence.PARSED
+    assert 405 not in mixed.unresolved_cards
     node = next(n for n in mixed.nodes if n.node_id == mb_card_node_id(405))
     assert node.properties["query_type"] == "native"
 
@@ -295,8 +300,8 @@ def test_mixed_instance_coverage_counts_both_shapes(mixed):
     # legacy: 201-206 + 208 in scope (5 MBQL resolved, 205 native, 208 unresolvable name)
     # MBQL 5: 401-404 resolved, 405 native
     assert (mixed.mbql_cards_resolved, mixed.mbql_cards_total) == (9, 10)
-    assert (mixed.native_cards_resolved, mixed.native_cards_total) == (0, 2)
-    assert sorted(mixed.unresolved_cards) == [205, 208, 405]
+    assert (mixed.native_cards_resolved, mixed.native_cards_total) == (2, 2)
+    assert sorted(mixed.unresolved_cards) == [208]
 
 
 def _minimal_card(card_id: int, query: dict) -> dict:
