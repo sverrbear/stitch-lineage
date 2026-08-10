@@ -6,9 +6,21 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
+from stitch_lineage.app.server import create_app
 from stitch_lineage.cli import app
+from stitch_lineage.graph.schema import (
+    Confidence,
+    Edge,
+    EdgeType,
+    Graph,
+    Node,
+    NodeType,
+    column_node_id,
+)
+from stitch_lineage.io.graph_store import read_graph, write_graph
 from stitch_lineage.io.staged_store import StagedRelationship, read_staged, write_staged
 
 runner = CliRunner()
@@ -352,3 +364,264 @@ def test_a_relationships_test_warns_that_cardinality_is_dropped(repo, store):
 def test_many_to_one_is_not_warned_about(repo, store):
     _stage(store, _entry())
     assert "cannot carry cardinality" not in _run("--dry-run").output
+
+
+# --- the graph patch (issue #68) -----------------------------------------------------------------
+
+GRAPH_COLUMNS = {
+    "model.demo.fct_orders": ["order_id", "customer_id"],
+    "model.demo.dim_customers": ["customer_id"],
+    "model.demo.fct_events": ["event_id", "user_id"],
+    "model.demo.dim_users": ["user_id"],
+}
+ORDERS_FK = column_node_id("model.demo.fct_orders", "customer_id")
+CUSTOMERS_PK = column_node_id("model.demo.dim_customers", "customer_id")
+CLOSING_LINE = (
+    "applied 1 relationship — graph updated, refresh the app · "
+    "next 'stitch build' will confirm them from the manifest"
+)
+
+
+def _graph_file(root, edges=(), without=()):
+    """Write a built graph carrying the models and columns the staged fixtures point at."""
+    nodes = []
+    for unique_id, columns in GRAPH_COLUMNS.items():
+        model = unique_id.rsplit(".", 1)[-1]
+        nodes.append(Node(node_id=unique_id, node_type=NodeType.MODEL, name=model))
+        nodes += [
+            Node(node_id=column_node_id(unique_id, column), node_type=NodeType.COLUMN, name=column)
+            for column in columns
+            if f"{model}.{column}" not in without
+        ]
+    path = Path(root) / ".stitch" / "graph.json"
+    graph = Graph(generated_at="2026-08-10T00:00:00+00:00", nodes=nodes, edges=list(edges))
+    write_graph(graph, path)
+    return path
+
+
+def _relates_to(path):
+    return [edge for edge in read_graph(path).edges if edge.edge_type is EdgeType.RELATES_TO]
+
+
+def _applied_edge(confidence=Confidence.VALIDATED, **evidence):
+    return Edge(
+        from_=ORDERS_FK,
+        to=CUSTOMERS_PK,
+        edge_type=EdgeType.RELATES_TO,
+        confidence=confidence,
+        evidence=evidence,
+    )
+
+
+def test_apply_patches_the_relationship_it_wrote_into_the_graph(repo, store):
+    graph_path = _graph_file(repo)
+    _stage(store, _entry())
+
+    result = _run("--yes")
+    assert result.exit_code == 0
+    assert CLOSING_LINE in result.output
+
+    edges = _relates_to(graph_path)
+    assert len(edges) == 1
+    assert (edges[0].from_, edges[0].to) == (ORDERS_FK, CUSTOMERS_PK)
+    assert edges[0].confidence == Confidence.VALIDATED
+    assert edges[0].evidence == {"source": "stitch apply", "write_to": "relationships_test"}
+
+
+def test_the_meta_form_patches_a_declared_edge_that_keeps_the_cardinality(repo, store):
+    (repo / "stitch.yml").write_text(CONFIG.replace("relationships_test", "meta"))
+    graph_path = _graph_file(repo)
+    _stage(store, _entry(cardinality="one-to-one"))
+
+    assert _run("--yes").exit_code == 0
+    edge = _relates_to(graph_path)[0]
+    assert edge.confidence == Confidence.DECLARED
+    assert edge.evidence == {
+        "source": "stitch apply",
+        "write_to": "meta",
+        "relationship_type": "one-to-one",
+    }
+
+
+def test_every_written_relationship_is_patched(repo, store):
+    graph_path = _graph_file(repo)
+    _stage(
+        store,
+        _entry(),
+        _entry(
+            from_model="fct_events",
+            from_column="user_id",
+            to_model="dim_users",
+            to_column="user_id",
+        ),
+    )
+
+    assert _run("--yes").exit_code == 0
+    assert {(edge.from_, edge.to) for edge in _relates_to(graph_path)} == {
+        (ORDERS_FK, CUSTOMERS_PK),
+        (
+            column_node_id("model.demo.fct_events", "user_id"),
+            column_node_id("model.demo.dim_users", "user_id"),
+        ),
+    }
+
+
+def test_patching_an_edge_the_graph_already_carries_is_a_no_op(repo, store):
+    graph_path = _graph_file(
+        repo, edges=[_applied_edge(confidence=Confidence.DECLARED, source="column_meta")]
+    )
+    before = graph_path.read_bytes()
+    _stage(store, _entry())
+
+    assert _run("--yes").exit_code == 0
+    # not rewritten at all: the next real build reconciles confidence from the manifest
+    assert graph_path.read_bytes() == before
+    assert len(_relates_to(graph_path)) == 1
+
+
+def test_a_second_apply_never_duplicates_the_edge(repo, store):
+    graph_path = _graph_file(repo)
+    _stage(store, _entry())
+    _run("--yes")
+    after_first = graph_path.read_bytes()
+
+    _stage(store, _entry())
+    assert _run("--yes").exit_code == 0
+    assert graph_path.read_bytes() == after_first
+    assert len(_relates_to(graph_path)) == 1
+
+
+def test_an_already_declared_relationship_still_reaches_a_stale_graph(repo, store):
+    _stage(store, _entry())
+    _run("--yes")  # writes the YAML; there is no graph yet
+    graph_path = _graph_file(repo)  # a graph that predates the declaration
+
+    _stage(store, _entry())
+    result = _run("--yes")
+    assert result.exit_code == 0
+    assert "cleared 1 already-declared entry" in result.output
+    assert "graph updated, refresh the app" in result.output
+    assert len(_relates_to(graph_path)) == 1
+
+
+def test_the_patched_graph_is_byte_identical_to_a_built_one(repo, store, tmp_path):
+    graph_path = _graph_file(repo)
+    _stage(store, _entry())
+    assert _run("--yes").exit_code == 0
+
+    reference = _graph_file(
+        tmp_path / "reference",
+        edges=[_applied_edge(source="stitch apply", write_to="relationships_test")],
+    )
+    assert graph_path.read_bytes() == reference.read_bytes()
+
+
+def test_no_graph_update_leaves_the_graph_alone(repo, store):
+    graph_path = _graph_file(repo)
+    before = graph_path.read_bytes()
+    _stage(store, _entry())
+
+    result = _run("--yes", "--no-graph-update")
+    assert result.exit_code == 0
+    assert "applied 1 relationship" in result.output
+    assert "graph updated" not in result.output
+    assert graph_path.read_bytes() == before
+
+
+def test_a_missing_graph_is_a_note_not_a_failure(repo, store):
+    _stage(store, _entry())
+    result = _run("--yes")
+    assert result.exit_code == 0
+    assert "no graph at" in result.output
+    assert "run 'stitch build'" in result.output
+    assert "graph updated" not in result.output
+    assert "- relationships:" in (repo / MARTS).read_text()
+
+
+def test_an_unparseable_graph_is_a_note_not_a_failure(repo, store):
+    graph_path = repo / ".stitch" / "graph.json"
+    graph_path.parent.mkdir(parents=True, exist_ok=True)
+    graph_path.write_text("{ not a graph")
+    _stage(store, _entry())
+
+    result = _run("--yes")
+    assert result.exit_code == 0
+    assert "does not parse" in result.output
+    assert "- relationships:" in (repo / MARTS).read_text()
+
+
+def test_a_relationship_whose_columns_are_not_in_the_graph_is_reported(repo, store):
+    graph_path = _graph_file(repo, without=("dim_customers.customer_id",))
+    _stage(store, _entry())
+
+    result = _run("--yes")
+    assert result.exit_code == 0
+    assert "not added to the graph" in result.output
+    assert "fct_orders.customer_id -> dim_customers.customer_id" in result.output
+    assert "graph updated" not in result.output
+    assert _relates_to(graph_path) == []
+
+
+def test_the_app_serves_the_patched_relationship(repo, store):
+    graph_path = _graph_file(repo)
+    _stage(store, _entry())
+    assert _run("--yes").exit_code == 0
+
+    server = create_app(graph_path, None, None, store, repo / ".stitch" / "layout.yml")
+    with TestClient(server) as client:
+        payload = client.get("/api/graph").json()
+    assert [edge for edge in payload["edges"] if edge["edge_type"] == "relates_to"] == [
+        {
+            "from": ORDERS_FK,
+            "to": CUSTOMERS_PK,
+            "edge_type": "relates_to",
+            "confidence": "validated",
+            "evidence": {"source": "stitch apply", "write_to": "relationships_test"},
+        }
+    ]
+
+
+# --- --build ------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def builds(monkeypatch):
+    """Record how apply invokes the build pipeline instead of running dbt and Metabase."""
+    calls = []
+    monkeypatch.setattr("stitch_lineage.cli._run_build", lambda **kwargs: calls.append(kwargs))
+    return calls
+
+
+def test_build_runs_the_standard_pipeline_after_applying(repo, store, builds):
+    _graph_file(repo)
+    _stage(store, _entry())
+
+    assert _run("--yes", "--build").exit_code == 0
+    assert len(builds) == 1
+    assert builds[0]["config"] == Path("stitch.yml")
+    # the standard build: Metabase side included, no --check, docs left to dbt.auto_docs
+    assert not builds[0].get("no_metabase")
+    assert not builds[0].get("check")
+    assert builds[0].get("docs") is None
+
+
+def test_apply_does_not_build_unless_asked(repo, store, builds):
+    _graph_file(repo)
+    _stage(store, _entry())
+    assert _run("--yes").exit_code == 0
+    assert builds == []
+
+
+def test_a_dry_run_never_builds(repo, store, builds):
+    _stage(store, _entry())
+    assert _run("--dry-run", "--build").exit_code == 0
+    assert builds == []
+
+
+def test_build_runs_even_when_everything_was_already_declared(repo, store, builds):
+    _stage(store, _entry())
+    _run("--yes")
+    _stage(store, _entry())
+
+    assert _run("--yes", "--build").exit_code == 0
+    assert len(builds) == 1

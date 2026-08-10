@@ -64,6 +64,7 @@ stitch suggest --json            # JSON lines for piping
 stitch apply                     # write staged relationships into model YAML (diff, then confirm)
 stitch apply --dry-run           # show the diff and stop
 stitch apply --yes               # skip the confirmation prompt
+stitch apply --build             # ... then reconcile the whole graph with a real build
 
 stitch doctor                    # config, artifacts, graph, Metabase connectivity
 stitch doctor --list-databases   # database names visible to the API key
@@ -112,6 +113,15 @@ The write is deliberately conservative:
 - **Never invents files.** The target comes from the manifest's `patch_path`; a model with no schema YAML is reported, not scaffolded.
 - **Respects your edits.** A target file with uncommitted changes is refused unless you pass `--force`.
 - **`relationships.write_to`** picks the written form: `relationships_test` (a dbt `relationships` test on the FK column) or `meta` (dbt-metabase interop keys, so FK sync into Metabase keeps working).
+
+What was applied is then patched into `.stitch/graph.json`, so the relationships are in the app on a refresh rather than after the next build:
+
+```
+wrote models/marts/_schema.yml
+applied 1 relationship — graph updated, refresh the app · next 'stitch build' will confirm them from the manifest
+```
+
+A `relationships` test lands as a validated edge and a meta declaration as a declared one — exactly what the next build reads back out of the manifest, which is why the patch is a preview of state your repo already contains and never an invention. `--no-graph-update` skips it; `--build` runs a full `stitch build` afterwards (`dbt docs generate` and all) when you want everything reconciled on the spot.
 
 Applied entries clear from the staging store; anything that could not be applied stays staged and is reported with the reason.
 

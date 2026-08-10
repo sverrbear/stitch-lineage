@@ -32,18 +32,32 @@ from stitch_lineage.graph.impact import (
     format_slack_comment,
     impact_from_graphs,
 )
-from stitch_lineage.graph.schema import Coverage, EdgeType, Graph, NodeType
+from stitch_lineage.graph.schema import (
+    Confidence,
+    Coverage,
+    Edge,
+    EdgeType,
+    Graph,
+    NodeType,
+    column_node_id,
+)
 from stitch_lineage.graph.scopes import erd_scopes
 from stitch_lineage.graph.search import search as search_graph
 from stitch_lineage.graph.suggest import Suggestion
 from stitch_lineage.graph.suggest import suggest as suggest_relationships
 from stitch_lineage.io.artifacts import StitchArtifactError, load_catalog, load_manifest
 from stitch_lineage.io.dbt_runner import StitchDbtRunnerError, run_docs_generate
-from stitch_lineage.io.graph_store import graphs_semantically_equal, read_graph, write_graph
+from stitch_lineage.io.graph_store import (
+    graphs_semantically_equal,
+    merge_edges,
+    read_graph,
+    write_graph,
+)
 from stitch_lineage.io.layout_store import LAYOUT_FILENAME, LayoutStoreError, read_dismissed
 from stitch_lineage.io.metabase_client import MetabaseAPIError, MetabaseClient
 from stitch_lineage.io.staged_store import (
     STAGED_FILENAME,
+    StagedRelationship,
     StagedStoreError,
     drop_staged,
     read_staged,
@@ -331,6 +345,21 @@ def build(
     ] = None,
 ) -> None:
     """Resolve dbt artifacts and the Metabase API into .stitch/graph.json."""
+    _run_build(config=config, no_metabase=no_metabase, check=check, docs=docs)
+
+
+def _run_build(
+    *,
+    config: Path | None,
+    no_metabase: bool = False,
+    check: bool = False,
+    docs: bool | None = None,
+) -> None:
+    """The build pipeline itself, so `stitch apply --build` runs it instead of half of it.
+
+    Same semantics as the command in every respect -- `docs=None` means "honour
+    dbt.auto_docs" -- because it IS the command's body.
+    """
     config = _resolve_config(config)
     cfg = _load_config_or_fail(config)
     if not no_metabase:
@@ -889,6 +918,121 @@ def _git_dirty(path: Path) -> bool:
     return bool(result.stdout.strip())
 
 
+def _model_node_ids(graph: Graph) -> dict[str, str]:
+    """Model name (lowercased) -> node id. Ambiguous names are dropped, as in the writer."""
+    ids: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for node in graph.nodes:
+        if node.node_type is not NodeType.MODEL:
+            continue
+        name = node.name.lower()
+        if name in ids:
+            ambiguous.add(name)
+        ids[name] = node.node_id
+    for name in ambiguous:
+        ids.pop(name, None)
+    return ids
+
+
+def _applied_relates_to_edges(
+    graph: Graph, entries: list[StagedRelationship], write_to: str
+) -> tuple[list[Edge], list[str]]:
+    """The `relates_to` edges for relationships apply just materialized, and what it skipped.
+
+    Confidence mirrors the form that was written, so the patch shows what the next build will
+    read back: a `relationships` test is validated, a meta declaration is declared. An edge is
+    skipped when either endpoint is not a column node in this graph -- exactly the case the
+    resolver reports as a dangling relationship -- because inventing the nodes would put
+    something in the graph the repo does not contain.
+    """
+    models = _model_node_ids(graph)
+    columns = {node.node_id for node in graph.nodes if node.node_type is NodeType.COLUMN}
+    confidence = Confidence.VALIDATED if write_to == "relationships_test" else Confidence.DECLARED
+    edges: list[Edge] = []
+    skipped: list[str] = []
+    for entry in entries:
+        from_model = models.get(entry.from_model.lower())
+        to_model = models.get(entry.to_model.lower())
+        from_id = column_node_id(from_model, entry.from_column) if from_model else None
+        to_id = column_node_id(to_model, entry.to_column) if to_model else None
+        if from_id not in columns or to_id not in columns:
+            skipped.append(entry.label)
+            continue
+        evidence: dict[str, Any] = {"source": "stitch apply", "write_to": write_to}
+        if write_to == "meta":
+            evidence["relationship_type"] = entry.cardinality
+        edges.append(
+            Edge(
+                from_=from_id,
+                to=to_id,
+                edge_type=EdgeType.RELATES_TO,
+                confidence=confidence,
+                evidence=evidence,
+            )
+        )
+    return edges, skipped
+
+
+_GRAPH_PATCHED = (
+    "graph updated, refresh the app · next 'stitch build' will confirm them from the manifest"
+)
+
+
+def _applied_relationships(plan: WritePlan, paths: set[Path]) -> list[StagedRelationship]:
+    """The staged entries whose declaration is in the repo once `paths` have been written.
+
+    Exactly the set that clears from the staging store (WritePlan.ids_for), so the graph patch
+    and the store can never disagree about what was applied.
+    """
+    ids = plan.ids_for(paths)
+    return [result.entry for result in plan.results if result.entry.id in ids]
+
+
+def _patch_graph(graph_path: Path, entries: list[StagedRelationship], write_to: str) -> bool:
+    """Inject the applied relationships into graph.json so the app shows them on refresh.
+
+    Returns whether the graph now carries them (False means it was left alone and the caller
+    should not promise an updated graph). A rebuild inside apply is the wrong tool: `dbt parse`
+    drops compiled SQL (column lineage would crater) and `dbt docs generate` hits the warehouse
+    -- `--build` exists for users who want that. The next real build reconciles the patch from
+    the manifest, which already contains the declaration apply just wrote.
+
+    The previous-build snapshot is deliberately untouched: a `relates_to` edge is excluded from
+    impact traversal, so a patch has no blast radius to report, and overwriting the snapshot
+    would throw away the answer to "what did my last build change".
+    """
+    if not graph_path.is_file():
+        console.print(
+            f"note: no graph at {graph_path} to update -- run 'stitch build' to see these "
+            "relationships in the app",
+            soft_wrap=True,
+        )
+        return False
+    try:
+        graph = read_graph(graph_path)
+    except ValueError as exc:
+        console.print(
+            f"note: {graph_path} does not parse ({exc}) -- run 'stitch build' to rebuild it",
+            soft_wrap=True,
+        )
+        return False
+    edges, skipped = _applied_relates_to_edges(graph, entries, write_to)
+    if skipped:
+        console.print(
+            f"note: {len(skipped)} applied relationship{'s' if len(skipped) != 1 else ''} "
+            f"not added to the graph -- {'their' if len(skipped) != 1 else 'its'} columns are "
+            "not in it yet; the next 'stitch build' picks them up",
+            soft_wrap=True,
+        )
+        for label in skipped:
+            console.print(f"    {label}", soft_wrap=True)
+    if not edges:
+        return False
+    if merge_edges(graph, edges):
+        write_graph(graph, graph_path)
+    return True
+
+
 def _report_plan(plan: WritePlan, root: Path) -> None:
     for result in plan.unchanged:
         console.print(f"skip  {result.entry.label} -- {result.message}", soft_wrap=True)
@@ -913,6 +1057,17 @@ def apply(
         bool,
         typer.Option("--force", help="Write even when a target schema file has uncommitted edits."),
     ] = False,
+    no_graph_update: Annotated[
+        bool,
+        typer.Option("--no-graph-update", help="Do not patch the applied edges into graph.json."),
+    ] = False,
+    build_after: Annotated[
+        bool,
+        typer.Option(
+            "--build",
+            help="Run a full 'stitch build' afterwards (ignored with --dry-run).",
+        ),
+    ] = False,
     config: ConfigOpt = None,
 ) -> None:
     """Materialize staged relationships into model YAML (diff preview, then confirm).
@@ -921,6 +1076,11 @@ def apply(
     and writes each one onto the FK column in the owning model's schema file, in the form
     chosen by relationships.write_to. Applied entries clear from the store; entries that
     could not be applied stay staged and are reported.
+
+    What was applied is then patched into .stitch/graph.json as `relates_to` edges, so the
+    app shows the new relationships on a refresh instead of after the next build
+    (--no-graph-update opts out). --build reconciles the whole graph from the manifest
+    instead, docs generate and all.
 
     Exit codes: 0 applied or nothing to do, 1 on any refusal or error.
     """
@@ -991,18 +1151,29 @@ def apply(
         if dirty and not edits:
             raise typer.Exit(code=1)
 
+    graph_path = _output_dir(config, cfg) / "graph.json"
     cleared = plan.ids_for({edit.path for edit in edits})
     if not edits:
-        if cleared:
+        if not cleared:
+            console.print("nothing to write")
+        else:
             drop_staged(cleared, staged)
             console.print(
                 f"cleared {len(cleared)} already-declared entr"
                 f"{'ies' if len(cleared) != 1 else 'y'} from {staged}",
                 soft_wrap=True,
             )
+            # these left the staging store, so the ERD drops their staged edge -- patch them in
+            # as declared ones or the relationship disappears from the app until a rebuild
+            if not no_graph_update and _patch_graph(
+                graph_path, _applied_relationships(plan, set()), cfg.relationships.write_to
+            ):
+                console.print(_GRAPH_PATCHED, soft_wrap=True)
+        if build_after:
+            console.print()
+            _run_build(config=config)
         if plan.failures:
             raise typer.Exit(code=1)
-        console.print("nothing to write")
         return
 
     if not yes and not typer.confirm(f"apply to {len(edits)} file(s)?", default=False):
@@ -1013,11 +1184,24 @@ def apply(
     drop_staged(cleared, staged)
     for path in written:
         console.print(f"wrote {path}", soft_wrap=True)
-    console.print(
-        f"applied {len(cleared)} relationship{'s' if len(cleared) != 1 else ''}; "
-        f"{len(read_staged(staged))} still staged",
-        soft_wrap=True,
+
+    still_staged = len(read_staged(staged))
+    if still_staged:
+        console.print(
+            f"{still_staged} relationship{'s' if still_staged != 1 else ''} still staged",
+            soft_wrap=True,
+        )
+    applied = f"applied {len(cleared)} relationship{'s' if len(cleared) != 1 else ''}"
+    patched = not no_graph_update and _patch_graph(
+        graph_path,
+        _applied_relationships(plan, {edit.path for edit in edits}),
+        cfg.relationships.write_to,
     )
+    console.print(f"{applied} — {_GRAPH_PATCHED}" if patched else applied, soft_wrap=True)
+
+    if build_after:
+        console.print()
+        _run_build(config=config)
     if plan.failures or len(edits) != len(plan.edits):
         raise typer.Exit(code=1)
 
