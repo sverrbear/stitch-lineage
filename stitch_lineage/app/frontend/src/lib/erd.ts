@@ -496,10 +496,16 @@ export function erdClickHref(nodeId: string, modifiers: { metaKey?: boolean; ctr
  * points at gets `1`, exactly as a model view draws it. Declared `relates_to`
  * edges carry no cardinality in the graph, so they read as the overwhelmingly
  * common many-to-one; a staged declaration says what it is.
+ *
+ * These are marker IDS, not `url(#…)` references: React Flow builds the reference
+ * itself, and handing it a finished one produced `url('#url(#erd-card-one)')` —
+ * an SVG reference to nothing, which is why no glyph has been drawn on a canvas
+ * since they were added. #100 needs them: with an edge free to leave a card on
+ * any side, the glyphs are what carries the direction of the relationship.
  */
 export function cardinalityMarkers(cardinality?: string | null): { start: string; end: string } {
-  const one = 'url(#erd-card-one)'
-  const many = 'url(#erd-card-many)'
+  const one = 'erd-card-one'
+  const many = 'erd-card-many'
   switch ((cardinality ?? '').toLowerCase()) {
     case 'one-to-many':
       return { start: one, end: many }

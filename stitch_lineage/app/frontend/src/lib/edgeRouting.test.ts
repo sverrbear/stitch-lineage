@@ -27,6 +27,16 @@ function leftOf(rect: RoutingRect, at = 0.33) {
   return { x: rect.x, y: rect.y + rect.height * at, side: 'left' as const }
 }
 
+/** An anchor on the card's bottom border, a third of the way across (#100). */
+function bottomOf(rect: RoutingRect, at = 0.33) {
+  return { x: rect.x + rect.width * at, y: rect.y + rect.height, side: 'bottom' as const }
+}
+
+/** An anchor on the card's top border. */
+function topOf(rect: RoutingRect, at = 0.33) {
+  return { x: rect.x + rect.width * at, y: rect.y, side: 'top' as const }
+}
+
 function bends(points: Array<{ x: number; y: number }>): number {
   return Math.max(0, simplify(points).length - 2)
 }
@@ -171,6 +181,48 @@ describe('routeEdge — obstacle avoidance', () => {
     const first = routeEdge(rightOf(source), leftOf(target), walls, { soft: [source, target] })
     const second = routeEdge(rightOf(source), leftOf(target), walls, { soft: [source, target] })
     expect(second).toEqual(first)
+  })
+
+  it('runs straight down between two stacked cards', () => {
+    const source = card('a', 0, 0)
+    const target = card('b', 0, 700)
+    const path = routeEdge(bottomOf(source), topOf(target), [], { soft: [source, target] })
+    expect(bends(path)).toBe(0)
+    expect(polylineLength(path)).toBeCloseTo(500, 0)
+  })
+
+  it('leaves a vertical anchor along its own normal, never back into its card', () => {
+    // the guard the horizontal sides always had, now for top and bottom (#100)
+    const source = card('a', 0, 700)
+    const target = card('b', 0, 0)
+    const wall = card('wall', -40, 380, 380, 120)
+    const path = routeEdge(topOf(source), bottomOf(target), [wall], { soft: [source, target] })
+    expect(pathHitsRects(path, [wall, source, target])).toEqual([])
+    // the first step out of the card goes UP, away from the card it left
+    expect(path[1].y).toBeLessThan(path[0].y)
+  })
+
+  it('routes a mixed pair — one end sideways, the other downwards', () => {
+    const source = card('a', 0, 0)
+    const target = card('b', 700, 600)
+    const wall = card('wall', 360, 260)
+    const path = routeEdge(rightOf(source), topOf(target), [wall], { soft: [source, target] })
+    expect(pathHitsRects(path, [wall, source, target])).toEqual([])
+    // ...and arrives at the top border from above
+    expect(path[path.length - 2].y).toBeLessThan(path[path.length - 1].y)
+  })
+
+  it('avoids a field of cards on a vertical pair too', () => {
+    const source = card('a', 500, 0)
+    const target = card('b', 500, 1800)
+    const field: RoutingRect[] = []
+    for (let column = 0; column < 3; column++) {
+      for (let row = 0; row < 3; row++) {
+        field.push(card(`f${column}${row}`, 180 + column * 400, 420 + row * 300))
+      }
+    }
+    const path = routeEdge(bottomOf(source), topOf(target), field, { soft: [source, target] })
+    expect(pathHitsRects(path, field)).toEqual([])
   })
 
   it('honours a bounded search rather than stalling on a dense scope', () => {

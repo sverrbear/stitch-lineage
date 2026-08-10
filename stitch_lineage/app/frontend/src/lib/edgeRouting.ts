@@ -35,11 +35,28 @@ export interface RoutingRect {
   height: number
 }
 
-/** Which edge of its card a handle sits on — the route leaves along that axis. */
-export type AnchorSide = 'left' | 'right'
+/**
+ * Which edge of its card an anchor sits on — the route leaves along that side's
+ * outward normal. All four are usable; which one an edge end takes is decided per
+ * pair (see lib/edgeAnchors, #100), not fixed by the direction of the join.
+ */
+export type AnchorSide = 'left' | 'right' | 'top' | 'bottom'
 
 export interface RoutingAnchor extends Point {
   side: AnchorSide
+}
+
+/** The direction a route must set off in from a given side. */
+export function outwardOf(side: AnchorSide): Point {
+  if (side === 'left') return { x: -1, y: 0 }
+  if (side === 'right') return { x: 1, y: 0 }
+  if (side === 'top') return { x: 0, y: -1 }
+  return { x: 0, y: 1 }
+}
+
+/** Top and bottom anchors leave vertically; left and right horizontally. */
+export function isVerticalSide(side: AnchorSide): boolean {
+  return side === 'top' || side === 'bottom'
 }
 
 export interface RouteOptions {
@@ -61,9 +78,18 @@ export interface RouteOptions {
   maxExpansions?: number
 }
 
+/** Straight run out of an anchor before a route may turn. Shared with lib/edgeAnchors,
+ *  which has to know it to price a side pair by the run between the two stub points. */
+export const DEFAULT_STUB = 18
+
+/** Clearance kept around every card. Shared with lib/edgeAnchors for the same reason
+ *  as the stub: it prices a side pair by whether a card already blocks the run, and
+ *  a clearance that disagrees with the router's would price a route it cannot draw. */
+export const DEFAULT_MARGIN = 12
+
 const DEFAULTS = {
-  margin: 12,
-  stub: 18,
+  margin: DEFAULT_MARGIN,
+  stub: DEFAULT_STUB,
   turnPenalty: 34,
   detour: 280,
   maxGridLines: 56,
@@ -322,8 +348,19 @@ const HORIZONTAL = 0
 const VERTICAL = 1
 const UNSET = 2
 
-function stubPoint(anchor: RoutingAnchor, stub: number): Point {
-  return { x: anchor.x + (anchor.side === 'right' ? stub : -stub), y: anchor.y }
+/** Which of the grid's two axes a side's route runs along as it leaves the card. */
+function axisOf(side: AnchorSide): number {
+  return isVerticalSide(side) ? VERTICAL : HORIZONTAL
+}
+
+/** +1 when a side's normal points along the axis, -1 when against it. */
+function outwardSign(side: AnchorSide): number {
+  return side === 'right' || side === 'bottom' ? 1 : -1
+}
+
+export function stubPoint(anchor: RoutingAnchor, stub: number): Point {
+  const out = outwardOf(anchor.side)
+  return { x: anchor.x + out.x * stub, y: anchor.y + out.y * stub }
 }
 
 /**
@@ -401,9 +438,31 @@ export function routeEdge(
     if (path) return simplify([from, start, ...path, end, to])
   }
 
-  // Nothing got through: draw the old orthogonal step rather than no edge at all.
+  // Nothing got through: draw a plain orthogonal step rather than no edge at all.
+  // It has to respect both ends' normals, so a vertical anchor doglegs in y and a
+  // mixed pair turns once, at the corner the two stubs share.
+  return simplify([from, start, ...dogleg(start, end, from.side, to.side), end, to])
+}
+
+/** The corners of a two-turn step between two stub points, given both normals. */
+function dogleg(start: Point, end: Point, fromSide: AnchorSide, toSide: AnchorSide): Point[] {
+  const fromVertical = isVerticalSide(fromSide)
+  if (fromVertical !== isVerticalSide(toSide)) {
+    // one leaves sideways and the other up or down: they meet at a single corner
+    return fromVertical ? [{ x: start.x, y: end.y }] : [{ x: end.x, y: start.y }]
+  }
+  if (fromVertical) {
+    const middle = (start.y + end.y) / 2
+    return [
+      { x: start.x, y: middle },
+      { x: end.x, y: middle },
+    ]
+  }
   const middle = (start.x + end.x) / 2
-  return simplify([from, start, { x: middle, y: start.y }, { x: middle, y: end.y }, end, to])
+  return [
+    { x: middle, y: start.y },
+    { x: middle, y: end.y },
+  ]
 }
 
 function search(
@@ -497,17 +556,13 @@ function search(
       const ny = iy + dy
       if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue
       const moveDir = dx === 0 ? VERTICAL : HORIZONTAL
-      // The stub already committed to leaving sideways: turning straight back
-      // would run the line through its own card.
-      if (dir === UNSET && moveDir === HORIZONTAL) {
-        if (fromSide === 'right' && dx < 0) continue
-        if (fromSide === 'left' && dx > 0) continue
-      }
-      // ...and the far end has to be approached from the side its handle faces.
-      if (cell(nx, ny) === goal && moveDir === HORIZONTAL) {
-        if (toSide === 'left' && dx < 0) continue
-        if (toSide === 'right' && dx > 0) continue
-      }
+      const along = moveDir === HORIZONTAL ? dx : dy
+      // The stub already committed to leaving along its side's normal: turning
+      // straight back would run the line through its own card.
+      if (dir === UNSET && moveDir === axisOf(fromSide) && along !== outwardSign(fromSide)) continue
+      // ...and the far end has to be approached from the side its anchor faces.
+      if (cell(nx, ny) === goal && moveDir === axisOf(toSide) && along === outwardSign(toSide))
+        continue
       const next = point(nx, ny)
       const key =
         moveDir === HORIZONTAL
