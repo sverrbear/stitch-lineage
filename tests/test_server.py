@@ -54,6 +54,7 @@ def test_api_meta_shape(client, sample_graph):
         "erd_default_scope": None,
         "strip_model_prefixes": [],
         "staging_enabled": False,
+        "apply_enabled": False,
     }
 
 
