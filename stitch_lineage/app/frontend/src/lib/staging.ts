@@ -148,3 +148,30 @@ export function groupStagedByTarget(entries: StagedRelationship[]): StagedGroup[
   groups.sort((a, b) => b.entries.length - a.entries.length || a.target.localeCompare(b.target))
   return groups
 }
+
+export interface RelationshipShape {
+  fromModel: string
+  fromColumn: string
+  toModel: string
+  toColumn: string
+  cardinality: string
+}
+
+/**
+ * The declaration in plain English (#73). Cardinality is the one thing people
+ * reliably get backwards, and "many-to-one" does not tell you which end is
+ * which — a sentence with the real names does, which makes drawing the
+ * relationship the wrong way round obvious before it is staged.
+ */
+export function cardinalitySentence(shape: RelationshipShape): string {
+  const from = `${shape.fromModel}.${shape.fromColumn}`
+  const to = `${shape.toModel}.${shape.toColumn}`
+  switch (shape.cardinality) {
+    case 'one-to-many':
+      return `One ${from} can have many matching rows in ${shape.toModel}.`
+    case 'one-to-one':
+      return `Each ${from} matches at most one row in ${shape.toModel} (and the other way round).`
+    default:
+      return `One ${to} can have many matching rows in ${shape.fromModel}.`
+  }
+}

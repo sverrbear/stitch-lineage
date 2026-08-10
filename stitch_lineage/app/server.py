@@ -234,6 +234,7 @@ def create_app(
     layout_path: Path | None = None,
     descriptions_path: Path | None = None,
     apply_context: apply_service.ApplyContext | None = None,
+    strip_model_prefixes: list[str] | None = None,
 ) -> FastAPI:
     """Build the local app serving `graph_path`; `metabase_url` powers card deep links.
 
@@ -275,6 +276,7 @@ def create_app(
                 "generated_at": graph.generated_at,
                 "schema_version": graph.schema_version,
                 "erd_default_scope": erd_default_scope,
+                "strip_model_prefixes": list(strip_model_prefixes or []),
                 "staging_enabled": staged_path is not None,
                 "apply_enabled": apply_context is not None,
             }

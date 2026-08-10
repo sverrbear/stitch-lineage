@@ -6,7 +6,7 @@
 import Fuse from 'fuse.js'
 import type { GraphNode, NodeType } from '../types'
 import { type GraphIndex, idTail } from './graph'
-import { nodeContext } from './present'
+import { displayName, nodeContext } from './present'
 
 export interface SearchHit {
   node: GraphNode
@@ -19,6 +19,8 @@ export interface SearchHit {
 }
 
 interface SearchDoc {
+  /** The name as shown, which may hide a routing prefix (#69). */
+  display: string
   node: GraphNode
   name: string
   tail: string
@@ -77,15 +79,18 @@ export class GraphSearch {
   constructor(index: GraphIndex) {
     this.index = index
     // Search real graph nodes only, not synthesized placeholders.
+    // A model indexed under BOTH spellings: `viz_dim_users` still finds it when
+    // the app is displaying it as `dim_users`, and so does `dim_users` (#69).
     this.docs = index.graph.nodes.map((node) => ({
       node,
       name: node.name.toLowerCase(),
+      display: displayName(node).toLowerCase(),
       tail: idTail(node.node_id).toLowerCase(),
       description: (node.description ?? '').toLowerCase(),
       extras: extrasOf(node),
     }))
     this.fuse = new Fuse(this.docs, {
-      keys: ['name', 'tail'],
+      keys: ['name', 'display', 'tail'],
       includeScore: true,
       threshold: 0.4,
       ignoreLocation: true,
@@ -131,10 +136,10 @@ export class GraphSearch {
 
   private matchDoc(doc: SearchDoc, needle: string): SearchHit | null {
     const base = { node: doc.node, context: nodeContext(this.index, doc.node) }
-    if (doc.name === needle || doc.tail === needle) {
+    if ((doc.name === needle || doc.display === needle) || doc.tail === needle) {
       return { ...base, tier: 5, score: 5, matchedField: 'name' }
     }
-    if (doc.name.startsWith(needle) || doc.tail.startsWith(needle)) {
+    if ((doc.name.startsWith(needle) || doc.display.startsWith(needle)) || doc.tail.startsWith(needle)) {
       return { ...base, tier: 4, score: 4, matchedField: 'name' }
     }
     if (startsWord(doc.name, needle)) {

@@ -1,8 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { fixtureGraph } from './fixture'
 import { buildIndex } from './graph'
 import {
   displayName,
+  strippedPrefixes,
+  setStripModelPrefixes,
+  hasHiddenPrefix,
+  fullName,
   isPlaceholder,
   metabaseRelation,
   nodeContext,
@@ -89,5 +93,47 @@ describe('packageOf', () => {
     expect(packageOf('model.smitten.fct_matches::user_id')).toBe('smitten')
     expect(packageOf('source.demo.app.events')).toBe('demo')
     expect(packageOf('mb_card::412')).toBeNull()
+  })
+})
+
+describe('routing prefixes hidden from display names (#69)', () => {
+  const model = (name: string, type: 'model' | 'source' = 'model'): GraphNode => ({
+    node_id: `model.demo.${name}`,
+    node_type: type,
+    name,
+    properties: {},
+  })
+
+  afterEach(() => setStripModelPrefixes([]))
+
+  it('hides a configured prefix from the display name only', () => {
+    setStripModelPrefixes(['viz_', 'sv_'])
+    const node = model('viz_dim_users')
+    expect(displayName(node)).toBe('dim_users')
+    expect(fullName(node)).toBe('viz_dim_users')
+    expect(node.node_id).toBe('model.demo.viz_dim_users')
+    expect(hasHiddenPrefix(node)).toBe(true)
+  })
+
+  it('leaves names alone when nothing is configured', () => {
+    expect(displayName(model('viz_dim_users'))).toBe('viz_dim_users')
+    expect(hasHiddenPrefix(model('viz_dim_users'))).toBe(false)
+  })
+
+  it('never strips a name down to nothing, and ignores blank config', () => {
+    setStripModelPrefixes(['viz_', '  '])
+    expect(displayName(model('viz_'))).toBe('viz_')
+    expect(strippedPrefixes()).toEqual(['viz_'])
+  })
+
+  it('only applies to models and sources, never to columns or BI entities', () => {
+    setStripModelPrefixes(['viz_'])
+    const column: GraphNode = {
+      node_id: 'model.demo.viz_dim_users::viz_id',
+      node_type: 'column',
+      name: 'viz_id',
+      properties: {},
+    }
+    expect(displayName(column)).toBe('viz_id')
   })
 })

@@ -9,6 +9,7 @@ const DEFAULT_META: StitchMeta = {
   generated_at: null,
   schema_version: 1,
   erd_default_scope: null,
+  strip_model_prefixes: [],
 }
 
 async function fetchJson<T>(url: string): Promise<T> {

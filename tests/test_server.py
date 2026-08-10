@@ -52,6 +52,7 @@ def test_api_meta_shape(client, sample_graph):
         "generated_at": sample_graph.generated_at,
         "schema_version": sample_graph.schema_version,
         "erd_default_scope": None,
+        "strip_model_prefixes": [],
         "staging_enabled": False,
         "apply_enabled": False,
     }
@@ -103,3 +104,10 @@ def test_unparseable_graph_returns_503(tmp_path):
     response = TestClient(create_app(path, None)).get("/api/graph")
     assert response.status_code == 503
     assert "does not parse" in response.json()["detail"]
+
+
+def test_api_meta_carries_the_configured_display_prefixes(graph_path):
+    """serve.strip_model_prefixes reaches the app -- it is display-only, so the
+    graph keeps the real dbt names and only /api/meta says what to hide."""
+    client = TestClient(create_app(graph_path, None, strip_model_prefixes=["viz_", "sv_"]))
+    assert client.get("/api/meta").json()["strip_model_prefixes"] == ["viz_", "sv_"]

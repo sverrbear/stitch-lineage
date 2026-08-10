@@ -154,6 +154,13 @@ def _erd_default_scope(config: Path) -> str | None:
     return _load_config_or_fail(config).serve.erd_default_scope
 
 
+def _strip_model_prefixes(config: Path) -> list[str]:
+    """Routing prefixes the app hides from model display names (serve.strip_model_prefixes)."""
+    if not config.is_file():
+        return []
+    return _load_config_or_fail(config).serve.strip_model_prefixes
+
+
 def _warn_unknown_erd_scope(scope: str | None, graph_path: Path) -> None:
     """Whether the scope exists is a property of the graph, so it is checked here
     rather than at config load. The app still opens -- on its auto-picked scope."""
@@ -872,7 +879,13 @@ def export(
         try:
             scope = _erd_default_scope(config)
             _warn_unknown_erd_scope(scope, graph_path)
-            site_dir = export_site(graph_path, out, _metabase_url(config), scope)
+            site_dir = export_site(
+                graph_path,
+                out,
+                _metabase_url(config),
+                scope,
+                strip_model_prefixes=_strip_model_prefixes(config),
+            )
         except (StitchAppError, ValueError) as exc:
             _fail(str(exc))
         console.print(
@@ -1164,7 +1177,14 @@ def serve(
     )
     try:
         server = create_app(
-            graph_path, _metabase_url(config), scope, staged, layout, descriptions, context
+            graph_path,
+            _metabase_url(config),
+            scope,
+            staged,
+            layout,
+            descriptions,
+            context,
+            strip_model_prefixes=_strip_model_prefixes(config),
         )
     except StitchAppError as exc:
         _fail(str(exc))
