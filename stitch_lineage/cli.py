@@ -30,9 +30,13 @@ from stitch_lineage.export.jsonl import export_jsonl
 from stitch_lineage.export.static_site import export_site
 from stitch_lineage.graph.dead import dead_report, format_dead_report
 from stitch_lineage.graph.impact import (
+    ColumnLookup,
+    column_blast_radius,
+    format_blast_radius,
     format_github_comment,
     format_slack_comment,
     impact_from_graphs,
+    resolve_column_ref,
 )
 from stitch_lineage.graph.schema import (
     Coverage,
@@ -692,12 +696,61 @@ def _plain_text(comment: str) -> str:
     return "\n".join(lines)
 
 
+def _fail_column_lookup(lookup: ColumnLookup, graph_path: Path) -> NoReturn:
+    """Turn a failed column lookup into an actionable error (issue #86)."""
+    if lookup.candidates:
+        console.print(
+            f"[red]error:[/red] '{lookup.query}' matches {len(lookup.candidates)} columns "
+            "-- qualify it as model.column:"
+        )
+        for candidate in lookup.candidates:
+            console.print(f"  {candidate.label}")
+        raise typer.Exit(code=1)
+
+    if lookup.matched_model:
+        console.print(
+            f"[red]error:[/red] '{lookup.query}' is a model, not a column "
+            "-- name one of its columns:"
+        )
+    else:
+        console.print(f"[red]error:[/red] no column matching '{lookup.query}' in {graph_path}")
+    if lookup.suggestions:
+        if not lookup.matched_model:
+            console.print("  did you mean:")
+        for suggestion in lookup.suggestions:
+            console.print(f"  {suggestion.label}  [dim]({suggestion.node_type.value})[/dim]")
+    console.print(f"  [dim]try 'stitch search {lookup.query}' for a full search.[/dim]")
+    raise typer.Exit(code=1)
+
+
+def _impact_column(graph: Graph, graph_path: Path, query: str, json_output: bool) -> None:
+    lookup = resolve_column_ref(graph, query)
+    if lookup.node_id is None:
+        _fail_column_lookup(lookup, graph_path)
+    radius = column_blast_radius(graph, lookup.node_id)
+    if json_output:
+        typer.echo(json.dumps(radius.model_dump(mode="json"), sort_keys=True))
+        return
+    typer.echo(format_blast_radius(radius))
+
+
 @app.command(hidden=True)
 def impact(
     base: Annotated[
         str,
         typer.Option("--base", help="Git ref whose committed graph.json is the baseline."),
     ] = "origin/main",
+    column: Annotated[
+        str | None,
+        typer.Option(
+            "--column",
+            help="Blast radius for one column ('model.column' or a node id) over the "
+            "current graph -- no baseline needed.",
+        ),
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit the --column blast radius as JSON.")
+    ] = False,
     output_format: Annotated[
         str,
         typer.Option("--format", help="Output format: text, github-comment or slack."),
@@ -718,11 +771,22 @@ def impact(
     committed on the ref. The baseline used is printed to stderr.
 
     Shelved pending the committed-baseline workflow; invoke directly if you keep your own baselines.
+
+    --column skips the diff entirely: it walks the current graph.json downstream from one
+    column and prints the blast radius, so "what would a change here break" can be asked
+    before the edit. That path needs no baseline, no git and no Metabase credentials.
     """
     config = _resolve_config(config)
     if output_format not in ("text", "github-comment", "slack"):
         _fail(f"unsupported --format '{output_format}' (expected: text, github-comment, slack)")
     graph_path = _graph_path(config)
+    if column is not None:
+        if output_format != "text":
+            _fail(f"--format {output_format} is for the diff path; use --json with --column")
+        _impact_column(_read_graph_or_fail(graph_path), graph_path, column, json_output)
+        return
+    if json_output:
+        _fail("--json requires --column; the diff path uses --format github-comment or slack")
     candidate = _read_graph_or_fail(graph_path)
     baseline = _baseline_graph(base, graph_path)
     diff, report = impact_from_graphs(baseline, candidate)
