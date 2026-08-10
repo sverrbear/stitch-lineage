@@ -43,6 +43,7 @@ from stitch_lineage.graph.scopes import erd_scopes
 from stitch_lineage.graph.search import search as search_graph
 from stitch_lineage.graph.suggest import Suggestion
 from stitch_lineage.graph.suggest import suggest as suggest_relationships
+from stitch_lineage.init_wizard import ConsolePrompter, StitchInitError, run_init
 from stitch_lineage.io.artifacts import StitchArtifactError, load_catalog, load_manifest
 from stitch_lineage.io.dbt_runner import StitchDbtRunnerError, run_docs_generate
 from stitch_lineage.io.graph_store import (
@@ -1147,13 +1148,24 @@ def apply(
 
 
 @app.command()
-def init() -> None:
-    """Set up stitch.yml interactively."""
-    console.print(
-        "stitch init is not implemented until Phase 1 -- "
-        "copy the stitch.yml example from SPEC.md section 6.1 for now."
-    )
-    raise typer.Exit(code=2)
+def init(
+    force: Annotated[
+        bool, typer.Option("--force", help="Overwrite an existing stitch.yml without asking.")
+    ] = False,
+) -> None:
+    """Set up stitch.yml: derive everything dbt knows, ask only the unknowables.
+
+    Reads dbt_project.yml and target/manifest.json for the project, databases, schemas and
+    model inventory, asks for the Metabase URL and API key, proposes the database mapping
+    and include_schemas, writes stitch.yml plus a .env.example line and a .gitignore entry,
+    and finishes with a mini-doctor. The API key is never written anywhere.
+    """
+    try:
+        result = run_init(start_dir=Path.cwd(), prompter=ConsolePrompter(console), force=force)
+    except StitchInitError as exc:
+        _fail(str(exc))
+    if not result.healthy:
+        raise typer.Exit(code=1)
 
 
 def _open_browser_soon(url: str) -> None:
