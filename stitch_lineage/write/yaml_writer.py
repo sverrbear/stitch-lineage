@@ -26,9 +26,10 @@ from typing import Any, Literal
 
 from ruamel.yaml import YAML, YAMLError
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.scalarstring import LiteralScalarString
 
 from stitch_lineage.config import RelationshipsConfig
-from stitch_lineage.io.staged_store import StagedRelationship
+from stitch_lineage.io.staged_store import StagedChange, StagedDescription, StagedRelationship
 
 __all__ = [
     "EntryResult",
@@ -82,15 +83,15 @@ class FileEdit:
 
 @dataclass(frozen=True)
 class EntryResult:
-    """What planning decided about one staged entry.
+    """What planning decided about one staged change.
 
     planned   -- the edit is in the plan and the entry clears from the store once written
-    unchanged -- the declaration is already in the repo; nothing to write, entry clears
+    unchanged -- the repo already says this; nothing to write, entry clears
     failed    -- unappliable (no schema file, unknown model, conflicting declaration); the
                  entry stays staged and the message says why
     """
 
-    entry: StagedRelationship
+    entry: StagedChange
     status: EntryStatus
     path: Path | None = None
     message: str | None = None
@@ -128,15 +129,16 @@ class WritePlan:
 
 
 def plan_writes(
-    entries: list[StagedRelationship],
+    entries: list[StagedChange],
     manifest: dict[str, Any],
     project_dir: Path,
     relationships: RelationshipsConfig | None = None,
 ) -> WritePlan:
     """Compute the model-YAML edits that materialize `entries`; never touches disk state.
 
-    Entries are planned in order against a running copy of each file, so several
-    relationships landing in the same schema file accumulate into one edit.
+    `entries` mixes both staged change types -- relationship declarations and description
+    edits -- and they are planned in order against a running copy of each file, so several
+    changes landing in the same schema file accumulate into one edit and one diff.
 
     Raises:
         NotImplementedError: relationships.write_to is contract_constraint (SPEC.md
@@ -174,7 +176,7 @@ def plan_writes(
                 entry=entry,
                 status=status,
                 path=path,
-                message=None if status == "planned" else "already declared in the repo",
+                message=None if status == "planned" else _unchanged_message(entry),
             )
         )
 
@@ -215,6 +217,19 @@ def _model_index(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return index
 
 
+def _unchanged_message(entry: StagedChange) -> str:
+    if isinstance(entry, StagedDescription):
+        return "the repo already has this description"
+    return "already declared in the repo"
+
+
+def _owner_model(entry: StagedChange) -> str:
+    """The model whose schema file the change is written into."""
+    if isinstance(entry, StagedDescription):
+        return entry.entity
+    return entry.from_model
+
+
 def _model_or_fail(name: str, models: dict[str, dict[str, Any]], role: str) -> dict[str, Any]:
     node = models.get(name.lower())
     if node is None:
@@ -225,21 +240,20 @@ def _model_or_fail(name: str, models: dict[str, dict[str, Any]], role: str) -> d
     return node
 
 
-def _schema_path(
-    entry: StagedRelationship, models: dict[str, dict[str, Any]], project_dir: Path
-) -> Path:
-    node = _model_or_fail(entry.from_model, models, "source")
+def _schema_path(entry: StagedChange, models: dict[str, dict[str, Any]], project_dir: Path) -> Path:
+    model = _owner_model(entry)
+    node = _model_or_fail(model, models, "source")
     patch_path = node.get("patch_path")
     if not patch_path:
         raise YamlWriteError(
-            f"model '{entry.from_model}' has no schema YAML file -- stitch does not invent "
+            f"model '{model}' has no schema YAML file -- stitch does not invent "
             "one: add a models: entry for it in a _schema.yml, then re-run 'stitch apply'"
         )
     relative = str(patch_path).split("://", 1)[-1]
     path = (Path(project_dir) / relative).resolve()
     if not path.is_file():
         raise YamlWriteError(
-            f"schema file {path} for model '{entry.from_model}' does not exist -- "
+            f"schema file {path} for model '{model}' does not exist -- "
             "re-run 'dbt docs generate' so the manifest matches the repo"
         )
     return path
@@ -319,19 +333,23 @@ def _assert_round_trips(path: Path, text: str) -> None:
 
 def _apply_entry(
     text: str,
-    entry: StagedRelationship,
+    entry: StagedChange,
     models: dict[str, dict[str, Any]],
     config: RelationshipsConfig,
     path: Path,
 ) -> str:
     yaml = _yaml_for(text)
     document = _load(text, yaml, path)
-    model_entry = _model_entry(document, entry.from_model)
+    owner = _owner_model(entry)
+    model_entry = _model_entry(document, owner)
     if model_entry is None:
         raise YamlWriteError(
-            f"model '{entry.from_model}' has no entry in its schema file -- add "
-            f"'- name: {entry.from_model}' under models: first"
+            f"model '{owner}' has no entry in its schema file -- add "
+            f"'- name: {owner}' under models: first"
         )
+    if isinstance(entry, StagedDescription):
+        _write_description(model_entry, entry)
+        return _dump(document, yaml)
     target = _model_or_fail(entry.to_model, models, "target")
     column = _ensure_column(model_entry, entry.from_column)
     if config.write_to == "meta":
@@ -339,6 +357,34 @@ def _apply_entry(
     else:
         _write_relationships_test(column, document, entry, config)
     return _dump(document, yaml)
+
+
+def _write_description(model_entry: CommentedMap, entry: StagedDescription) -> None:
+    """Set `description:` on the model or one of its columns, creating the key if needed."""
+    target = model_entry if entry.column is None else _ensure_column(model_entry, entry.column)
+    value = _description_scalar(entry.new_description)
+    if "description" in target:
+        # assigning through the existing key keeps its position, and its comments with it
+        if str(target["description"]) == str(value):
+            return
+        target["description"] = value
+        return
+    # a fresh key goes right after name:, where dbt convention puts it
+    keys = list(target)
+    position = keys.index("name") + 1 if "name" in keys else 0
+    target.insert(position, "description", value)
+
+
+def _description_scalar(text: str) -> Any:
+    """Multi-line descriptions are emitted as literal block scalars, not quoted one-liners.
+
+    A `\\n` inside a plain or quoted scalar would come back out as an escape or a folded
+    line; `|` keeps the text readable in the repo and round-trips unchanged. ruamel needs the
+    trailing newline to choose `|` over `|-`, and either is valid YAML for the same string.
+    """
+    if "\n" not in text:
+        return text
+    return LiteralScalarString(text if text.endswith("\n") else text + "\n")
 
 
 def _model_entry(document: Any, model_name: str) -> CommentedMap | None:
