@@ -114,6 +114,7 @@ source_modules = [
     "stitch_lineage.cli",
     "stitch_lineage.config",
     "stitch_lineage.payloads",
+    "stitch_lineage.apply",
     "stitch_lineage.graph",
     "stitch_lineage.export",
     "stitch_lineage.app",
@@ -144,10 +145,15 @@ forbidden_modules = [
 ]
 
 [[tool.importlinter.contracts]]
-name = "only write/ touches model YAML, and only the CLI drives it"
+name = "only write/ touches model YAML, and only the apply engine drives it"
 type = "forbidden"
-# `stitch serve` and the static export must not be able to write the repo: every model-YAML
-# mutation goes through `stitch apply` (SPEC.md section 8.2)
+# Every model-YAML mutation goes through `stitch_lineage.apply` -- the engine that carries the
+# diff preview, the dirty-file guard, the store clearing and the graph patch (SPEC.md section
+# 8.2). `stitch serve`'s apply endpoints call that engine (issue #72); no layer below may reach
+# write/ itself. Direct imports only, because the app now legitimately reaches write/ THROUGH
+# the engine and the static export imports the app package for its templates -- what keeps the
+# export read-only is that it ships one HTML file with no API at all.
+allow_indirect_imports = true
 source_modules = [
     "stitch_lineage.app",
     "stitch_lineage.resolve",

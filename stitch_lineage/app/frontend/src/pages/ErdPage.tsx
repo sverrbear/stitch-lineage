@@ -29,6 +29,7 @@ import {
 } from 'react'
 import { SystemBadge } from '../components/badges'
 import { GraphLegend } from '../components/bits'
+import { ErdRoutedEdge } from '../components/ErdEdge'
 import { StageRelationshipModal, type StageTarget } from '../components/StageRelationshipModal'
 import { useStitch } from '../data'
 import { CLICK_SLOP_PX, isClickNotDrag, type Point } from '../lib/canvas'
@@ -48,7 +49,13 @@ import {
   type ErdScope,
 } from '../lib/erd'
 import { erdNodeHeight, layoutErd } from '../lib/erdLayout'
-import { NODE_TYPE_NAME, displayModelName, displayName, fullName } from '../lib/present'
+import {
+  NODE_TYPE_NAME,
+  displayModelName,
+  displayName,
+  displayTableName,
+  fullName,
+} from '../lib/present'
 import {
   groupStagedByTarget,
   listStaged,
@@ -116,8 +123,11 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
   const hidden = model.columns.length - visible.length
   const collapsible = model.columns.some((column) => !column.isKey)
   // The dbt model name is the header; the physical table is a subtitle at most, and
-  // only when it says something the schema line does not already say.
-  const table = model.node.table
+  // only when it says something the name does not already say. The configured
+  // table_prefix comes off first — `sis_fct_x` is this machine's dev alias, so with
+  // it gone the line is usually redundant and goes away entirely (#80).
+  const name = displayName(model.node)
+  const table = displayTableName(model.node.table)
 
   return (
     <div className={`erd-node${model.external ? ' external' : ''}`} onPointerDown={onPointerDown}>
@@ -129,16 +139,24 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
         onClick={open(model.node.node_id)}
         onKeyDown={openOnEnter(model.node.node_id)}
       >
+        {/* The header is the NAME's line: `mart_content_feed_impressions_daily` used to
+            shove the type tag out of the card, so the tag moved down to the detail line
+            and the name gets the full width, ellipsised with a tooltip (#80). */}
         <div className="erd-node-header">
           <SystemBadge nodeType={model.node.node_type} />
-          <span className="erd-node-name">{displayName(model.node)}</span>
-          <span className="erd-node-kind">{NODE_TYPE_NAME[model.node.node_type]}</span>
+          <span className="erd-node-name" title={name}>
+            {name}
+          </span>
           {model.external && <span className="erd-external-tag">other scope</span>}
         </div>
         <div className="erd-node-schema">
-          {model.node.schema ?? ''}
-          {table && table !== displayName(model.node) ? (
-            <span className="erd-node-relation" title="physical table in the warehouse">
+          <span className="erd-node-kind">{NODE_TYPE_NAME[model.node.node_type]}</span>
+          <span className="erd-node-scope">{model.node.schema ?? ''}</span>
+          {table && table !== name ? (
+            <span
+              className="erd-node-relation"
+              title={`${model.node.table} — physical table in the warehouse`}
+            >
               {table}
             </span>
           ) : null}
@@ -169,7 +187,9 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
               isConnectable={connectable}
               title={connectable ? RELATE_HINT : undefined}
             />
-            <span className="erd-column-name">{column.name}</span>
+            <span className="erd-column-name" title={column.name}>
+              {column.name}
+            </span>
             <span className="erd-column-type">{column.dataType ?? ''}</span>
             <Handle
               type="source"
@@ -199,6 +219,9 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
 }
 
 const nodeTypes = { erdModel: ErdModelNode }
+// every relationship is routed around the cards rather than drawn through them (#79)
+const edgeTypes = { erdRouted: ErdRoutedEdge }
+const EDGE_TYPE = 'erdRouted'
 
 /** `markerStart`/`markerEnd` for an edge, from its cardinality (see ErdMarkers). */
 function cardinalityMarkerProps(cardinality?: string | null) {
@@ -562,7 +585,7 @@ export function ErdPage({
       sourceHandle: rel.fromColumn,
       target: rel.toModelId,
       targetHandle: rel.toColumn,
-      type: 'smoothstep',
+      type: EDGE_TYPE,
       className: `erd-edge${hovered?.id === `rel-${i}` ? ' hovered' : ''}`,
       // the pair is on the edge you point at, never floating over the canvas
       label: hovered?.id === `rel-${i}` ? hovered.label : undefined,
@@ -588,9 +611,9 @@ export function ErdPage({
         sourceHandle: rel.fromColumn,
         target: rel.toModelId,
         targetHandle: rel.toColumn,
-        type: 'smoothstep',
+        type: EDGE_TYPE,
         className: `erd-edge suggested${hovered?.id === `suggested-${rel.id}` ? ' hovered' : ''}`,
-        style: { strokeDasharray: '2 5', strokeWidth: 1 },
+        style: { strokeDasharray: '2 5', strokeWidth: 1.6 },
         label: hovered?.id === `suggested-${rel.id}` ? hovered.label : undefined,
         labelShowBg: true,
         data: {
@@ -612,7 +635,7 @@ export function ErdPage({
         sourceHandle: rel.fromColumn,
         target: rel.toModelId,
         targetHandle: rel.toColumn,
-        type: 'smoothstep',
+        type: EDGE_TYPE,
         className: `erd-edge staged${hovered?.id === `staged-${rel.id}` ? ' hovered' : ''}`,
         style: { strokeDasharray: '5 4' },
         label: hovered?.id === `staged-${rel.id}` ? hovered.label : undefined,
@@ -772,6 +795,7 @@ export function ErdPage({
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           fitView
           minZoom={0.05}
           nodesConnectable={canStage}

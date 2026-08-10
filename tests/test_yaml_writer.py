@@ -11,9 +11,10 @@ import shutil
 from pathlib import Path
 
 import pytest
+from ruamel.yaml import YAML
 
 from stitch_lineage.config import RelationshipsConfig
-from stitch_lineage.io.staged_store import StagedRelationship
+from stitch_lineage.io.staged_store import StagedDescription, StagedRelationship
 from stitch_lineage.write.yaml_writer import apply_plan, plan_writes
 
 FIXTURES = Path(__file__).parent / "fixtures" / "dbt_repo"
@@ -404,3 +405,131 @@ def test_a_file_that_cannot_be_reproduced_is_refused_not_reformatted(repo):
     assert plan.edits == []
     assert "cannot be edited without reformatting" in plan.failures[0].message
     assert target.read_text() == before
+
+
+# --- descriptions (issue #70) -----------------------------------------------------------
+
+
+def _description(entity="fct_orders", column="customer_id", text="Who placed it, FK to customers"):
+    return StagedDescription(entity=entity, column=column, new_description=text)
+
+
+def _loaded(edit):
+    """The updated file parsed, so assertions read values instead of YAML quoting styles."""
+    return YAML(typ="safe").load(edit.updated)
+
+
+def _column_of(edit, model, column):
+    models = {entry["name"]: entry for entry in _loaded(edit)["models"]}
+    columns = {entry["name"]: entry for entry in models[model].get("columns") or []}
+    return columns[column]
+
+
+def _changed_regions(edit):
+    original, updated = edit.original.splitlines(), edit.updated.splitlines()
+    return [
+        (tag, original[i1:i2], updated[j1:j2])
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, original, updated).get_opcodes()
+        if tag != "equal"
+    ]
+
+
+def test_a_column_description_is_replaced_in_place(repo):
+    (edit,) = _plan(repo, [_description(column="order_id", text="The order key")]).edits
+    assert _column_of(edit, "fct_orders", "order_id")["description"] == "The order key"
+    # its tests and comments are untouched: exactly one line differs
+    (region,) = _changed_regions(edit)
+    assert region[0] == "replace"
+    assert all("description" in line for line in region[1] + region[2])
+
+
+def test_a_missing_column_description_is_inserted_after_the_name(repo):
+    """fct_events.event_id is in the YAML with a test but no description of its own."""
+    entry = _description(entity="fct_events", column="event_id", text="One per emitted event")
+    (edit,) = _plan(repo, [entry]).edits
+    lines = edit.updated.splitlines()
+    name_at = next(index for index, line in enumerate(lines) if "- name: event_id" in line)
+    assert lines[name_at + 1].strip() == "description: One per emitted event"
+    column = _column_of(edit, "fct_events", "event_id")
+    assert column["description"] == "One per emitted event"
+    # the test that was under it is still under it
+    assert column["tests"] == ["unique"]
+
+
+def test_a_model_description_is_written_on_the_model_entry(repo):
+    entry = _description(entity="dim_customers", column=None, text="Every customer, one row each")
+    (edit,) = _plan(repo, [entry]).edits
+    models = {model["name"]: model for model in _loaded(edit)["models"]}
+    assert models["dim_customers"]["description"] == "Every customer, one row each"
+    assert len(_changed_regions(edit)) == 1
+
+
+def test_a_column_absent_from_the_yaml_gets_an_entry_with_its_description(repo):
+    (edit,) = _plan(repo, [_description(column="ordered_at", text="When it happened")]).edits
+    assert _column_of(edit, "fct_orders", "ordered_at")["description"] == "When it happened"
+    added = _added(edit)
+    assert "      - name: ordered_at" in added
+
+
+MULTILINE = "FK to dim_customers.\nNull for guest orders.\n"
+
+
+def test_a_multi_line_description_is_written_as_a_block_scalar(repo):
+    (edit,) = _plan(repo, [_description(column="customer_id", text=MULTILINE)]).edits
+    assert "        description: |" in edit.updated
+    assert "          FK to dim_customers." in edit.updated
+    assert _column_of(edit, "fct_orders", "customer_id")["description"] == MULTILINE
+
+
+def test_a_block_scalar_does_not_double_the_blank_line_after_it(repo):
+    """The block ends with its own line break; the author's single blank line stays single."""
+    (edit,) = _plan(repo, [_description(column="customer_id", text=MULTILINE)]).edits
+    assert "\n\n\n" not in edit.updated
+    assert len(_changed_regions(edit)) == 1
+
+
+def test_a_multi_line_description_round_trips_through_the_repo(repo):
+    apply_plan(_plan(repo, [_description(column="customer_id", text=MULTILINE)]).edits)
+    # written, re-read, re-planned: nothing left to do
+    replanned = _plan(repo, [_description(column="customer_id", text=MULTILINE)])
+    assert replanned.edits == []
+    assert replanned.results[0].status == "unchanged"
+
+
+def test_a_description_that_already_matches_is_unchanged(repo):
+    (result,) = _plan(repo, [_description(column="order_id", text="Primary key")]).results
+    assert result.status == "unchanged"
+    assert result.message == "the repo already has this description"
+
+
+def test_an_existing_block_scalar_matches_whatever_its_trailing_newline(repo):
+    # order_total's description is a `|` block in the fixture, so it loads with a trailing \n
+    for text in ("Gross total in USD.\nExcludes tax.\n", "Gross total in USD.\nExcludes tax."):
+        plan = _plan(repo, [_description(column="order_total", text=text)])
+        assert plan.edits == []
+        assert plan.results[0].status == "unchanged"
+
+
+def test_a_description_on_a_model_with_no_schema_file_is_unappliable(repo):
+    entry = _description(entity="dim_stores", column=None, text="Stores")
+    (result,) = _plan(repo, [entry]).results
+    assert result.status == "failed"
+    assert "has no schema YAML file" in result.message
+
+
+def test_a_description_on_an_unknown_model_is_unappliable(repo):
+    (result,) = _plan(repo, [_description(entity="dim_ghost", column=None, text="Ghost")]).results
+    assert result.status == "failed"
+    assert "not in the manifest" in result.message
+
+
+def test_a_relationship_and_a_description_in_one_file_make_one_edit(repo):
+    changes = [_entry(), _description(column="customer_id", text="FK to dim_customers")]
+    plan = _plan(repo, changes)
+    assert len(plan.edits) == 1
+    (edit,) = plan.edits
+    assert any("relationships:" in line for line in _added(edit))
+    assert _column_of(edit, "fct_orders", "customer_id")["description"] == "FK to dim_customers"
+    assert [result.status for result in plan.results] == ["planned", "planned"]
+    # and both clear from their stores together
+    assert plan.ids_for({edit.path}) == {change.id for change in changes}

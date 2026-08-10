@@ -53,7 +53,9 @@ def test_api_meta_shape(client, sample_graph):
         "schema_version": sample_graph.schema_version,
         "erd_default_scope": None,
         "strip_model_prefixes": [],
+        "table_prefixes": [],
         "staging_enabled": False,
+        "apply_enabled": False,
     }
 
 
@@ -110,3 +112,11 @@ def test_api_meta_carries_the_configured_display_prefixes(graph_path):
     graph keeps the real dbt names and only /api/meta says what to hide."""
     client = TestClient(create_app(graph_path, None, strip_model_prefixes=["viz_", "sv_"]))
     assert client.get("/api/meta").json()["strip_model_prefixes"] == ["viz_", "sv_"]
+
+
+def test_api_meta_carries_the_table_prefixes(graph_path):
+    """metabase.databases[].table_prefix reaches the app so it can hide a dev alias
+    (sis_fct_matches) from the physical names it displays (#80). Display only: the
+    graph, and the bindings that stripped it to match, are untouched."""
+    client = TestClient(create_app(graph_path, None, table_prefixes=["sis_"]))
+    assert client.get("/api/meta").json()["table_prefixes"] == ["sis_"]

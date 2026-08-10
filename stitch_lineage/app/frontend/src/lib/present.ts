@@ -32,6 +32,33 @@ export function strippedPrefixes(): string[] {
   return [...stripPrefixes]
 }
 
+/**
+ * `metabase.databases[].table_prefix` — the prefix a dev dbt target puts on physical
+ * table names (`sis_fct_matches`) that the BI database does not have. Binding already
+ * strips it to match the two; showing it is the reader's own initials as noise (#80).
+ */
+let tablePrefixes: string[] = []
+
+/** Set from `/api/meta` (or the static export's globals) as the app loads. */
+export function setTablePrefixes(prefixes: string[] | null | undefined): void {
+  tablePrefixes = (prefixes ?? []).filter((prefix) => prefix.trim().length > 0)
+}
+
+/**
+ * A physical table name as it should READ. Display only: the graph, the bindings and
+ * everything written back keep the real alias, which is still the tooltip.
+ */
+export function displayTableName(table: string | null | undefined): string | null {
+  const name = table?.trim()
+  if (!name) return null
+  for (const prefix of tablePrefixes) {
+    if (name.length > prefix.length && name.toLowerCase().startsWith(prefix.toLowerCase())) {
+      return name.slice(prefix.length)
+    }
+  }
+  return name
+}
+
 /** The name as dbt spells it, prefix and all. Always available as secondary detail. */
 export function fullName(node: GraphNode): string {
   return node.name?.trim() || idTail(node.node_id)

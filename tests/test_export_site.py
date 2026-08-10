@@ -43,6 +43,7 @@ def test_marker_is_replaced_by_parseable_globals(tmp_path, graph_path, sample_gr
         "schema_version": sample_graph.schema_version,
         "erd_default_scope": None,
         "strip_model_prefixes": [],
+        "table_prefixes": [],
         "staging_enabled": False,
     }
 
@@ -51,6 +52,12 @@ def test_configured_erd_scope_is_inlined(tmp_path, graph_path):
     out = export_site(graph_path, tmp_path / "site", None, "schema:MARTS")
     meta = _inlined((out / "index.html").read_text())["META"]
     assert meta["erd_default_scope"] == "schema:MARTS"
+
+
+def test_table_prefixes_are_inlined(tmp_path, graph_path):
+    """An export carries them too: the physical names it shows are display-only (#80)."""
+    out = export_site(graph_path, tmp_path / "site", None, table_prefixes=["sis_"])
+    assert _inlined((out / "index.html").read_text())["META"]["table_prefixes"] == ["sis_"]
 
 
 def test_inlined_graph_matches_graph_json_exactly(tmp_path, graph_path):
