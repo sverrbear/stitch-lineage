@@ -48,6 +48,19 @@ import {
   type Cardinality,
   type StagedRelationship,
 } from '../lib/staging'
+import {
+  countBySource,
+  dismissSuggestion,
+  filterBySource,
+  listSuggestions,
+  probeSuggestions,
+  rankSuggestions,
+  scoreLabel,
+  SOURCE_HELP,
+  SOURCE_LABEL,
+  type SourceFilter,
+  type Suggestion,
+} from '../lib/suggestions'
 import { erdHref, navigate } from '../router'
 
 const COLLAPSED_LIMIT = 8
@@ -211,6 +224,10 @@ export function ErdPage({
   const [staged, setStaged] = useState<StagedRelationship[]>([])
   const [draft, setDraft] = useState<StageTarget | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([])
+  const [canSuggest, setCanSuggest] = useState(false)
+  const [panelOpen, setPanelOpen] = useState(true)
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('implicit_join')
 
   const refreshStaged = useCallback(async () => {
     try {
@@ -220,23 +237,53 @@ export function ErdPage({
     }
   }, [])
 
+  const refreshSuggestions = useCallback(async () => {
+    try {
+      setSuggestions(rankSuggestions(await listSuggestions()))
+    } catch {
+      setSuggestions([])
+    }
+  }, [])
+
   useEffect(() => {
     let cancelled = false
     void probeStaging(meta.staging_enabled).then(async (enabled) => {
       if (cancelled || !enabled) return
       setCanStage(true)
       await refreshStaged()
+      // the suggestion engine is a later addition than staging: probe separately,
+      // so a serve without it shows no panel rather than an empty one
+      const suggests = await probeSuggestions(meta.staging_enabled)
+      if (cancelled || !suggests) return
+      setCanSuggest(true)
+      await refreshSuggestions()
     })
     return () => {
       cancelled = true
     }
-  }, [meta.staging_enabled, refreshStaged])
+  }, [meta.staging_enabled, refreshStaged, refreshSuggestions])
 
   const resolved = useMemo(() => resolveStaged(index, staged), [index, staged])
-
+  const sourceCounts = useMemo(() => countBySource(suggestions), [suggestions])
+  // the canvas draws what the panel lists: one filter, both surfaces
+  const shownSuggestions = useMemo(
+    () => filterBySource(suggestions, sourceFilter),
+    [suggestions, sourceFilter],
+  )
+  const resolvedSuggestions = useMemo(
+    () =>
+      resolveStaged(
+        index,
+        shownSuggestions.map((entry) => ({ ...entry, cardinality: entry.cardinality_guess })),
+      ),
+    [index, shownSuggestions],
+  )
   const erd = useMemo(
-    () => (active ? erdForScope(index, active, resolved.drawable) : null),
-    [index, active, resolved],
+    () =>
+      active
+        ? erdForScope(index, active, resolved.drawable, resolvedSuggestions.drawable)
+        : null,
+    [index, active, resolved, resolvedSuggestions],
   )
 
   /** node id -> dbt model name, which is what the staging API speaks. */
@@ -259,6 +306,7 @@ export function ErdPage({
         cardinality,
       })
       await refreshStaged()
+      if (canSuggest) await refreshSuggestions()
       setDraft(null)
       setNotice(
         result.created
@@ -274,7 +322,27 @@ export function ErdPage({
   const removeStaged = async (id: string) => {
     await unstageRelationship(id)
     await refreshStaged()
+    if (canSuggest) await refreshSuggestions()
     setNotice(null)
+  }
+
+  /** Accepting is not a shortcut: it opens the same modal a drag opens, prefilled. */
+  const acceptSuggestion = (suggestion: Suggestion) => {
+    setNotice(null)
+    setDraft({
+      fromModel: suggestion.from_model,
+      fromColumn: suggestion.from_column,
+      toModel: suggestion.to_model,
+      toColumn: suggestion.to_column,
+      cardinality: suggestion.cardinality_guess,
+      provenance: `${SOURCE_LABEL[suggestion.source]} — ${scoreLabel(suggestion)}`,
+    })
+  }
+
+  const dismiss = async (id: string) => {
+    await dismissSuggestion(id)
+    await refreshSuggestions()
+    setNotice('suggestion dismissed — it will not come back')
   }
 
   const { nodes, edges } = useMemo(() => {
@@ -307,6 +375,23 @@ export function ErdPage({
       label: `${rel.fromColumn} → ${rel.toColumn}${rel.validated ? ' ✓' : ''}`,
       labelShowBg: true,
     }))
+
+    // Suggestions are proposals: thinner, fainter and further from solid than a
+    // staged edge, so "stitch thinks" never reads as "somebody decided".
+    for (const rel of erd.suggested) {
+      edges.push({
+        id: `suggested-${rel.id}`,
+        source: rel.fromModelId,
+        sourceHandle: rel.fromColumn,
+        target: rel.toModelId,
+        targetHandle: rel.toColumn,
+        type: 'smoothstep',
+        className: 'erd-edge suggested',
+        style: { strokeDasharray: '2 5', strokeWidth: 1 },
+        label: `${rel.fromColumn} → ${rel.toColumn} · suggested`,
+        labelShowBg: true,
+      })
+    }
 
     // Staged edges are visibly provisional: nothing is in the repo until `stitch apply`.
     for (const rel of erd.staged) {
@@ -365,6 +450,10 @@ export function ErdPage({
         </select>
         <span className="muted">
           {erd.models.length} models · {erd.relationships.length} relationships
+          {erd.staged.length > 0 ? ` · ${erd.staged.length} staged` : ''}
+          {erd.suggested.length > 0
+            ? ` · ${erd.suggested.length} suggested drawn${erd.suggestedHidden > 0 ? ` of ${erd.suggested.length + erd.suggestedHidden}` : ''}`
+            : ''}
         </span>
         {active.internal && (
           <span className="muted">tooling schema — not part of the analytics model</span>
@@ -373,6 +462,11 @@ export function ErdPage({
           <span className="scope-warning" title="serve.erd_default_scope in stitch.yml">
             configured scope <code>{unknownConfigured}</code> is not in this graph
           </span>
+        )}
+        {canSuggest && !panelOpen && (
+          <button type="button" className="ghost-button" onClick={() => setPanelOpen(true)}>
+            Suggested ({shownSuggestions.length})
+          </button>
         )}
         {canStage ? (
           <span className="muted graph-toolbar-hint">
@@ -415,7 +509,7 @@ export function ErdPage({
           {notice && <span className="muted">{notice}</span>}
         </div>
       )}
-      <div className="graph-canvas">
+      <div className={`graph-canvas${canSuggest && panelOpen ? ' with-panel' : ''}`}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -443,8 +537,96 @@ export function ErdPage({
           <Controls showInteractive={false} />
           <MiniMap pannable zoomable />
         </ReactFlow>
+        {canSuggest && panelOpen && (
+          <aside className="suggest-panel" aria-label="Suggested relationships">
+            <div className="suggest-panel-head">
+              <span className="suggest-panel-title">Suggested ({shownSuggestions.length})</span>
+              {erd.suggestedHidden > 0 && (
+                <span className="muted suggest-cap" title="the panel lists them all; the canvas draws the strongest">
+                  {erd.suggestedHidden} not drawn
+                </span>
+              )}
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setPanelOpen(false)}
+                aria-label="Hide suggestions"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="suggest-filter" role="group" aria-label="Suggestion source">
+              {(['implicit_join', 'naming', 'all'] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`suggest-filter-option${sourceFilter === value ? ' active' : ''}`}
+                  onClick={() => setSourceFilter(value)}
+                  title={value === 'all' ? 'every candidate' : SOURCE_HELP[value]}
+                >
+                  {value === 'all' ? 'all' : SOURCE_LABEL[value]} ({sourceCounts[value]})
+                </button>
+              ))}
+            </div>
+            {shownSuggestions.length === 0 ? (
+              <p className="muted suggest-empty">
+                {suggestions.length === 0
+                  ? 'Nothing to suggest — every join stitch can see is already declared, staged or dismissed.'
+                  : 'None from this source. The counts above show what the others hold.'}
+              </p>
+            ) : (
+              <ul className="suggest-list">
+                {shownSuggestions.map((entry) => {
+                  const offCanvas = resolvedSuggestions.unresolvedIds.includes(entry.id)
+                  const notDrawn =
+                    !offCanvas && !erd.suggested.some((rel) => rel.id === entry.id)
+                  return (
+                    <li key={entry.id} className="suggest-entry">
+                      <code className="suggest-pair">
+                        {entry.from_model}.{entry.from_column} → {entry.to_model}.{entry.to_column}
+                      </code>
+                      <div className="suggest-meta">
+                        <span className="suggest-source" title={SOURCE_HELP[entry.source]}>
+                          {SOURCE_LABEL[entry.source]}
+                        </span>
+                        <span className="muted">{scoreLabel(entry)}</span>
+                        <span className="muted">{entry.cardinality_guess}</span>
+                        {(offCanvas || notDrawn) && (
+                          <span className="muted" title="listed here, but not drawn on this canvas">
+                            {offCanvas ? 'not in this graph' : 'not drawn'}
+                          </span>
+                        )}
+                      </div>
+                      <div className="suggest-actions">
+                        <button
+                          type="button"
+                          className="button"
+                          onClick={() => acceptSuggestion(entry)}
+                        >
+                          Accept…
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() => void dismiss(entry.id)}
+                          title="dismissed permanently — it will not be suggested again"
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </aside>
+        )}
       </div>
-      <GraphLegend erd staged={canStage && erd.staged.length > 0} />
+      <GraphLegend
+        erd
+        staged={canStage && erd.staged.length > 0}
+        suggested={canSuggest && erd.suggested.length > 0}
+      />
       {draft && (
         <StageRelationshipModal
           target={draft}

@@ -86,10 +86,12 @@ export function GraphLegend({
   erd = false,
   rollup = false,
   staged = false,
+  suggested = false,
 }: {
   erd?: boolean
   rollup?: boolean
   staged?: boolean
+  suggested?: boolean
 }) {
   return (
     <div className="graph-legend">
@@ -124,6 +126,14 @@ export function GraphLegend({
                 <line x1="0" y1="4" x2="26" y2="4" className="legend-line-dashed" />
               </svg>
               staged — not in the repo until <code>stitch apply</code>
+            </span>
+          )}
+          {suggested && (
+            <span className="legend-item">
+              <svg width="26" height="8">
+                <line x1="0" y1="4" x2="26" y2="4" className="legend-line-dotted" />
+              </svg>
+              suggested — nobody has declared this yet
             </span>
           )}
         </>

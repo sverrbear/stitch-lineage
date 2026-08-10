@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  MAX_DRAWN_SUGGESTIONS,
   resolveStaged,
   defaultScope,
   erdClickHref,
@@ -261,5 +262,81 @@ describe('staged relationships on the canvas', () => {
   it('leaves the scope untouched when nothing is staged', () => {
     const marts = listScopes(index).find((s) => s.kind === 'schema' && s.value === 'marts')!
     expect(erdForScope(index, marts).staged).toEqual([])
+  })
+})
+
+describe('suggested relationships on the canvas', () => {
+  const pair = (id: string, from: string, fromCol: string, to: string, toCol: string) => ({
+    id,
+    from_model: from,
+    from_column: fromCol,
+    to_model: to,
+    to_column: toCol,
+  })
+  const marts = () => listScopes(index).find((s) => s.kind === 'schema' && s.value === 'marts')!
+
+  it('draws suggestions alongside staged ones, pinning their columns too', () => {
+    const suggested = resolveStaged(index, [
+      pair('sug-1', 'fct_revenue', 'net_revenue', 'mart_board', 'net_revenue'),
+    ]).drawable
+    const erd = erdForScope(index, marts(), [], suggested)
+    expect(erd.suggested.map((r) => r.id)).toEqual(['sug-1'])
+    const fct = erd.models.find((m) => m.node.name === 'fct_revenue')!
+    expect(fct.columns.find((c) => c.key === 'net_revenue')?.isKey).toBe(true)
+  })
+
+  it('defaults a suggestion with no cardinality to many-to-one', () => {
+    expect(resolveStaged(index, [pair('sug-2', 'fct_revenue', 'user_id', 'dim_users', 'user_id')]).drawable[0]
+      .cardinality).toBe('many-to-one')
+  })
+
+  it('drops a suggestion that is already staged — the same id means the same pair', () => {
+    const same = [pair('shared-id', 'fct_revenue', 'user_id', 'dim_users', 'user_id')]
+    const drawable = resolveStaged(index, same).drawable
+    const erd = erdForScope(index, marts(), drawable, drawable)
+    expect(erd.staged.map((r) => r.id)).toEqual(['shared-id'])
+    expect(erd.suggested).toEqual([]) // never both at once
+  })
+
+  it('leaves suggested empty when there are none', () => {
+    expect(erdForScope(index, marts()).suggested).toEqual([])
+  })
+})
+
+describe('the suggestion cap', () => {
+  const marts = () => listScopes(index).find((s) => s.kind === 'schema' && s.value === 'marts')!
+  // every marts column paired with itself across the two marts models
+  const many = Array.from({ length: 5 }, (_, i) => ({
+    id: `many-${i}`,
+    from_model: 'fct_revenue',
+    from_column: i % 2 === 0 ? 'net_revenue' : 'user_id',
+    to_model: 'mart_board',
+    to_column: 'net_revenue',
+  }))
+
+  it('draws only the strongest, and counts what it left off the canvas', () => {
+    const drawable = resolveStaged(index, many).drawable
+    const erd = erdForScope(index, marts(), [], drawable, 2)
+    expect(erd.suggested.map((r) => r.id)).toEqual(['many-0', 'many-1'])
+    expect(erd.suggestedHidden).toBe(3)
+  })
+
+  it('hides nothing when everything fits', () => {
+    const drawable = resolveStaged(index, many).drawable
+    const erd = erdForScope(index, marts(), [], drawable)
+    expect(erd.suggested).toHaveLength(drawable.length)
+    expect(erd.suggestedHidden).toBe(0)
+    expect(MAX_DRAWN_SUGGESTIONS).toBeGreaterThan(drawable.length)
+  })
+
+  it('pins only the columns it actually draws', () => {
+    const drawable = resolveStaged(index, [
+      { id: 'a', from_model: 'fct_revenue', from_column: 'user_id', to_model: 'mart_board', to_column: 'net_revenue' },
+      { id: 'b', from_model: 'fct_revenue', from_column: 'net_revenue', to_model: 'mart_board', to_column: 'net_revenue' },
+    ]).drawable
+    const erd = erdForScope(index, marts(), [], drawable, 1)
+    const fct = erd.models.find((m) => m.node.name === 'fct_revenue')!
+    expect(fct.columns.find((c) => c.key === 'user_id')?.isKey).toBe(true)
+    expect(fct.columns.find((c) => c.key === 'net_revenue')?.isKey).toBe(false)
   })
 })
