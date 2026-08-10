@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import uvicorn
@@ -611,6 +612,17 @@ def test_build_docs_runner_failure_fails_cleanly(tmp_path, monkeypatch):
 # --- stitch impact --column: point-query blast radius (issue #86) --------------------
 
 
+def _plain(output):
+    """Rich output with the styling taken back out, for substring assertions.
+
+    Under CI rich force-enables terminal mode (it treats GITHUB_ACTIONS as a tty) and
+    renders at 80 columns, so it both splits a token like '--column' across ANSI style
+    codes and wraps long messages mid-sentence. Strip the escapes and collapse runs of
+    whitespace, and the assertion checks the text rather than the terminal it ran in.
+    """
+    return " ".join(re.sub(r"\x1b\[[0-9;]*m", "", output).split())
+
+
 def _write_impact_graph(tmp_path):
     """Synthetic chain: fct_matches.match_intensity -> mart_engagement -> field -> card."""
     fct, mart = "model.demo.fct_matches", "model.demo.mart_engagement"
@@ -682,9 +694,10 @@ def test_impact_column_ambiguous_reference_lists_candidates(tmp_path, monkeypatc
     _write_impact_graph(tmp_path)
     result = runner.invoke(app, ["impact", "--column", "match_intensity"])
     assert result.exit_code == 1
-    assert "matches 2 columns" in result.output
-    assert "qualify it as model.column" in result.output
-    assert "fct_matches.match_intensity" in result.output
+    output = _plain(result.output)
+    assert "matches 2 columns" in output
+    assert "qualify it as model.column" in output
+    assert "fct_matches.match_intensity" in output
 
 
 def test_impact_column_unknown_reference_suggests(tmp_path, monkeypatch):
@@ -692,10 +705,11 @@ def test_impact_column_unknown_reference_suggests(tmp_path, monkeypatch):
     _write_impact_graph(tmp_path)
     result = runner.invoke(app, ["impact", "--column", "fct_matches.match_intensety"])
     assert result.exit_code == 1
-    assert "no column matching" in result.output
-    assert "did you mean" in result.output
-    assert "fct_matches.match_intensity" in result.output
-    assert "stitch search" in result.output
+    output = _plain(result.output)
+    assert "no column matching" in output
+    assert "did you mean" in output
+    assert "fct_matches.match_intensity" in output
+    assert "stitch search" in output
 
 
 def test_impact_column_on_a_model_names_its_columns(tmp_path, monkeypatch):
@@ -703,8 +717,9 @@ def test_impact_column_on_a_model_names_its_columns(tmp_path, monkeypatch):
     _write_impact_graph(tmp_path)
     result = runner.invoke(app, ["impact", "--column", "fct_matches"])
     assert result.exit_code == 1
-    assert "is a model, not a column" in result.output
-    assert "fct_matches.match_intensity" in result.output
+    output = _plain(result.output)
+    assert "is a model, not a column" in output
+    assert "fct_matches.match_intensity" in output
 
 
 def test_impact_json_and_format_are_scoped_to_their_own_paths(tmp_path, monkeypatch):
@@ -712,26 +727,26 @@ def test_impact_json_and_format_are_scoped_to_their_own_paths(tmp_path, monkeypa
     _write_impact_graph(tmp_path)
     no_column = runner.invoke(app, ["impact", "--json"])
     assert no_column.exit_code == 1
-    assert "--json requires --column" in no_column.output
+    assert "--json requires --column" in _plain(no_column.output)
 
     wrong_format = runner.invoke(
         app, ["impact", "--column", "fct_matches.match_intensity", "--format", "slack"]
     )
     assert wrong_format.exit_code == 1
-    assert "use --json with --column" in wrong_format.output
+    assert "use --json with --column" in _plain(wrong_format.output)
 
 
 def test_impact_column_documented_on_the_hidden_command(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     top_help = runner.invoke(app, ["--help"])
-    assert "impact" not in top_help.output
+    assert "impact" not in _plain(top_help.output)
     own_help = runner.invoke(app, ["impact", "--help"])
     assert own_help.exit_code == 0
-    assert "--column" in own_help.output
+    assert "--column" in _plain(own_help.output)
 
 
 def test_impact_column_without_a_graph_points_at_build(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["impact", "--column", "fct_matches.match_intensity"])
     assert result.exit_code == 1
-    assert "stitch build" in result.output
+    assert "stitch build" in _plain(result.output)
