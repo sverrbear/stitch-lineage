@@ -108,14 +108,55 @@ export function columnDetail(index: GraphIndex, nodeId: string): ColumnDetail | 
 
 // ---------------------------------------------------------------------------
 
+/**
+ * Why the reverse view found no dbt column. The chain is
+ * `column -binds_to-> mb_field -consumed_by-> mb_card -appears_on-> mb_dashboard`,
+ * so an empty result always means one specific hop is missing — and naming that
+ * hop is the difference between a documented gap and a panel that looks broken
+ * (#25).
+ */
+export type ChainGap =
+  /** Fields resolved, but no dbt column binds to any of them. */
+  | 'fields-unbound'
+  /** Native SQL card: not resolved into column lineage in this build (#32). */
+  | 'native-unresolved'
+  /** MBQL card whose query yielded no field ref at all. */
+  | 'query-unresolved'
+  /** An mb_field no dbt column binds to. */
+  | 'field-unbound'
+  /** A dashboard whose cards resolved no field between them. */
+  | 'dashboard-unresolved'
+
+/** A field is bound when a dbt column flows into it — the `binds_to` hop. */
+function fieldIsBound(index: GraphIndex, fieldId: string): boolean {
+  for (const edge of index.inEdges.get(fieldId) ?? []) {
+    if (edge.edge_type !== 'binds_to') continue
+    if (index.nodesById.get(edge.from)?.node_type === 'column') return true
+  }
+  return false
+}
+
+function chainGap(node: GraphNode, fields: Reach[], columns: Reach[]): ChainGap | null {
+  if (columns.length > 0) return null
+  // A field's own up-walk yields columns, never fields, so it is asked first.
+  if (node.node_type === 'mb_field') return 'field-unbound'
+  if (fields.length > 0) return 'fields-unbound'
+  if (node.node_type === 'mb_dashboard') return 'dashboard-unresolved'
+  return node.properties?.query_type === 'native' ? 'native-unresolved' : 'query-unresolved'
+}
+
 export interface BiDetail {
   node: GraphNode
   /** Every dbt column this visual ultimately depends on, with bottleneck confidence. */
   dependsOnColumns: Reach[]
   dependsOnModels: GraphNode[]
   fields: Reach[]
+  /** Fields upstream of this node that no dbt column binds to: where the chain stops. */
+  unboundFields: Reach[]
   cards: Reach[]
   dashboards: Reach[]
+  /** Set only when `dependsOnColumns` is empty: which hop is missing. */
+  gap: ChainGap | null
 }
 
 /** Detail for mb_card, mb_dashboard and mb_field nodes (the reverse view). */
@@ -126,6 +167,7 @@ export function biDetail(index: GraphIndex, nodeId: string): BiDetail | null {
   const down = walk(index, nodeId, 'down')
 
   const dependsOnColumns = reachedOfType(up, 'column')
+  const fields = reachedOfType(up, 'mb_field')
   const dependsOnModels: GraphNode[] = []
   const seen = new Set<string>()
   for (const reach of dependsOnColumns) {
@@ -140,9 +182,11 @@ export function biDetail(index: GraphIndex, nodeId: string): BiDetail | null {
     node,
     dependsOnColumns,
     dependsOnModels,
-    fields: reachedOfType(up, 'mb_field'),
+    fields,
+    unboundFields: fields.filter((reach) => !fieldIsBound(index, reach.node.node_id)),
     cards: node.node_type === 'mb_dashboard' ? reachedOfType(up, 'mb_card') : reachedOfType(down, 'mb_card'),
     dashboards: reachedOfType(down, 'mb_dashboard'),
+    gap: chainGap(node, fields, dependsOnColumns),
   }
 }
 
