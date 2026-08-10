@@ -128,10 +128,13 @@ def test_full_build_produces_unbroken_end_to_end_chain(project):
     assert cov.models_total == 7
     assert "model.demo.fct_orders" not in cov.unbound_models
     assert (cov.mbql_cards_resolved, cov.mbql_cards_total) == (7, 8)
-    assert (cov.native_cards_resolved, cov.native_cards_total) == (0, 1)
+    assert (cov.native_cards_resolved, cov.native_cards_total) == (1, 1)
     assert (cov.dashboards, cov.dashboards_total) == (2, 2)
     assert (cov.columns_traced, cov.columns_total) == (24, 27)
-    assert set(cov.unresolved_cards) == {205, 208}
+    assert set(cov.unresolved_cards) == {208}
+    # the native card parses, so its columns reach the same dbt column the MBQL
+    # cards bind to -- one chain, two card kinds
+    assert ("mb_field::102", "mb_card::205", "consumed_by") in edges
     ghost = [r for r in cov.unresolved_field_refs if r.get("card_id") == 208]
     assert ghost and ghost[0]["reason"] == "unresolvable field name"
     assert graph.metabase_version == "v0.53.2"
@@ -429,8 +432,7 @@ def test_doctor_unresolved_cards_without_env(project, monkeypatch):
     monkeypatch.delenv("STITCH_METABASE_API_KEY")
     result = runner.invoke(app, ["doctor", "--unresolved-cards"])
     assert result.exit_code == 0, result.output
-    assert "unresolved cards (2)" in result.output
-    assert "card 205: native SQL" in result.output
+    assert "unresolved cards (1)" in result.output
     assert "card 208: unresolvable field name" in result.output
     assert "ghost_column" in result.output
 

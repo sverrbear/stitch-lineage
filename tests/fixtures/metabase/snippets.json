@@ -1,0 +1,16 @@
+[
+  {
+    "id": 5,
+    "name": "recent orders",
+    "content": "o.created_at >= '2020-01-01' and {{snippet: paid only}}",
+    "creator_id": 6,
+    "archived": false
+  },
+  {
+    "id": 6,
+    "name": "paid only",
+    "content": "o.order_total > 0",
+    "creator_id": 6,
+    "archived": false
+  }
+]

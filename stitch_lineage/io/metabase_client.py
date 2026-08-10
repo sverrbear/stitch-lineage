@@ -167,12 +167,28 @@ class MetabaseClient:
         """GET /api/collection -- the collection tree, for exclude_collections filtering."""
         return _as_list(self._get("/api/collection"), "/api/collection")
 
+    def list_snippets(self) -> list[dict[str, Any]]:
+        """GET /api/native-query-snippet -- the SQL behind `{{snippet: name}}` tags.
+
+        Returns [] instead of raising when the instance will not serve the endpoint (an
+        API key without snippet permission answers 403, and snippet folders are an
+        enterprise feature): a missing snippet degrades one native card's column
+        resolution, which is not worth failing a whole build over.
+        """
+        try:
+            return _as_list(
+                self._get("/api/native-query-snippet"), "/api/native-query-snippet"
+            )
+        except MetabaseAPIError:
+            return []
+
     def fetch_all(self, database_names: list[str]) -> MetabasePayload:
         """Fetch everything resolve_metabase needs, in one bundle.
 
         database_names are Metabase display names (config metabase.databases[].metabase_name);
         only those databases' metadata is fetched. Calls assert_version first, snapshots
         raw payloads to cache_dir when set, and fills MetabasePayload.metabase_version.
+        Snippets are best-effort (see list_snippets) -- everything else is required.
 
         Raises:
             MetabaseAPIError: any transport/auth/version failure. A configured database
@@ -221,6 +237,9 @@ class MetabaseClient:
         self._snapshot(run_dir, "collections", collections_raw)
         collections = _as_list(collections_raw, "/api/collection")
 
+        snippets = self.list_snippets()
+        self._snapshot(run_dir, "snippets", snippets)
+
         payload = MetabasePayload(
             metabase_version=version,
             databases=matched,
@@ -228,6 +247,7 @@ class MetabaseClient:
             cards=cards,
             dashboards=dashboards,
             collections=collections,
+            snippets=snippets,
         )
         self._snapshot(run_dir, "payload", payload.model_dump(mode="json"))
         self._prune_cache()

@@ -300,9 +300,10 @@ def _print_coverage(
         )
         row("models bound", f"{coverage.models_bound}/{coverage.models_total}{unmatched}")
         row("MBQL cards", f"{coverage.mbql_cards_resolved}/{coverage.mbql_cards_total}")
+        native_note = "   parsed" if coverage.native_cards_total else ""
         row(
             "native SQL cards",
-            f"{coverage.native_cards_resolved}/{coverage.native_cards_total}   unsupported in v0",
+            f"{coverage.native_cards_resolved}/{coverage.native_cards_total}{native_note}",
         )
         row("dashboards", f"{coverage.dashboards}/{coverage.dashboards_total}")
     notes = []
@@ -883,13 +884,12 @@ def _print_unresolved_cards(graph: Graph) -> None:
     for card_id in graph.coverage.unresolved_cards:
         problems = refs_by_card.get(card_id)
         if not problems:
-            console.print(f"  card {card_id}: native SQL (unsupported in v0)", soft_wrap=True)
+            console.print(f"  card {card_id}: no resolvable query", soft_wrap=True)
             continue
         for problem in problems:
-            console.print(
-                f"  card {card_id}: {problem.get('reason')} -- ref {problem.get('ref')}",
-                soft_wrap=True,
-            )
+            ref = problem.get("ref")
+            suffix = f" -- ref {ref}" if ref is not None else ""
+            console.print(f"  card {card_id}: {problem.get('reason')}{suffix}", soft_wrap=True)
 
 
 def _default_out_dir(config: Path, name: str) -> Path:
