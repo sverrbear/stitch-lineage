@@ -61,8 +61,9 @@ against `dev-public/dev-graph.json` when present and skips silently otherwise.
 ```
 src/
   lib/        pure TS, no DOM (unit-tested): graph index + traversal, lineage
-              extraction + layered layout, ERD scoping, search ranking, detail
-              computations, naming/presentation rules, data loading
+              extraction + layered layout, ERD scoping + relationship-aware
+              placement (erdLayout), search ranking, detail computations,
+              naming/presentation rules, data loading
   components/ badges (inline Snowflake/Metabase SVG marks), search panel,
               command palette, header, shared bits
   pages/      Home (search-first), Node (detail panels), Lineage, ERD
