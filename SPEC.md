@@ -413,6 +413,8 @@ Ship the GitHub Action in the repo. This is the feature that earns adoption; the
 
 A scheduled nightly job runs full `stitch build` (with Metabase) on main and commits the refreshed `graph.json` — so the baseline tracks Metabase-side drift (new cards, archived dashboards) without any human remembering to rebuild.
 
+**The point query — ask before you edit.** `stitch impact --column fct_matches.match_intensity` (#86) runs the same downstream walk (`from → to`, `relates_to` excluded, depth-capped) over the *current* `graph.json`: no baseline, no git, no Metabase credentials, because one graph is all a point query needs. The diff answers "what did my change break"; this answers "what breaks if I change this" — the question that gets asked before the edit rather than after it. Same grouped counts as the comment above (models, columns, fields, cards with dashboard and owner), `--json` for piping; input is `model.column`, a bare column name when it is unique in the graph, or a full node id, and ambiguity lists the qualified candidates rather than guessing which of three `match_intensity` columns was meant. Local impact — this plus the previous-build baseline (#53), which is also what brings `impact` back onto `--help` — is the top of the priority order (§12.1).
+
 ## 11. Agent surface
 
 `graph.json` has a stable documented schema — that alone makes it agent-consumable (Claude, Cortex, whatever reads files). `stitch export --format jsonl` additionally emits flat one-record-per-line nodes and edges for easy loading anywhere, including a `COPY INTO` recipe for teams that want it queryable in Snowflake. A recipe in the docs, not a product surface — the lesson of v0.2/v0.3 is that the warehouse backend is a consumer of this tool's output, not its home.
