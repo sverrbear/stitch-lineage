@@ -1,15 +1,25 @@
 import pytest
 
 from stitch_lineage.io.staged_store import (
+    DESCRIPTIONS_FILENAME,
     STAGED_FILENAME,
+    StagedDescription,
     StagedRelationship,
     StagedStoreError,
     add_staged,
+    description_id,
+    descriptions_path,
+    drop_descriptions,
     drop_staged,
+    read_descriptions,
     read_staged,
     relationship_id,
+    remove_description,
     remove_staged,
+    replace_staged,
     staged_path,
+    upsert_description,
+    write_descriptions,
     write_staged,
 )
 
@@ -201,3 +211,142 @@ def test_a_relationship_missing_its_endpoints_is_rejected(store):
     store.write_text("relationships:\n  - from_model: fct_orders\n")
     with pytest.raises(StagedStoreError, match="invalid relationship"):
         read_staged(store)
+
+
+# --- the description store (issue #70) --------------------------------------------------
+
+
+@pytest.fixture
+def descriptions(tmp_path):
+    return descriptions_path(tmp_path / ".stitch")
+
+
+def _description(entity="fct_orders", column="customer_id", text="Who placed the order", **kwargs):
+    return StagedDescription(entity=entity, column=column, new_description=text, **kwargs)
+
+
+def test_descriptions_path_sits_under_the_output_dir(tmp_path):
+    assert descriptions_path(tmp_path / ".stitch") == tmp_path / ".stitch" / DESCRIPTIONS_FILENAME
+
+
+def test_a_missing_description_store_reads_as_empty(descriptions):
+    assert read_descriptions(descriptions) == []
+
+
+def test_the_id_is_derived_from_the_target_only(descriptions):
+    assert _description(text="one").id == _description(text="two").id
+    assert _description(column=None).id != _description().id
+    assert _description(entity="dim_customers").id != _description().id
+
+
+def test_a_description_id_can_never_collide_with_a_relationship_id():
+    # different namespaces: the two stores are cleared independently at apply time
+    assert description_id("fct_orders", "customer_id") != relationship_id(
+        "fct_orders", "customer_id", "fct_orders", "customer_id"
+    )
+
+
+def test_upsert_creates_then_replaces(descriptions):
+    stored, created = upsert_description(_description(text="first"), descriptions)
+    assert created is True
+    assert stored.new_description == "first"
+
+    stored, created = upsert_description(_description(text="second"), descriptions)
+    assert created is False
+    entries = read_descriptions(descriptions)
+    assert len(entries) == 1
+    assert entries[0].new_description == "second"
+
+
+def test_a_model_level_edit_and_a_column_edit_coexist(descriptions):
+    upsert_description(_description(column=None, text="The orders fact"), descriptions)
+    upsert_description(_description(text="Who placed it"), descriptions)
+    assert len(read_descriptions(descriptions)) == 2
+
+
+def test_descriptions_round_trip_with_a_multi_line_body(descriptions):
+    text = "Gross total in USD.\nExcludes tax.\n"
+    upsert_description(_description(text=text), descriptions)
+    assert read_descriptions(descriptions)[0].new_description == text
+
+
+def test_description_writes_are_byte_identical_regardless_of_order(tmp_path):
+    first = tmp_path / "a.yml"
+    second = tmp_path / "b.yml"
+    entries = [_description(), _description(column=None), _description(entity="dim_customers")]
+    write_descriptions(entries, first)
+    write_descriptions(list(reversed(entries)), second)
+    assert first.read_bytes() == second.read_bytes()
+
+
+def test_remove_and_drop_descriptions(descriptions):
+    entry = _description()
+    upsert_description(entry, descriptions)
+    assert remove_description("nosuchid", descriptions) is False
+    assert remove_description(entry.id, descriptions) is True
+    assert read_descriptions(descriptions) == []
+
+    upsert_description(entry, descriptions)
+    assert drop_descriptions({entry.id, "nosuchid"}, descriptions) == 1
+    assert read_descriptions(descriptions) == []
+
+
+def test_a_corrupt_description_store_names_the_fix(descriptions):
+    descriptions.parent.mkdir(parents=True)
+    descriptions.write_text("descriptions: [unclosed\n")
+    with pytest.raises(StagedStoreError, match="delete the file"):
+        read_descriptions(descriptions)
+
+
+def test_a_description_without_text_is_rejected(descriptions):
+    descriptions.parent.mkdir(parents=True)
+    descriptions.write_text("descriptions:\n  - entity: fct_orders\n")
+    with pytest.raises(StagedStoreError, match="invalid description"):
+        read_descriptions(descriptions)
+
+
+# --- editing a staged relationship (issue #71) ------------------------------------------
+
+
+def test_replace_keeps_the_id_when_only_the_cardinality_changes(store):
+    original = _entry(created_at="2026-08-01T00:00:00+00:00")
+    add_staged(original, store)
+
+    stored, moved = replace_staged(original.id, _entry(cardinality="one-to-one"), store)
+    assert moved is False
+    assert stored.cardinality == "one-to-one"
+    # an edit is not a re-staging: when it was drawn survives the edit
+    assert stored.created_at == "2026-08-01T00:00:00+00:00"
+    assert [entry.cardinality for entry in read_staged(store)] == ["one-to-one"]
+
+
+def test_replace_rehashes_the_id_when_endpoints_change(store):
+    original = _entry()
+    add_staged(original, store)
+    edited = _entry(to_model="dim_users", to_column="user_id")
+
+    stored, moved = replace_staged(original.id, edited, store)
+    assert moved is True
+    assert stored.id == edited.id
+    assert [entry.id for entry in read_staged(store)] == [edited.id]
+
+
+def test_replace_collapses_into_an_existing_pair_instead_of_duplicating(store):
+    first = _entry()
+    second = _entry(from_column="order_total")
+    add_staged(first, store)
+    add_staged(second, store)
+
+    # editing `second` onto `first`'s endpoints: one entry survives, and it is the one
+    # already staged (its cardinality is not silently overwritten)
+    stored, moved = replace_staged(second.id, _entry(cardinality="one-to-one"), store)
+    assert moved is True
+    assert stored.id == first.id
+    assert stored.cardinality == "many-to-one"
+    assert [entry.id for entry in read_staged(store)] == [first.id]
+
+
+def test_replace_of_an_unknown_id_is_none(store):
+    add_staged(_entry(), store)
+    assert replace_staged("nosuchid", _entry(cardinality="one-to-one"), store) is None
+    assert len(read_staged(store)) == 1

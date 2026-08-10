@@ -1,14 +1,16 @@
-"""FastAPI app behind `stitch serve`: the built SPA, the read-only graph API, staging
-and suggestions.
+"""FastAPI app behind `stitch serve`: the built SPA, the read-only graph API, staging,
+suggestions and apply.
 
 The SPA fetches the relative paths `api/graph` and `api/meta` and routes on the hash
 fragment, so serving dist/ statically needs no SPA fallback route.
 
-Staging (SPEC.md section 8.2) is the only write surface, and it writes local state only --
-`.stitch/staged_relationships.yml` and `.stitch/layout.yml`, never the dbt repo. Those
-routes register only when a staged_path is passed (i.e. by `stitch serve`); the static
-export has no server at all, so it stays read-only by construction. All repo writes live
-in `stitch apply`.
+Staging (SPEC.md section 8.2) writes local state only -- `.stitch/staged_relationships.yml`,
+`.stitch/staged_descriptions.yml` and `.stitch/layout.yml`, never the dbt repo. Repo writes
+happen only through the apply endpoints (issue #72), which run the same engine
+`stitch apply` runs (`stitch_lineage.apply`) with the same guards and no force path: this
+module never touches `write/` itself. Both surfaces register only when `stitch serve` passes
+the paths and the apply context; the static export has no server at all, so it stays
+read-only by construction.
 """
 
 from datetime import UTC, datetime
@@ -19,9 +21,11 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
+from stitch_lineage import apply as apply_service
 from stitch_lineage.app import StitchAppError, frontend_dist
 from stitch_lineage.graph.schema import Graph, NodeType, column_node_id
 from stitch_lineage.graph.suggest import Suggestion, suggest
+from stitch_lineage.io.artifacts import StitchArtifactError
 from stitch_lineage.io.graph_store import read_graph
 from stitch_lineage.io.layout_store import (
     LAYOUT_FILENAME,
@@ -30,11 +34,17 @@ from stitch_lineage.io.layout_store import (
     read_dismissed,
 )
 from stitch_lineage.io.staged_store import (
+    DESCRIPTIONS_FILENAME,
+    StagedDescription,
     StagedRelationship,
     StagedStoreError,
     add_staged,
+    read_descriptions,
     read_staged,
+    remove_description,
     remove_staged,
+    replace_staged,
+    upsert_description,
 )
 
 __all__ = ["StitchAppError", "create_app", "frontend_dist"]
@@ -46,7 +56,7 @@ _SHAPES = ("simple",)
 
 
 class StagedRelationshipRequest(BaseModel):
-    """POST body for staging a drawn edge; dbt model NAMES, not unique_ids."""
+    """POST/PUT body for a staged edge; dbt model NAMES, not unique_ids."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -56,6 +66,16 @@ class StagedRelationshipRequest(BaseModel):
     to_column: str
     cardinality: str = "many-to-one"
     shape: str = "simple"
+
+
+class StagedDescriptionRequest(BaseModel):
+    """PUT body for a staged description edit; `column` omitted means the model's own."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entity: str
+    column: str | None = None
+    new_description: str
 
 
 def _load_graph(graph_path: Path) -> Graph:
@@ -146,12 +166,74 @@ def _validate(graph: Graph, payload: StagedRelationshipRequest) -> None:
         )
 
 
+def _validate_description(graph: Graph, payload: StagedDescriptionRequest) -> None:
+    """422 unless the target exists in the graph and the text is not blank."""
+    if not payload.new_description.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="a description cannot be empty -- discard the staged edit instead",
+        )
+    uid = _model_uid(graph, payload.entity)
+    if payload.column is None:
+        return
+    node_ids = {node.node_id for node in graph.nodes}
+    if column_node_id(uid, payload.column) not in node_ids:
+        raise HTTPException(
+            status_code=422,
+            detail=f"'{payload.column}' is not a column of model '{payload.entity}'",
+        )
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _entry_payload(entry: StagedRelationship | StagedDescription) -> dict:
+    """A staged change as the app sees it -- `kind` tells the workspace how to render it."""
+    return {"kind": entry.kind, "label": entry.label, **entry.model_dump(mode="json")}
+
+
+def _entry_problem(result, plan: apply_service.ApplyPlan) -> dict:
+    return {
+        "entry": _entry_payload(result.entry),
+        "reason": result.message,
+        "path": plan.relative(result.path) if result.path else None,
+    }
+
+
+def _plan_or_error(context: apply_service.ApplyContext) -> apply_service.ApplyPlan:
+    """Plan the apply, translating the engine's errors into HTTP."""
+    try:
+        return context.plan()
+    except StagedStoreError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except StitchArtifactError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _preview_payload(plan: apply_service.ApplyPlan) -> dict:
+    return {
+        "write_to": plan.write_to,
+        "staged": {
+            "relationships": len(plan.changes.relationships),
+            "descriptions": len(plan.changes.descriptions),
+        },
+        "files": [{"path": preview.path, "diff": preview.diff} for preview in plan.files()],
+        "unappliable": [_entry_problem(result, plan) for result in plan.failures],
+        "unchanged": [_entry_problem(result, plan) for result in plan.unchanged],
+    }
+
+
 def create_app(
     graph_path: Path,
     metabase_url: str | None,
     erd_default_scope: str | None = None,
     staged_path: Path | None = None,
     layout_path: Path | None = None,
+    descriptions_path: Path | None = None,
+    apply_context: apply_service.ApplyContext | None = None,
     strip_model_prefixes: list[str] | None = None,
 ) -> FastAPI:
     """Build the local app serving `graph_path`; `metabase_url` powers card deep links.
@@ -166,10 +248,18 @@ def create_app(
 
     The suggestion API rides on the same switch: suggestions exist to be accepted or
     dismissed, and both write local state, so a read-only export has neither. Dismissals
-    land in `layout_path`, defaulting to layout.yml beside the staged store.
+    land in `layout_path` and staged description edits in `descriptions_path`, both
+    defaulting to their file beside the staged store.
+
+    `apply_context` enables the apply endpoints -- the only routes that write the dbt repo.
+    They run the same engine as `stitch apply` and refuse dirty files with no force path
+    (SPEC.md section 8.2), and /api/meta reports apply_enabled so the SPA can hide the button.
     """
     dist = frontend_dist()
     layout = layout_path or (staged_path.parent / LAYOUT_FILENAME if staged_path else None)
+    descriptions = descriptions_path or (
+        staged_path.parent / DESCRIPTIONS_FILENAME if staged_path else None
+    )
     api = FastAPI(title="stitch", docs_url=None, redoc_url=None, openapi_url=None)
 
     @api.get("/api/graph")
@@ -188,6 +278,7 @@ def create_app(
                 "erd_default_scope": erd_default_scope,
                 "strip_model_prefixes": list(strip_model_prefixes or []),
                 "staging_enabled": staged_path is not None,
+                "apply_enabled": apply_context is not None,
             }
         )
 
@@ -241,6 +332,27 @@ def create_app(
                 status_code=201 if created else 200,
             )
 
+        @api.put("/api/staged-relationships/{relationship_id}")
+        def api_staged_update(
+            relationship_id: str, payload: StagedRelationshipRequest
+        ) -> JSONResponse:
+            # editing endpoints re-hashes the id, so this is a replace: `moved` tells the app
+            # the entry it edited now lives under a different id (and the canvas must restyle)
+            graph = _load_graph(graph_path)
+            _validate(graph, payload)
+            try:
+                result = replace_staged(
+                    relationship_id, StagedRelationship(**payload.model_dump()), staged_path
+                )
+            except StagedStoreError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            if result is None:
+                raise HTTPException(
+                    status_code=404, detail=f"no staged relationship with id '{relationship_id}'"
+                )
+            stored, moved = result
+            return JSONResponse({"relationship": stored.model_dump(mode="json"), "moved": moved})
+
         @api.delete("/api/staged-relationships/{relationship_id}")
         def api_staged_delete(relationship_id: str) -> Response:
             try:
@@ -252,6 +364,84 @@ def create_app(
                     status_code=404, detail=f"no staged relationship with id '{relationship_id}'"
                 )
             return Response(status_code=204)
+
+    if descriptions is not None:
+
+        @api.get("/api/staged-descriptions")
+        def api_staged_descriptions() -> JSONResponse:
+            try:
+                entries = read_descriptions(descriptions)
+            except StagedStoreError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            return JSONResponse(
+                {"descriptions": [entry.model_dump(mode="json") for entry in entries]}
+            )
+
+        @api.put("/api/staged-descriptions")
+        def api_staged_description_upsert(payload: StagedDescriptionRequest) -> JSONResponse:
+            # keyed on entity+column, so re-editing the same description replaces the staged
+            # edit rather than queueing a second one behind it
+            graph = _load_graph(graph_path)
+            _validate_description(graph, payload)
+            candidate = StagedDescription(**payload.model_dump(), created_at=_now())
+            try:
+                stored, created = upsert_description(candidate, descriptions)
+            except StagedStoreError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            return JSONResponse(
+                {"description": stored.model_dump(mode="json"), "created": created},
+                status_code=201 if created else 200,
+            )
+
+        @api.delete("/api/staged-descriptions/{description_id}")
+        def api_staged_description_delete(description_id: str) -> Response:
+            try:
+                removed = remove_description(description_id, descriptions)
+            except StagedStoreError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            if not removed:
+                raise HTTPException(
+                    status_code=404, detail=f"no staged description with id '{description_id}'"
+                )
+            return Response(status_code=204)
+
+    if apply_context is not None:
+
+        @api.post("/api/apply/preview")
+        def api_apply_preview() -> JSONResponse:
+            return JSONResponse(_preview_payload(_plan_or_error(apply_context)))
+
+        @api.post("/api/apply")
+        def api_apply() -> JSONResponse:
+            plan = _plan_or_error(apply_context)
+            # no force from the app, ever: a target file with uncommitted edits is refused and
+            # reported, and overwriting it stays a `stitch apply --force` decision
+            refused = apply_service.refusals(plan)
+            outcome = apply_service.execute(plan, refused)
+            graph = outcome.graph
+            return JSONResponse(
+                {
+                    "written": [plan.relative(path) for path in outcome.written],
+                    "refused": [
+                        {
+                            "path": plan.relative(path),
+                            "reason": "the file has uncommitted changes -- commit or stash it, "
+                            "or run 'stitch apply --force' from the CLI",
+                        }
+                        for path in outcome.refused
+                    ],
+                    "applied": outcome.applied,
+                    "still_staged": outcome.still_staged,
+                    "unappliable": [_entry_problem(result, plan) for result in plan.failures],
+                    "graph": {
+                        "patched": bool(graph and graph.patched),
+                        "edges_added": graph.edges_added if graph else 0,
+                        "descriptions_updated": graph.descriptions_updated if graph else 0,
+                        "skipped": list(graph.skipped) if graph else [],
+                        "note": graph.note if graph else None,
+                    },
+                }
+            )
 
     api.mount("/", StaticFiles(directory=dist, html=True), name="app")
     return api
