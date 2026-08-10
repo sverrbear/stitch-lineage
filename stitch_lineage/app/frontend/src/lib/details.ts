@@ -151,8 +151,9 @@ export function biDetail(index: GraphIndex, nodeId: string): BiDetail | null {
 export interface ModelDetail {
   node: GraphNode
   columns: GraphNode[]
-  upstreamModels: GraphNode[]
-  downstreamModels: GraphNode[]
+  /** Reaches, not bare nodes: the hop distance is what orders the layers (#82). */
+  upstream: Reach[]
+  downstream: Reach[]
   cards: Reach[]
   dashboards: Reach[]
   relationships: RelationshipRef[]
@@ -164,12 +165,12 @@ export function modelDetail(index: GraphIndex, nodeId: string): ModelDetail | nu
   const columns = index.columnsByModel.get(nodeId) ?? []
 
   const refTypes = new Set(['references'])
-  const upstreamModels = [...walk(index, nodeId, 'up', { edgeTypes: refTypes }).reached.values()]
-    .map((r) => r.node)
-    .filter((n) => n.node_type === 'model' || n.node_type === 'source')
-  const downstreamModels = [...walk(index, nodeId, 'down', { edgeTypes: refTypes }).reached.values()]
-    .map((r) => r.node)
-    .filter((n) => n.node_type === 'model')
+  const upstream = [...walk(index, nodeId, 'up', { edgeTypes: refTypes }).reached.values()].filter(
+    (r) => r.node.node_type === 'model' || r.node.node_type === 'source',
+  )
+  const downstream = [
+    ...walk(index, nodeId, 'down', { edgeTypes: refTypes }).reached.values(),
+  ].filter((r) => r.node.node_type === 'model')
 
   // BI fan-out flows through this model's columns, not the model node itself.
   const cards = new Map<string, Reach>()
@@ -191,8 +192,8 @@ export function modelDetail(index: GraphIndex, nodeId: string): ModelDetail | nu
   return {
     node,
     columns,
-    upstreamModels,
-    downstreamModels,
+    upstream,
+    downstream,
     cards: [...cards.values()],
     dashboards: [...dashboards.values()],
     relationships: relationshipsTouching(index, columnIds),

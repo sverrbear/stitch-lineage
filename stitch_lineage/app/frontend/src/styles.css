@@ -634,6 +634,263 @@ kbd {
   gap: 6px;
 }
 
+/* The model page's mini star-schema (#81). Every measurement here is mirrored by
+   the constants in lib/modelStar (the layout has to space cards before React Flow
+   has measured them): 208px wide, a 40px head, 19px rows, 4px of list padding. */
+.star-canvas {
+  /* the component sizes it to the ring it has to hold; this is the fallback */
+  height: 300px;
+  margin: 4px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.star-node {
+  width: 208px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.star-node.hub {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  cursor: default;
+}
+
+.star-node-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 10px;
+  background: var(--bg-hover);
+  border-radius: 7px 7px 0 0;
+}
+
+.star-node:not(.hub) .star-node-head:hover .star-node-name {
+  text-decoration: underline;
+}
+
+.star-node-name {
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.star-node-kind {
+  margin-left: auto;
+  flex: none;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.star-columns {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+}
+
+.star-column {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 19px;
+  padding: 0 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+/* the two rows a hovered relationship joins, same language as the ERD */
+.star-column.lit {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.star-column-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the handles exist so edges can attach to a ROW; nothing is drawn from them here */
+.star-handle {
+  width: 6px;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  top: 0;
+  transform: none;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.star-note,
+.star-empty {
+  font-size: 12px;
+}
+
+/* Dependency lists (#82). A chip wall gives every entry the same weight and no
+   order; these give the LAYER the weight (it is what a reader scans for) and one
+   quiet row per model, in pipeline order. */
+.dep-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dep-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.dep-group-count {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.dep-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-left: 2px solid var(--border);
+}
+
+.dep-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0 2px 10px;
+  font-size: 13px;
+}
+
+.dep-row:hover {
+  background: var(--bg-hover);
+}
+
+.dep-row-name {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.dep-row-name:hover {
+  text-decoration: underline;
+}
+
+.dep-row-hops {
+  margin-left: auto;
+  font-size: 11px;
+}
+
+/* BI usage, grouped by the dashboard a reader recognises (#82) */
+.bi-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bi-group {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+}
+
+.bi-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.bi-group-head::-webkit-details-marker {
+  display: none;
+}
+
+/* a group says whether it is open without a library: ▸ closed, ▾ open */
+.bi-group-head::before {
+  content: '▸';
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.bi-group[open] > .bi-group-head::before {
+  content: '▾';
+}
+
+.bi-group-name {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.bi-group-name:hover {
+  text-decoration: underline;
+}
+
+.bi-group-count {
+  margin-left: auto;
+  font-weight: 400;
+  font-size: 12px;
+}
+
+.bi-group-link,
+.bi-card-link {
+  color: var(--metabase);
+  font-size: 11px;
+  font-weight: 400;
+  text-decoration: none;
+}
+
+.bi-group-link:hover,
+.bi-card-link:hover {
+  text-decoration: underline;
+}
+
+.bi-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0 10px 8px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.bi-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.bi-card-name {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.bi-card-name:hover {
+  text-decoration: underline;
+}
+
+.bi-card-link {
+  margin-left: auto;
+}
+
 .node-chip {
   display: inline-flex;
   align-items: center;

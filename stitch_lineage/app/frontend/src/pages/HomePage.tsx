@@ -7,8 +7,8 @@ import { NodeChip } from '../components/bits'
 import { SearchPanel } from '../components/SearchPanel'
 import { useStitch } from '../data'
 import { coverageTiles, graphStats, startingPoints, type CoverageTile } from '../lib/coverage'
-import { NODE_TYPE_NAME } from '../lib/present'
-import { coverageHref, erdHref, overviewHref } from '../router'
+import { NODE_TYPE_NAME, displayName } from '../lib/present'
+import { coverageHref, erdHref, lineageHref } from '../router'
 
 const STALE_DAYS = 7
 
@@ -43,6 +43,8 @@ export function HomePage({ searchInputRef }: { searchInputRef: RefObject<HTMLInp
   const tiles = useMemo(() => coverageTiles(index.graph.coverage), [index])
   const starts = useMemo(() => startingPoints(index), [index])
   const generatedAt = stats.generatedAt ?? meta.generated_at
+  // the lineage entry needs somewhere to start: the model the BI layer leans on most
+  const busiest = starts.mostConsumedModels[0] ?? null
 
   return (
     <main className="home">
@@ -71,20 +73,31 @@ export function HomePage({ searchInputRef }: { searchInputRef: RefObject<HTMLInp
 
       <section className="home-section">
         <h2 className="home-section-title">Start here</h2>
+        {/* Two ways in, and they are the two canvases stitch keeps: the model view
+            and the flow view. The global pipeline map is gone (#83). */}
         <div className="entry-row">
-          <a className="entry-card" href={overviewHref()}>
-            <span className="entry-card-title">Pipeline map</span>
-            <span className="entry-card-text">
-              Every model and source at table grain, laid out by dependency order, with Metabase
-              consumption aggregated on the right.
-            </span>
-          </a>
           <a className="entry-card" href={erdHref()}>
             <span className="entry-card-title">ERD</span>
             <span className="entry-card-text">
               Tables and their declared relationships, one schema or dbt tag at a time.
             </span>
           </a>
+          {busiest ? (
+            <a className="entry-card" href={lineageHref(busiest.node.node_id)}>
+              <span className="entry-card-title">Lineage</span>
+              <span className="entry-card-text">
+                Follow a column end to end, source to dashboard — starting at{' '}
+                {displayName(busiest.node)}, the most consumed model in this graph.
+              </span>
+            </a>
+          ) : (
+            <a className="entry-card" href={coverageHref('unbound-models')}>
+              <span className="entry-card-title">Coverage</span>
+              <span className="entry-card-text">
+                Nothing in this graph reaches Metabase yet — start with what is unbound.
+              </span>
+            </a>
+          )}
         </div>
         <div className="start-lists">
           <div className="start-list">
