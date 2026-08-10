@@ -1,11 +1,14 @@
 from stitch_lineage.graph.impact import (
     ColumnDiff,
     ImpactReport,
+    column_blast_radius,
     diff_columns,
     downstream,
+    format_blast_radius,
     format_github_comment,
     format_slack_comment,
     impact_from_graphs,
+    resolve_column_ref,
 )
 from stitch_lineage.graph.schema import (
     Confidence,
@@ -242,3 +245,161 @@ def test_slack_comment_no_downstream_impact_block():
     comment = format_slack_comment(diff, report, base)
     assert "*fct_matches.orphan* → removed" in comment
     assert "• no downstream impact found" in comment
+
+
+# --- point query: stitch impact --column (issue #86) ---------------------------------
+
+KPI = "model.smitten.mart_board_kpis"
+
+
+def fan_out_graph():
+    """One column feeding two models, one of them bound through to two cards on a dashboard."""
+    fct_col = column_node_id(FCT, "match_intensity")
+    field = mb_field_node_id(101)
+    nodes = [
+        Node(
+            node_id=FCT,
+            node_type=NodeType.MODEL,
+            name="fct_matches",
+            schema_="MARTS",
+            table="FCT_MATCHES",
+        ),
+        model(MART, "mart_engagement"),
+        model(KPI, "mart_board_kpis"),
+        col(FCT, "match_intensity"),
+        col(FCT, "orphan"),
+        col(MART, "match_intensity"),
+        col(KPI, "match_intensity"),
+        Node(node_id=field, node_type=NodeType.MB_FIELD, name="Match Intensity"),
+        Node(
+            node_id=mb_card_node_id(412),
+            node_type=NodeType.MB_CARD,
+            name="Match intensity by country",
+            properties={"creator": "sverrir"},
+        ),
+        Node(node_id=mb_card_node_id(418), node_type=NodeType.MB_CARD, name="Weekly trend"),
+        Node(node_id=mb_dashboard_node_id(9), node_type=NodeType.MB_DASHBOARD, name="Board"),
+    ]
+    edges = [
+        edge(fct_col, column_node_id(MART, "match_intensity"), EdgeType.FEEDS),
+        edge(fct_col, column_node_id(KPI, "match_intensity"), EdgeType.FEEDS),
+        edge(column_node_id(MART, "match_intensity"), field, EdgeType.BINDS_TO),
+        edge(field, mb_card_node_id(412), EdgeType.CONSUMED_BY),
+        edge(field, mb_card_node_id(418), EdgeType.CONSUMED_BY),
+        edge(mb_card_node_id(412), mb_dashboard_node_id(9), EdgeType.APPEARS_ON),
+        # a relates_to edge must never widen the blast radius
+        edge(fct_col, column_node_id(KPI, "unrelated"), EdgeType.RELATES_TO),
+    ]
+    return Graph(nodes=nodes, edges=edges)
+
+
+def test_resolve_column_ref_accepts_model_column_and_node_id():
+    graph = fan_out_graph()
+    target = column_node_id(FCT, "match_intensity")
+    for query in (
+        "fct_matches.match_intensity",
+        "FCT_MATCHES.MATCH_INTENSITY",
+        f"{FCT}.match_intensity",
+        "MARTS.FCT_MATCHES.match_intensity",
+        target,
+    ):
+        assert resolve_column_ref(graph, query).node_id == target, query
+
+
+def test_resolve_column_ref_accepts_unique_bare_column_name():
+    graph = fan_out_graph()
+    assert resolve_column_ref(graph, "orphan").node_id == column_node_id(FCT, "orphan")
+
+
+def test_resolve_column_ref_reports_ambiguity_with_qualified_candidates():
+    lookup = resolve_column_ref(fan_out_graph(), "match_intensity")
+    assert lookup.node_id is None
+    assert [ref.label for ref in lookup.candidates] == [
+        "fct_matches.match_intensity",
+        "mart_board_kpis.match_intensity",
+        "mart_engagement.match_intensity",
+    ]
+
+
+def test_resolve_column_ref_suggests_near_misses():
+    lookup = resolve_column_ref(fan_out_graph(), "fct_matches.match_intensety")
+    assert lookup.node_id is None
+    assert not lookup.candidates
+    assert "fct_matches.match_intensity" in [ref.label for ref in lookup.suggestions]
+
+
+def test_resolve_column_ref_on_a_model_offers_its_columns():
+    lookup = resolve_column_ref(fan_out_graph(), "fct_matches")
+    assert lookup.node_id is None
+    assert lookup.matched_model == "fct_matches"
+    assert [ref.label for ref in lookup.suggestions] == [
+        "fct_matches.match_intensity",
+        "fct_matches.orphan",
+    ]
+
+
+def test_resolve_column_ref_unknown_and_empty_queries():
+    graph = fan_out_graph()
+    assert resolve_column_ref(graph, "  ").node_id is None
+    nothing = resolve_column_ref(graph, "zzz_no_such_thing")
+    assert nothing.node_id is None and not nothing.candidates
+
+
+def test_column_blast_radius_groups_the_whole_chain():
+    graph = fan_out_graph()
+    radius = column_blast_radius(graph, column_node_id(FCT, "match_intensity"))
+    assert radius.label == "fct_matches.match_intensity"
+    assert [ref.label for ref in radius.models] == ["mart_board_kpis", "mart_engagement"]
+    assert [ref.label for ref in radius.columns] == [
+        "mart_board_kpis.match_intensity",
+        "mart_engagement.match_intensity",
+    ]
+    assert [ref.label for ref in radius.fields] == ["Match Intensity"]
+    assert [(c.card_id, c.label, c.dashboards, c.owner) for c in radius.cards] == [
+        (412, "Match intensity by country", ["Board"], "sverrir"),
+        (418, "Weekly trend", [], None),
+    ]
+    assert [ref.label for ref in radius.dashboards] == ["Board"]
+    assert not radius.truncated
+
+
+def test_column_blast_radius_excludes_relates_to():
+    graph = fan_out_graph()
+    radius = column_blast_radius(graph, column_node_id(FCT, "match_intensity"))
+    assert all("unrelated" not in ref.node_id for ref in radius.columns)
+
+
+def test_column_blast_radius_of_a_leaf_column_is_empty():
+    radius = column_blast_radius(fan_out_graph(), column_node_id(FCT, "orphan"))
+    assert not (radius.models or radius.columns or radius.fields or radius.cards)
+    assert format_blast_radius(radius) == "fct_matches.orphan\n  └ no downstream impact found"
+
+
+def test_column_blast_radius_flags_truncation():
+    radius = column_blast_radius(
+        fan_out_graph(), column_node_id(FCT, "match_intensity"), max_depth=1
+    )
+    assert radius.truncated
+    assert [ref.label for ref in radius.columns] == [
+        "mart_board_kpis.match_intensity",
+        "mart_engagement.match_intensity",
+    ]
+    assert not radius.cards
+    assert "truncated at depth 1" in format_blast_radius(radius)
+
+
+def test_format_blast_radius_renders_the_spec_tree():
+    graph = fan_out_graph()
+    radius = column_blast_radius(graph, column_node_id(FCT, "match_intensity"))
+    assert format_blast_radius(radius) == (
+        "fct_matches.match_intensity\n"
+        "  ├ 2 downstream models: mart_board_kpis, mart_engagement\n"
+        "  ├ 2 downstream columns:\n"
+        "      mart_board_kpis.match_intensity\n"
+        "      mart_engagement.match_intensity\n"
+        "  ├ 1 Metabase field: Match Intensity\n"
+        "  ├ 2 Metabase cards:\n"
+        "      #412 Match intensity by country  (Board, sverrir)\n"
+        "      #418 Weekly trend\n"
+        "  └ 1 dashboard: Board"
+    )
