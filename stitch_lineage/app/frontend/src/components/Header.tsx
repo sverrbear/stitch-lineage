@@ -13,9 +13,9 @@ export function Header({ onOpenPalette }: { onOpenPalette: () => void }) {
       <a className="app-brand" href="#/">
         stitch
       </a>
+      {/* the ERD is the canvas — the global pipeline map is gone (#83) */}
       <nav className="app-nav">
-        <a href="#/">Overview</a>
-        <a href="#/overview">Map</a>
+        <a href="#/">Home</a>
         <a href="#/erd">ERD</a>
       </nav>
       <div className="app-header-right">

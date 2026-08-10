@@ -103,11 +103,13 @@ describe('modelDetail', () => {
   it('computes columns, fan-in/fan-out and BI reach', () => {
     const detail = modelDetail(index, 'model.demo.fct_revenue')!
     expect(detail.columns.map((c) => c.name).sort()).toEqual(['net_revenue', 'user_id'])
-    expect(detail.upstreamModels.map((m) => m.node_id).sort()).toEqual([
+    expect(detail.upstream.map((r) => r.node.node_id).sort()).toEqual([
       'model.demo.stg_payments',
       'source.demo.app.events',
     ])
-    expect(detail.downstreamModels.map((m) => m.node_id)).toEqual(['model.demo.mart_board'])
+    // the hop distance rides along, so the layers can be ordered by it (#82)
+    expect(detail.upstream.find((r) => r.node.name === 'events')!.depth).toBe(2)
+    expect(detail.downstream.map((r) => r.node.node_id)).toEqual(['model.demo.mart_board'])
     expect(detail.cards.length).toBe(2)
     expect(detail.dashboards.length).toBe(1)
     expect(detail.relationships).toHaveLength(1)

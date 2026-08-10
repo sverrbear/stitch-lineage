@@ -17,6 +17,49 @@ import {
 const CORNER_PX = 9
 
 /**
+ * The `1` and `*` glyphs a model view puts on each end of a relationship. Defined
+ * once per canvas and referenced by id, so every surface that draws relationships
+ * (the ERD, the model page's mini star) renders identical ends. `orient="0"` keeps
+ * them upright whatever direction the edge runs, and the two `refX` values nudge
+ * each glyph clear of the card it belongs to (sources leave from the right edge,
+ * targets arrive at the left).
+ */
+export function ErdMarkers() {
+  return (
+    <svg className="erd-markers" aria-hidden="true" focusable="false">
+      <defs>
+        <marker
+          id="erd-card-many"
+          viewBox="0 0 14 14"
+          markerWidth="14"
+          markerHeight="14"
+          refX="0"
+          refY="7"
+          orient="0"
+        >
+          <text className="erd-marker-glyph" x="7" y="11" textAnchor="middle">
+            *
+          </text>
+        </marker>
+        <marker
+          id="erd-card-one"
+          viewBox="0 0 14 14"
+          markerWidth="14"
+          markerHeight="14"
+          refX="14"
+          refY="7"
+          orient="0"
+        >
+          <text className="erd-marker-glyph" x="7" y="11" textAnchor="middle">
+            1
+          </text>
+        </marker>
+      </defs>
+    </svg>
+  )
+}
+
+/**
  * Every card on the canvas, in flow coordinates. Positions are quantised so a
  * drag re-routes on real movement rather than on every sub-pixel frame.
  */
