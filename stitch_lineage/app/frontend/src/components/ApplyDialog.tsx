@@ -1,10 +1,18 @@
 // Running `stitch apply` from the app (#72): preview, confirm, results.
 //
-// This is the commit screen. Three states, in one order, no shortcuts:
-//   review  — the per-file diffs the engine planned, plus anything it cannot write;
-//   applying— the same guards as the CLI, running server-side;
-//   done    — what was written, and per-file refusals with the reason the engine
-//             gave (a dirty file keeps itself out; its clean siblings still land).
+// This is the commit screen. Four states, in one order, no shortcuts:
+//   planning  — asking the engine what it would write;
+//   review    — the per-file diffs it planned, plus anything it cannot write;
+//   applying  — the same guards as the CLI, running server-side;
+//   refreshing— the writes landed; re-reading the graph they changed;
+//   done      — what was written, and per-file refusals with the reason the engine
+//               gave (a dirty file keeps itself out; its clean siblings still land).
+//
+// The phase is explicit rather than one `busy` flag because the reader is owed
+// different words in each of them (#160): a single flag made the Apply button read
+// "Applying…" while the dialog was still only planning, and left the results screen
+// sitting behind a disabled Close for as long as the graph reload took, with nothing
+// on screen admitting that anything was still running.
 //
 // There is deliberately no force: the CLI owns that, because overriding a
 // dirty-file guard should cost a terminal.
@@ -18,7 +26,14 @@ import {
   type ApplyPreview,
   type ApplyProblem,
 } from '../lib/staging'
-import { outcomeSummary } from '../lib/workspace'
+import {
+  applyButtonLabel,
+  applyStatus,
+  isWorking,
+  outcomeSummary,
+  type ApplyPhase,
+} from '../lib/workspace'
+import { Spinner } from './bits'
 import { DiffView } from './DiffView'
 
 /**
@@ -37,6 +52,16 @@ const WRITE_FORM: Record<string, ReactNode> = {
     </>
   ),
   contract_constraint: <>a model contract foreign-key constraint</>,
+}
+
+/** One line saying what is running, with the spinner beside it. */
+function Working({ children }: { children: ReactNode }) {
+  return (
+    <p className="apply-status muted" role="status" aria-live="polite">
+      <Spinner />
+      {children}
+    </p>
+  )
 }
 
 function ProblemList({ title, problems }: { title: string; problems: readonly ApplyProblem[] }) {
@@ -71,8 +96,9 @@ export function ApplyDialog({
 }) {
   const [preview, setPreview] = useState<ApplyPreview | null>(null)
   const [outcome, setOutcome] = useState<ApplyOutcome | null>(null)
-  const [busy, setBusy] = useState(true)
+  const [phase, setPhase] = useState<ApplyPhase>('planning')
   const [error, setError] = useState<string | null>(null)
+  const busy = isWorking(phase)
 
   useEffect(() => {
     let cancelled = false
@@ -86,7 +112,7 @@ export function ApplyDialog({
         }
       })
       .finally(() => {
-        if (!cancelled) setBusy(false)
+        if (!cancelled) setPhase('review')
       })
     return () => {
       cancelled = true
@@ -102,22 +128,30 @@ export function ApplyDialog({
   }, [busy, onClose])
 
   const run = async () => {
-    setBusy(true)
+    setPhase('applying')
     setError(null)
+    // a local, not the outcome state: this needs to know whether the WRITES got
+    // through, and the setState above is not visible in this scope
+    let written: ApplyOutcome | null = null
     try {
-      const result = await applyStaged()
-      setOutcome(result)
-      await onApplied(result)
+      written = await applyStaged()
+      // the writes are done here; onApplied re-reads the graph, which is the long half
+      setOutcome(written)
+      setPhase('refreshing')
+      await onApplied(written)
+      setPhase('done')
     } catch (problem) {
       setError(problem instanceof StagingError ? problem.message : String(problem))
-    } finally {
-      setBusy(false)
+      // back to review when the apply itself failed; a refresh that failed still
+      // wrote the files, so the results stand and only the canvas is out of date
+      setPhase(written ? 'done' : 'review')
     }
   }
 
   const files = preview?.files ?? []
   const staged = preview?.staged
   const total = staged ? staged.relationships + staged.descriptions : 0
+  const status = applyStatus(phase, files.length)
 
   return (
     <div className="modal-backdrop" role="presentation" onClick={() => !busy && onClose()}>
@@ -126,13 +160,14 @@ export function ApplyDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="apply-modal-title"
+        aria-busy={busy}
         onClick={(event) => event.stopPropagation()}
       >
         <h2 id="apply-modal-title">{outcome ? 'Applied' : 'Apply staged changes'}</h2>
 
         {!outcome && (
           <>
-            {busy && !preview && <p className="muted">Planning the writes…</p>}
+            {phase === 'planning' && !preview && <Working>{status}</Working>}
             {preview && (
               <>
                 <p className="apply-lead">
@@ -148,10 +183,14 @@ export function ApplyDialog({
                   <ProblemList title="Cannot be written" problems={preview.unappliable} />
                   <ProblemList title="Already true in the repo" problems={preview.unchanged} />
                 </div>
-                <p className="muted modal-note">
-                  This writes the files above in your dbt repo. A file with uncommitted changes is
-                  refused and reported — forcing stays in the CLI.
-                </p>
+                {phase === 'applying' ? (
+                  <Working>{status}</Working>
+                ) : (
+                  <p className="muted modal-note">
+                    This writes the files above in your dbt repo. A file with uncommitted changes is
+                    refused and reported — forcing stays in the CLI.
+                  </p>
+                )}
               </>
             )}
           </>
@@ -160,6 +199,9 @@ export function ApplyDialog({
         {outcome && (
           <div className="apply-scroll">
             <p className="apply-lead">{outcomeSummary(outcome)}</p>
+            {/* the writes have landed, but the canvas behind this dialog has not caught
+                up yet and Close is still held — say so rather than looking stuck */}
+            {phase === 'refreshing' && <Working>{status}</Working>}
             {outcome.written.length > 0 && (
               <section>
                 <h3 className="subhead">Written</h3>
@@ -213,7 +255,7 @@ export function ApplyDialog({
           {!outcome && (
             <button
               type="button"
-              className="button"
+              className={phase === 'applying' ? 'button is-working' : 'button'}
               onClick={() => void run()}
               disabled={busy || !preview || (files.length === 0 && preview.unappliable.length === 0)}
               title={
@@ -222,7 +264,8 @@ export function ApplyDialog({
                   : 'write these files in the dbt repo'
               }
             >
-              {busy ? 'Applying…' : `Apply ${files.length} file${files.length === 1 ? '' : 's'}`}
+              {phase === 'applying' && <Spinner />}
+              {applyButtonLabel(phase, files.length)}
             </button>
           )}
         </div>
