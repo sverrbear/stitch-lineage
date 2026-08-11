@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { biDetail, columnDetail, dataTypeLabel, modelDetail } from './details'
 import { buildIndex } from './graph'
 import { fixtureGraph } from './fixture'
-import type { GraphEdge, GraphNode, StitchGraph } from '../types'
+import type { DataTypeSource, GraphEdge, GraphNode, StitchGraph } from '../types'
 
 const index = buildIndex(fixtureGraph())
 
@@ -118,16 +118,21 @@ describe('modelDetail', () => {
 
 // #122: a bare "unknown" data type reads as a broken tool. The graph knows why.
 describe('dataTypeLabel', () => {
-  const column = (data_type: string | null, reason?: string): GraphNode => ({
+  const column = (
+    data_type: string | null,
+    reason?: string,
+    data_type_source?: DataTypeSource,
+  ): GraphNode => ({
     node_id: 'model.demo.fct_revenue::net_revenue',
     node_type: 'column',
     name: 'net_revenue',
     data_type,
+    data_type_source,
     properties: reason ? { unknown_type_reason: reason } : {},
   })
 
   it('passes a real type through untouched', () => {
-    expect(dataTypeLabel(column('NUMBER'))).toEqual({ text: 'NUMBER', hint: null })
+    expect(dataTypeLabel(column('NUMBER'))).toEqual({ text: 'NUMBER', hint: null, source: null })
   })
 
   it('says the model was never built when the catalog has no entry for it', () => {
@@ -143,7 +148,36 @@ describe('dataTypeLabel', () => {
   })
 
   it('claims no reason it does not have', () => {
-    expect(dataTypeLabel(column(null))).toEqual({ text: 'unknown', hint: null })
-    expect(dataTypeLabel(column(null, 'something_new'))).toEqual({ text: 'unknown', hint: null })
+    expect(dataTypeLabel(column(null))).toEqual({ text: 'unknown', hint: null, source: null })
+    expect(dataTypeLabel(column(null, 'something_new'))).toEqual({
+      text: 'unknown',
+      hint: null,
+      source: null,
+    })
+  })
+
+  // #149: types now come from three places, so the line has to say which one answered
+  it('names the Metabase sync as the source of a type the catalog never had', () => {
+    const label = dataTypeLabel(column('NUMBER(38,0)', undefined, 'metabase'))
+    expect(label.text).toBe('NUMBER(38,0)')
+    expect(label.source?.label).toBe('from Metabase sync')
+    expect(label.source?.hint).toContain('binds to')
+  })
+
+  it('marks an inferred type as a parse result rather than a warehouse fact', () => {
+    const label = dataTypeLabel(column('DOUBLE', undefined, 'inferred'))
+    expect(label.source?.label).toBe('inferred from expression')
+    expect(label.source?.hint).toContain('sqlglot')
+  })
+
+  it('names the catalog for the types that always worked', () => {
+    expect(dataTypeLabel(column('FLOAT', undefined, 'catalog')).source?.label).toBe(
+      'from the dbt catalog',
+    )
+  })
+
+  it('shows no provenance for an unknown type, whatever the graph claims', () => {
+    // a source without a type is a contradiction; the type is what the subtext qualifies
+    expect(dataTypeLabel(column(null, undefined, 'metabase')).source).toBeNull()
   })
 })

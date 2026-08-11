@@ -138,7 +138,7 @@ Diff hygiene: volatile fields (`generated_at`, invocation id) live in a header b
 | `mb_card` | `mb_card::{card_id}` | `/api/card` |
 | `mb_dashboard` | `mb_dash::{dashboard_id}` | `/api/dashboard` |
 
-Node payload: `name`, `database/schema/table/column`, `data_type`, `description`, `owner`, plus a `properties` object for type-specific extras (tags, materialization, collection_id, card creator, archived flag).
+Node payload: `name`, `database/schema/table/column`, `data_type`, `data_type_source` (which source in §7.6's waterfall answered — absent when there is no type), `description`, `owner`, plus a `properties` object for type-specific extras (tags, materialization, collection_id, card creator, archived flag).
 
 **Edges — direction pinned: `from → to` is always data flow, upstream to downstream.** Impact traversal walks `from → to`; a single edge type pointing the wrong way silently corrupts every impact report.
 
@@ -310,6 +310,23 @@ dbt column lineage  2551/3293 columns traced   (1329 inferred via star-expansion
 **Weak evidence is labelled, not averaged in.** `columns_inferred` is traced by star-expansion or name match rather than parsed out of the SQL, and on a real project it is the majority of the traced count — so the share rides next to the ratio in both the CLI output and the app's coverage block, never folded silently into one number.
 
 Coverage reporting is what turns "the graph looks thin" from a bug report into a documented limitation evaluable in thirty seconds. Non-negotiable in Phase 0.
+
+### 7.6 Data type resolution — a waterfall, with provenance
+
+A column's `data_type` has more than one possible source, and asking only one of them reports `unknown` for types the warehouse has known all along. The dev target's `catalog.json` only describes relations *that* developer built; Metabase, meanwhile, syncs the whole prod schema. Resolve in order, first hit wins, and record which source answered on `data_type_source`:
+
+1. **`catalog`** — this build's dbt artifacts: `catalog.json`, else a `data_type` declared in `schema.yml`.
+2. **`metabase`** — the warehouse type (`database_type`, falling back to Metabase's `base_type`) of the field this column binds to. **Exact bindings only**: a fuzzy bind matched on squashed underscores and case is good enough to draw an edge a human reads in context, not to assert a type as fact about a column we know we guessed at.
+3. **`inferred`** — sqlglot `annotate_types` over the compiled SQL. Opt-in (`stitch build --infer-types`), because the types come back in sqlglot's canonical spelling rather than the warehouse's (a Snowflake `NUMBER` reads back `DECIMAL(38, 0)`). Expressions that annotate to `UNKNOWN`/`NULL` are dropped, not recorded — "parsed it and learned nothing" is the same state as never asking.
+4. Otherwise **unknown**: `data_type` stays null, `data_type_source` is absent, and `unknown_type_reason` keeps saying *why* (#122).
+
+**Precedence lives in one place** (`resolve/types.py`), applied after binding. The inference pass runs earlier, inside the dbt resolver where the compiled SQL and the schema map are, but hands its results over as *candidates* — a parse guess must not outrank the warehouse's own answer merely by being computed first.
+
+**Provenance is shown, not averaged in** (the confidence-visibility principle): the detail panel prints the source under the type — *from the dbt catalog* / *from Metabase sync* / *inferred from expression* — because a `NUMBER(38,0)` the warehouse reported and a `DOUBLE` sqlglot worked out are not the same claim, and only one of them is safe to act on. `stitch build` prints the same split:
+
+```
+column types        2874/3293 typed   (1902 catalog, 972 Metabase, 419 unknown)
+```
 
 ## 8. Relationships: storage and write-back
 
