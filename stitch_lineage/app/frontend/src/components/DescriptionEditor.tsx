@@ -29,6 +29,12 @@ export function DescriptionEditor({
   staged,
   /** Whether this build can stage at all (a static export cannot). */
   canStage,
+  /**
+   * Why `stitch apply` could never write this model's schema file, or null when it
+   * can (#132). Known BEFORE anything is staged, so the affordance is withheld
+   * rather than the edit taken and bounced at apply time.
+   */
+  refusal,
   onChanged,
 }: {
   entity: string
@@ -36,6 +42,7 @@ export function DescriptionEditor({
   applied: string | null | undefined
   staged: StagedDescription | null
   canStage: boolean
+  refusal?: string | null
   onChanged: () => Promise<void> | void
 }) {
   const [editing, setEditing] = useState(false)
@@ -164,10 +171,17 @@ export function DescriptionEditor({
             )}
           </>
         )}
-        {canStage && (
+        {canStage && !refusal && (
           <button type="button" className="ghost-button desc-edit" onClick={open}>
             {current ? 'Edit description' : 'Add a description'}
           </button>
+        )}
+        {canStage && refusal && (
+          // Shown, not hidden: a missing button reads as a bug, and the reason is
+          // something the reader can act on in their own repo.
+          <span className="desc-unwritable" title={refusal}>
+            not editable here
+          </span>
         )}
       </div>
     </div>

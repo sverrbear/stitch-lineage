@@ -34,9 +34,11 @@ from stitch_lineage.io.staged_store import StagedChange, StagedDescription, Stag
 __all__ = [
     "EntryResult",
     "FileEdit",
+    "ModelWriteability",
     "WritePlan",
     "YamlWriteError",
     "apply_plan",
+    "model_writeability",
     "plan_writes",
 ]
 
@@ -162,7 +164,7 @@ def plan_writes(
             path = _schema_path(entry, models, project_dir)
             if path not in current:
                 text = _read(path)
-                _assert_round_trips(path, text)
+                _assert_round_trips(path, text, entry)
                 originals[path] = text
                 current[path] = text
             updated = _apply_entry(current[path], entry, models, config, path)
@@ -266,6 +268,78 @@ def _read(path: Path) -> str:
         raise YamlWriteError(f"could not read {path}: {exc}") from exc
 
 
+@dataclass(frozen=True)
+class ModelWriteability:
+    """Whether a model's declarations can be written, decided before anything is staged.
+
+    The app asks this at load so it can withhold the affordance rather than take an
+    edit and refuse it at apply time (#132). `reason` is written to be shown to a
+    person in a tooltip, so it says what is wrong with the FILE, not with the edit.
+    """
+
+    model: str
+    writable: bool
+    reason: str | None = None
+    path: str | None = None
+
+
+def model_writeability(manifest: dict[str, Any], project_dir: Path) -> dict[str, ModelWriteability]:
+    """Per-model write-ability for every model in the manifest, keyed by lowercased name.
+
+    One round-trip proof per FILE, not per model -- a schema file with forty models in
+    it is parsed once.
+    """
+    models = _model_index(manifest)
+    project_dir = Path(project_dir)
+    per_file: dict[Path, str | None] = {}
+    out: dict[str, ModelWriteability] = {}
+
+    for name, node in models.items():
+        patch_path = node.get("patch_path")
+        if not patch_path:
+            out[name] = ModelWriteability(
+                model=name,
+                writable=False,
+                reason=(
+                    "this model has no schema YAML file yet -- add a '- name: "
+                    f"{name}' entry under models: in a _schema.yml first"
+                ),
+            )
+            continue
+        relative = str(patch_path).split("://", 1)[-1]
+        path = (project_dir / relative).resolve()
+        if path not in per_file:
+            per_file[path] = _file_refusal(path)
+        refusal = per_file[path]
+        out[name] = ModelWriteability(
+            model=name, writable=refusal is None, reason=refusal, path=relative
+        )
+    return out
+
+
+def _file_refusal(path: Path) -> str | None:
+    """None when stitch can edit this schema file, else the reason it cannot."""
+    if not path.is_file():
+        return (
+            f"its schema file {path.name} is not in the repo -- re-run 'dbt docs "
+            "generate' so the manifest matches"
+        )
+    try:
+        text = _read(path)
+    except YamlWriteError as exc:
+        return str(exc)
+    try:
+        if _round_trips(text, path):
+            return None
+    except YamlWriteError as exc:
+        return str(exc)
+    return (
+        f"stitch cannot edit {path.name} without reformatting it -- its layout does not "
+        "survive a round trip, most often a file that mixes two list-indentation styles. "
+        "Edit it by hand, or normalise the indentation and rebuild."
+    )
+
+
 def _yaml_for(text: str) -> YAML:
     """A round-trip YAML configured from the file's own layout."""
     sequence, offset = _detect_sequence_indent(text)
@@ -319,16 +393,130 @@ def _dump(document: Any, yaml: YAML) -> str:
     return buffer.getvalue()
 
 
-def _assert_round_trips(path: Path, text: str) -> None:
-    """Refuse files stitch cannot reproduce byte-for-byte -- never reformat a repo file."""
-    yaml = _yaml_for(text)
-    rendered = _dump(_load(text, yaml, path), yaml)
-    if rendered in (text, text + "\n"):
-        return
-    raise YamlWriteError(
-        f"{path} cannot be edited without reformatting it (its layout does not survive a "
-        "round trip) -- add the relationship by hand and keep the staged entry out of the way"
+def _is_blank(line: str) -> bool:
+    return line.strip() == ""
+
+
+def _blank_spellings(original: str, pristine: str) -> dict[int, str]:
+    """Line index in the emitter's output -> how the author actually spells that blank line.
+
+    Read off the PRISTINE round trip, where the two texts are the same lines in the
+    same order, so the correspondence is an index and not a guess.
+    """
+    before = original.splitlines(keepends=True)
+    plain = pristine.splitlines(keepends=True)
+    if len(before) != len(plain):
+        return {}
+    return {
+        index: before[index]
+        for index in range(len(plain))
+        if before[index] != plain[index]
+        and _is_blank(before[index].rstrip("\n"))
+        and _is_blank(plain[index].rstrip("\n"))
+    }
+
+
+def _restore_blank_padding(original: str, rendered: str, yaml: YAML, path: Path) -> str:
+    """Put back the indentation ruamel strips from otherwise-blank lines.
+
+    The case this exists for: a long `description: |` with paragraphs in it has blank
+    lines between them, and they are written at the block's own indentation --
+
+        description: |
+          Orders, one row per line item.
+        ......                              <- six spaces, not an empty line
+          Rebuilt nightly by the core pipeline.
+
+    YAML strips block indentation, so the string is identical either way; ruamel
+    re-emits that line as truly empty. Nobody can see the difference and no dbt run
+    depends on it, but the round-trip proof is byte-for-byte on purpose -- so the
+    bytes are restored rather than the guarantee waived. On the Smitten repo two such
+    lines were the whole of what stood between a 2156-line intermediate/_schema.yml
+    and every write into it (#132).
+
+    The alignment is emitter-output against emitter-output -- the pristine round trip
+    against the edited one -- because those differ ONLY by what this edit inserted.
+    Aligning the padded original against the edited output instead puts a padded
+    blank line next to an inserted block into the same changed region, and the line
+    silently loses its padding: exactly the bug this comment exists to prevent.
+    """
+    try:
+        pristine = _dump(_load(original, yaml, path), yaml)
+    except YamlWriteError:
+        return rendered
+    spelling = _blank_spellings(original, pristine)
+    if not spelling:
+        return rendered
+    plain = pristine.splitlines(keepends=True)
+    out = rendered.splitlines(keepends=True)
+    matcher = difflib.SequenceMatcher(
+        None,
+        [line.rstrip("\n") for line in plain],
+        [line.rstrip("\n") for line in out],
+        autojunk=False,
     )
+    for tag, i1, _i2, j1, j2 in matcher.get_opcodes():
+        if tag != "equal":
+            continue
+        for offset in range(j2 - j1):
+            replacement = spelling.get(i1 + offset)
+            if replacement is None:
+                continue
+            keep_newline = out[j1 + offset].endswith("\n")
+            out[j1 + offset] = replacement.rstrip("\n") + ("\n" if keep_newline else "")
+    return "".join(out)
+
+
+def _cannot_round_trip(path: Path, entry: StagedChange | None) -> str:
+    """Why the file is refused, and the remedy for the change that asked for it."""
+    remedy = (
+        "edit the description in the file by hand"
+        if isinstance(entry, StagedDescription)
+        else "add the relationship by hand"
+    )
+    return (
+        f"{path} cannot be edited without reformatting it (its layout does not survive a "
+        f"round trip -- most often a file that mixes two list-indentation styles) -- {remedy} "
+        "and discard the staged entry"
+    )
+
+
+def _round_trips(text: str, path: Path) -> bool:
+    """Can stitch reproduce this file byte-for-byte, blank-line padding included?"""
+    yaml = _yaml_for(text)
+    document = _load(text, yaml, path)
+    # An empty schema file has no layout to preserve; it fails later, and far more
+    # clearly, on having no models: entry to write into.
+    if document is None:
+        return True
+    rendered = _dump(document, yaml)
+    if rendered in (text, text + "\n"):
+        return True
+    repaired = _restore_blank_padding(text, rendered, yaml, path)
+    return repaired in (text, text + "\n")
+
+
+def _assert_round_trips(path: Path, text: str, entry: StagedChange | None = None) -> None:
+    """Refuse files stitch cannot reproduce byte-for-byte -- never reformat a repo file."""
+    if _round_trips(text, path):
+        return
+    raise YamlWriteError(_cannot_round_trip(path, entry))
+
+
+def _assert_no_blank_churn(path: Path, before: str, after: str) -> None:
+    """SPEC 8.2, enforced rather than intended.
+
+    `_restore_blank_padding` is a repair, and a repair can be wrong. This is the
+    post-condition: if a line we never meant to touch still came back respelled,
+    refuse the write instead of quietly reformatting the author's file.
+    """
+    a = [line.rstrip("\n") for line in before.splitlines(keepends=True)]
+    b = [line.rstrip("\n") for line in after.splitlines(keepends=True)]
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        if all(_is_blank(line) for line in a[i1:i2]) and all(_is_blank(line) for line in b[j1:j2]):
+            raise YamlWriteError(_cannot_round_trip(path, None))
 
 
 def _apply_entry(
@@ -349,14 +537,26 @@ def _apply_entry(
         )
     if isinstance(entry, StagedDescription):
         _write_description(model_entry, entry)
-        return _dump(document, yaml)
+        return _emit(text, document, yaml, path)
     target = _model_or_fail(entry.to_model, models, "target")
     column = _ensure_column(model_entry, entry.from_column)
     if config.write_to == "meta":
         _write_meta(column, entry, target, config)
     else:
         _write_relationships_test(column, document, entry, config)
-    return _dump(document, yaml)
+    return _emit(text, document, yaml, path)
+
+
+def _emit(text: str, document: Any, yaml: YAML, path: Path) -> str:
+    """Dump the edited document, then put back what the emitter respells but must not.
+
+    The repair runs against the text this edit started from, so the file's own blank
+    lines come back exactly as their author wrote them; `_assert_no_blank_churn` is
+    the proof that they did.
+    """
+    updated = _restore_blank_padding(text, _dump(document, yaml), yaml, path)
+    _assert_no_blank_churn(path, text, updated)
+    return updated
 
 
 def _write_description(model_entry: CommentedMap, entry: StagedDescription) -> None:

@@ -268,6 +268,41 @@ export async function previewApply(fetcher: Fetcher = fetch): Promise<ApplyPrevi
   }
 }
 
+/**
+ * Which models `stitch apply` could actually write into, asked once at load (#132).
+ *
+ * A model MISSING from the map is not a refusal: the endpoint only exists under a
+ * serve with an apply context, and a build that cannot answer must not withhold
+ * every affordance in the app. Absent means "no reason to think otherwise" and
+ * apply keeps the final word — the behaviour that predates the endpoint.
+ */
+export type Writeability = ReadonlyMap<string, string>
+
+export async function fetchWriteability(fetcher: Fetcher = fetch): Promise<Writeability> {
+  const refusals = new Map<string, string>()
+  try {
+    const response = await fetcher('api/writeability')
+    if (!response.ok) return refusals
+    const body = (await response.json()) as {
+      models?: Record<string, { writable?: boolean; reason?: string | null }>
+    }
+    for (const [model, item] of Object.entries(body.models ?? {})) {
+      if (item?.writable === false) {
+        refusals.set(model.toLowerCase(), item.reason ?? 'stitch cannot write this model’s file')
+      }
+    }
+  } catch {
+    // no route, no server, no opinion — every model stays offerable
+  }
+  return refusals
+}
+
+/** The reason this model cannot be written, or null. Names are matched case-insensitively. */
+export function refusalFor(writeability: Writeability, model: string | null | undefined): string | null {
+  if (!model) return null
+  return writeability.get(model.toLowerCase()) ?? null
+}
+
 export async function applyStaged(fetcher: Fetcher = fetch): Promise<ApplyOutcome> {
   const response = await fetcher('api/apply', { method: 'POST' })
   if (!response.ok) throw new StagingError(await errorMessage(response))
