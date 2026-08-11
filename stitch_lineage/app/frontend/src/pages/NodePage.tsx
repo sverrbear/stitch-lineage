@@ -13,6 +13,7 @@ import { useStitch } from '../data'
 import {
   biDetail,
   columnDetail,
+  dataTypeLabel,
   modelDetail,
   type ChainGap,
   type RelationshipRef,
@@ -184,6 +185,7 @@ function ColumnPanel({ nodeId }: { nodeId: string }) {
   const detail = columnDetail(index, nodeId)
   if (!detail) return <NotFound nodeId={nodeId} />
   const { node } = detail
+  const dataType = dataTypeLabel(node)
   // A column's description is written on its MODEL's schema entry, so the staging
   // API is addressed by the model's dbt name plus the column name.
   const entity = detail.model ? fullName(detail.model) : null
@@ -214,7 +216,10 @@ function ColumnPanel({ nodeId }: { nodeId: string }) {
         <Fact label={detail.model?.node_type === 'source' ? 'source' : 'model'}>
           {detail.model ? <NodeChip node={detail.model} /> : '—'}
         </Fact>
-        <Fact label="data type">{node.data_type ?? 'unknown'}</Fact>
+        <Fact label="data type">
+          {/* "unknown" alone reads as a bug; the graph knows why, so it says so (#122) */}
+          <span title={dataType.hint ?? undefined}>{dataType.text}</span>
+        </Fact>
         {/* the display name may hide a routing prefix, so the real dbt name
             stays one line away (#69) */}
         <Fact label="dbt name">

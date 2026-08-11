@@ -461,8 +461,22 @@ kbd {
   border-bottom: 0;
 }
 
+.coverage-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
 .coverage-row-label {
   color: var(--text-2);
+}
+
+/* The qualifier on the ratio — the inferred share, the excluded models. Quiet,
+   but on the row itself: a caveat one click away is a caveat nobody reads. */
+.coverage-row-note {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .coverage-row:hover {
@@ -653,6 +667,17 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 40%;
+}
+
+/* Archived is a caveat on the answer, so it wears the same amber as every other
+   "this may not be what you think it is" (#122). */
+.search-hit-archived {
+  font-size: 11px;
+  color: var(--amber);
+  background: var(--amber-soft);
+  border-radius: 4px;
+  padding: 0 5px;
+  white-space: nowrap;
 }
 
 /* ---- palette ---- */
@@ -1499,18 +1524,23 @@ kbd {
   font-size: 11px;
 }
 
-/* how much of the graph-wide candidate list this scope holds (#60) */
-.suggest-scope {
-  order: 3;
-  flex-basis: 100%;
-  font-size: 11px;
-}
-
 .suggest-filter {
   display: flex;
   gap: 4px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
+}
+
+/* the reach row sits directly under the title, above the evidence tabs */
+.suggest-filter + .suggest-filter {
+  padding-top: 0;
+}
+
+/* Where a cross-scope pair actually lives — the context that stands in for
+   seeing it drawn, on a canvas that draws neither of its ends (#121). */
+.suggest-elsewhere {
+  font-family: var(--mono);
+  font-size: 11px;
 }
 
 .suggest-filter-option {

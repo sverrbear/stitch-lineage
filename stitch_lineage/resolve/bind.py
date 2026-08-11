@@ -1,5 +1,8 @@
 """Bind Metabase tables/fields to dbt models/columns (SPEC.md section 7.5)."""
 
+from collections.abc import Sequence
+from fnmatch import fnmatchcase
+
 from pydantic import BaseModel, Field
 
 from stitch_lineage.graph.schema import (
@@ -18,11 +21,13 @@ class BindResult(BaseModel):
     case_mismatch_count backs the case-only-mismatch warning line.
     unverified_field_count counts mb fields whose table bound to a dbt relation that
     supplied no column inventory -- those bindings are skipped, never fabricated.
+    models_excluded counts models kept out of the denominator entirely (see `bind`).
     """
 
     edges: list[Edge] = Field(default_factory=list)
     models_bound: int = 0
     models_total: int = 0
+    models_excluded: int = 0
     unbound_models: list[str] = Field(default_factory=list)
     case_mismatch_count: int = 0
     unverified_field_count: int = 0
@@ -36,10 +41,25 @@ def _squash(value: str | None) -> str:
     return _fold(value).replace("_", "")
 
 
+def _is_excluded(node: Node, packages: frozenset[str], patterns: Sequence[str]) -> bool:
+    """Is this model outside the bind denominator? Package match, then name glob.
+
+    Both sides are casefolded: dbt package and model names are case-insensitive in
+    practice, and a config that only works in lowercase is a config that looks broken.
+    """
+    package = node.properties.get("package")
+    if isinstance(package, str) and _fold(package) in packages:
+        return True
+    name = _fold(node.name)
+    return any(fnmatchcase(name, pattern) for pattern in patterns)
+
+
 def bind(
     dbt_nodes: list[Node],
     mb_field_nodes: list[Node],
     database_map: list[tuple[str, str] | tuple[str, str, str]],
+    exclude_packages: Sequence[str] = (),
+    exclude_models: Sequence[str] = (),
 ) -> BindResult:
     """Produce `binds_to` edges (dbt column -> mb_field).
 
@@ -73,8 +93,19 @@ def bind(
     models_bound those whose (db, schema, table) appears on the Metabase side;
     unbound_models the remaining unique_ids, sorted.
 
+    exclude_packages (dbt package names) and exclude_models (fnmatch globs on the
+    dbt model name), both from stitch.yml's metabase section, keep models OUT of
+    that denominator: an excluded model counts toward neither models_total nor
+    models_bound nor unbound_models, only models_excluded. This is what makes
+    "unbound" mean "we expected to find this in Metabase and did not" instead of
+    lumping in a monitoring package's 30 internal tables nobody ever charts.
+    Exclusion is a counting rule only -- an excluded model that IS in Metabase
+    still gets its binds_to edges, because that lineage is real either way.
+
     Pure: nodes in, edges out. No filesystem or network access.
     """
+    excluded_packages = frozenset(_fold(name) for name in exclude_packages)
+    excluded_patterns = [_fold(pattern) for pattern in exclude_models]
     mappings: dict[str, tuple[str, str]] = {}
     for entry in database_map:
         prefix = entry[2] if len(entry) > 2 else ""
@@ -83,11 +114,14 @@ def bind(
     relations: dict[tuple[str, str, str], Node] = {}
     columns_by_model: dict[str, dict[str, Node]] = {}
     model_ids: list[str] = []
+    excluded: set[str] = set()
 
     for node in dbt_nodes:
         if node.node_type in (NodeType.MODEL, NodeType.SOURCE):
             if node.node_type is NodeType.MODEL and node.node_id not in model_ids:
                 model_ids.append(node.node_id)
+                if _is_excluded(node, excluded_packages, excluded_patterns):
+                    excluded.add(node.node_id)
             key = (_fold(node.database), _fold(node.schema_), _fold(node.table or node.name))
             relations.setdefault(key, node)
         elif node.node_type is NodeType.COLUMN and "::" in node.node_id:
@@ -177,9 +211,10 @@ def bind(
 
     return BindResult(
         edges=edges,
-        models_bound=len(bound),
-        models_total=len(model_ids),
-        unbound_models=sorted(uid for uid in model_ids if uid not in bound),
+        models_bound=len(bound - excluded),
+        models_total=len(model_ids) - len(excluded),
+        models_excluded=len(excluded),
+        unbound_models=sorted(uid for uid in model_ids if uid not in bound and uid not in excluded),
         case_mismatch_count=case_mismatches,
         unverified_field_count=unverified,
     )

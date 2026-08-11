@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStitch } from '../data'
 import { groupHits, type SearchHit } from '../lib/search'
-import { NODE_TYPE_NAME, displayName } from '../lib/present'
+import { NODE_TYPE_NAME, displayName, isArchived } from '../lib/present'
 import { navigate, nodeHref } from '../router'
 import { SystemBadge } from './badges'
 
@@ -102,6 +102,13 @@ export function SearchPanel({
                     <span className="search-hit-name">{displayName(hit.node)}</span>
                     <span className="search-hit-type">{NODE_TYPE_NAME[hit.node.node_type]}</span>
                     {hit.context && <span className="search-hit-context">{hit.context}</span>}
+                    {/* two cards can share a title; the collection and the archived
+                        flag are what tell them apart in a list (#122) */}
+                    {isArchived(hit.node) && (
+                      <span className="search-hit-archived" title="archived in Metabase">
+                        archived
+                      </span>
+                    )}
                     {hit.matchedField !== 'name' && (
                       <span className="search-hit-field">via {hit.matchedField}</span>
                     )}

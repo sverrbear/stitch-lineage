@@ -37,6 +37,8 @@ export interface GraphEdge {
 export interface Coverage {
   models_bound?: number
   models_total?: number
+  /** Models config kept out of the bind denominator (metabase.exclude_packages/models). */
+  models_excluded?: number
   mbql_cards_resolved?: number
   mbql_cards_total?: number
   native_cards_resolved?: number

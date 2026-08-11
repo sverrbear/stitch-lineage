@@ -37,6 +37,8 @@ def test_load_valid_config(tmp_path, monkeypatch):
     assert cfg.metabase.databases[0].table_prefix == ""
     assert cfg.metabase.include_schemas == ["MARTS", "DIMS"]
     assert cfg.metabase.exclude_collections == []
+    assert cfg.metabase.exclude_packages == []
+    assert cfg.metabase.exclude_models == []
     assert cfg.dbt.project_dir == "."
     assert cfg.dbt.auto_docs is False
     assert cfg.dbt.docs_args == []
@@ -179,3 +181,18 @@ def test_erd_default_scope_rejects_an_unprefixed_value(tmp_path, monkeypatch, co
     monkeypatch.setenv("STITCH_METABASE_API_KEY", "mb_test_key")
     with pytest.raises(StitchConfigError, match="erd_default_scope"):
         load_config(_write(tmp_path, _serve_config(configured)))
+
+
+def test_bind_denominator_exclusions_load(tmp_path, monkeypatch):
+    """metabase.exclude_packages / exclude_models -- the bind denominator (#119)."""
+    monkeypatch.setenv("STITCH_METABASE_URL", "https://mb.example.com")
+    monkeypatch.setenv("STITCH_METABASE_API_KEY", "mb_test_key")
+    content = VALID_CONFIG.replace(
+        "  include_schemas: [MARTS, DIMS]",
+        "  include_schemas: [MARTS, DIMS]\n"
+        "  exclude_packages: [elementary, dbt_artifacts]\n"
+        "  exclude_models: ['stg_*']",
+    )
+    cfg = load_config(_write(tmp_path, content))
+    assert cfg.metabase.exclude_packages == ["elementary", "dbt_artifacts"]
+    assert cfg.metabase.exclude_models == ["stg_*"]

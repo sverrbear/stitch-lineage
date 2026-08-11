@@ -197,6 +197,14 @@ metabase:
       dbt_database: ANALYTICS           # database per the dbt manifest
   include_schemas: ["MARTS", "DIMS"]
   exclude_collections: ["Personal*", "Archive*"]
+  exclude_packages: ["elementary"]      # dbt packages nobody expects to find in
+                                        # Metabase. Their models keep their
+                                        # lineage and their graph nodes; they
+                                        # leave the BIND DENOMINATOR, so
+                                        # "unbound" means "we expected to find
+                                        # this in Metabase and did not"
+  exclude_models: ["stg_*"]             # same, per model: fnmatch globs on the
+                                        # dbt model name
 
 relationships:
   write_to: meta                        # | relationships_test | contract_constraint
@@ -288,11 +296,16 @@ Match `(database, schema, table)` against manifest `relation_name`, honouring `a
 **Coverage** written into `graph.json` and printed:
 
 ```
-models bound       142/147   (5 unmatched → stitch doctor --unbound)
+models bound       142/147   (5 unmatched → stitch doctor --unbound, 30 excluded by config)
 MBQL cards         218/218   exact
 native SQL cards    38/41    parsed
 dashboards          19/19
+dbt column lineage  2551/3293 columns traced   (1329 inferred via star-expansion, 52% of traced)
 ```
+
+**The denominator is a claim.** `models bound` must read as "models we expected to find in Metabase and did not", so `metabase.exclude_packages` / `exclude_models` (§6.1) take a monitoring package's internal tables out of the ratio entirely — neither bound nor unbound, counted on their own `excluded` qualifier. Exclusion is a *counting* rule only: excluded models keep their nodes, their column lineage, and their `binds_to` edges if Metabase does happen to have them.
+
+**Weak evidence is labelled, not averaged in.** `columns_inferred` is traced by star-expansion or name match rather than parsed out of the SQL, and on a real project it is the majority of the traced count — so the share rides next to the ratio in both the CLI output and the app's coverage block, never folded silently into one number.
 
 Coverage reporting is what turns "the graph looks thin" from a bug report into a documented limitation evaluable in thirty seconds. Non-negotiable in Phase 0.
 

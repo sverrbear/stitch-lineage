@@ -41,9 +41,12 @@ import {
   autoExpandedModels,
   erdClickHref,
   erdColumnNodeId,
+  erdCounts,
+  erdCountsLabel,
   erdForScope,
   initialScope,
   listScopes,
+  relationshipScopeLabel,
   resolveStaged,
   scopeModelIds,
   suggestionsInScope,
@@ -74,6 +77,8 @@ import {
 } from '../lib/staging'
 import {
   countBySource,
+  defaultScopeFilter,
+  defaultSourceFilter,
   dismissSuggestion,
   filterBySource,
   listSuggestions,
@@ -84,6 +89,7 @@ import {
   SOURCE_LABEL,
   type SourceFilter,
   type Suggestion,
+  type SuggestionScopeFilter,
 } from '../lib/suggestions'
 import { workspaceView } from '../lib/workspace'
 import { erdHref, navigate, nodeHref } from '../router'
@@ -299,7 +305,11 @@ export function ErdPage({
   const [canSuggest, setCanSuggest] = useState(false)
   const [panelOpen, setPanelOpen] = useState(true)
   const [stagedOpen, setStagedOpen] = useState(false)
-  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('implicit_join')
+  // The reader's OWN choice of panel filters, null until they touch one — the
+  // effective filters below fall back to what this scope's counts deserve, so a
+  // scope never opens on an empty list (#121). Cleared when the scope changes.
+  const [pickedSource, setPickedSource] = useState<SourceFilter | null>(null)
+  const [pickedScope, setPickedScope] = useState<SuggestionScopeFilter | null>(null)
 
   // Canvas state the auto-layout does not own: tables the reader dragged, and
   // whether a relationship landed since — which is what the reset control offers
@@ -439,11 +449,26 @@ export function ErdPage({
     () => suggestionsInScope(suggestions, resolvedSuggestions.drawable, inScopeIds),
     [suggestions, resolvedSuggestions, inScopeIds],
   )
-  const sourceCounts = useMemo(() => countBySource(scopedSuggestions), [scopedSuggestions])
-  // the canvas draws what the panel lists: one filter, both surfaces
+  /**
+   * Cross-scope candidates get a home here rather than only in `stitch suggest`
+   * (#121). The canvas is unchanged — `erdForScope` still draws only pairs with
+   * both ends in scope, because an external table per proposal is a hairball —
+   * but the panel can list all of them, and accepting has never needed the
+   * drawing: it stages a model/column pair by name.
+   */
+  const scopeFilter = pickedScope ?? defaultScopeFilter(scopedSuggestions.length, suggestions.length)
+  const panelSuggestions = scopeFilter === 'all' ? suggestions : scopedSuggestions
+  const sourceCounts = useMemo(() => countBySource(panelSuggestions), [panelSuggestions])
+  const sourceFilter = pickedSource ?? defaultSourceFilter(sourceCounts)
+  // the canvas draws what the panel lists AND can place: one filter, both surfaces
   const shownSuggestions = useMemo(
-    () => filterBySource(scopedSuggestions, sourceFilter),
-    [scopedSuggestions, sourceFilter],
+    () => filterBySource(panelSuggestions, sourceFilter),
+    [panelSuggestions, sourceFilter],
+  )
+  /** Node ids of the pairs listed, for the per-row "where does this live" label. */
+  const suggestionRels = useMemo(
+    () => new Map(resolvedSuggestions.drawable.map((rel) => [rel.id, rel])),
+    [resolvedSuggestions],
   )
   const drawableSuggestions = useMemo(() => {
     const shown = new Set(shownSuggestions.map((entry) => entry.id))
@@ -453,6 +478,9 @@ export function ErdPage({
     () => (active ? erdForScope(index, active, resolved.drawable, drawableSuggestions) : null),
     [index, active, resolved, drawableSuggestions],
   )
+  // what the header states: the scope's own models, kept apart from the FK
+  // targets pulled in from elsewhere, so it agrees with the picker (#120)
+  const counts = useMemo(() => (erd ? erdCounts(erd) : null), [erd])
 
   /** node id -> dbt model name, which is what the staging API speaks. */
   const modelNameOf = useCallback(
@@ -756,10 +784,14 @@ export function ErdPage({
     setPicked(null)
     setHovered(null)
     setExpanded(autoExpandedModels(erd?.models ?? []))
+    // ...and the panel filters go back to whatever THIS scope's counts deserve,
+    // rather than carrying a choice made about a different set of candidates
+    setPickedSource(null)
+    setPickedScope(null)
     fitSoon()
   }, [activeKey])
 
-  if (!active || !erd) {
+  if (!active || !erd || !counts) {
     return (
       <main className="graph-page">
         <p className="muted panel">No models in the graph — nothing to draw.</p>
@@ -796,8 +828,15 @@ export function ErdPage({
             )
           })}
         </select>
-        <span className="muted">
-          {erd.models.length} models · {erd.relationships.length} relationships
+        <span
+          className="muted"
+          title={
+            counts.external > 0
+              ? `${counts.external} model${counts.external === 1 ? '' : 's'} from other scopes, drawn because a relationship in this one points at them`
+              : undefined
+          }
+        >
+          {erdCountsLabel(counts)}
           {erd.staged.length > 0 ? ` · ${erd.staged.length} staged` : ''}
           {erd.suggested.length > 0
             ? ` · ${erd.suggested.length} suggested drawn${erd.suggestedHidden > 0 ? ` of ${erd.suggested.length + erd.suggestedHidden}` : ''}`
@@ -924,12 +963,6 @@ export function ErdPage({
           <aside className="suggest-panel" aria-label="Suggested relationships">
             <div className="suggest-panel-head">
               <span className="suggest-panel-title">Suggested ({shownSuggestions.length})</span>
-              <span
-                className="muted suggest-scope"
-                title={`candidates with both models in ${active.value}; the rest join models in other scopes`}
-              >
-                {scopedSuggestions.length} in this scope · {suggestions.length} total
-              </span>
               {erd.suggestedHidden > 0 && (
                 <span className="muted suggest-cap" title="the panel lists them all; the canvas draws the strongest">
                   {erd.suggestedHidden} not drawn
@@ -944,13 +977,33 @@ export function ErdPage({
                 ✕
               </button>
             </div>
+            {/* Which candidates are on the table at all — the canvas keeps drawing
+                only what it can place, but the list is no longer limited to it. */}
+            <div className="suggest-filter" role="group" aria-label="Suggestion reach">
+              <button
+                type="button"
+                className={`suggest-filter-option${scopeFilter === 'scope' ? ' active' : ''}`}
+                onClick={() => setPickedScope('scope')}
+                title={`candidates with both models in ${active.value} — the ones this canvas draws`}
+              >
+                in {active.value} ({scopedSuggestions.length})
+              </button>
+              <button
+                type="button"
+                className={`suggest-filter-option${scopeFilter === 'all' ? ' active' : ''}`}
+                onClick={() => setPickedScope('all')}
+                title="every candidate in the graph, including pairs that join a model in another scope — accepting one does not need it drawn"
+              >
+                all scopes ({suggestions.length})
+              </button>
+            </div>
             <div className="suggest-filter" role="group" aria-label="Suggestion source">
               {(['implicit_join', 'naming', 'all'] as const).map((value) => (
                 <button
                   key={value}
                   type="button"
                   className={`suggest-filter-option${sourceFilter === value ? ' active' : ''}`}
-                  onClick={() => setSourceFilter(value)}
+                  onClick={() => setPickedSource(value)}
                   title={value === 'all' ? 'every candidate' : SOURCE_HELP[value]}
                 >
                   {value === 'all' ? 'all' : SOURCE_LABEL[value]} ({sourceCounts[value]})
@@ -961,16 +1014,24 @@ export function ErdPage({
               <p className="muted suggest-empty">
                 {suggestions.length === 0
                   ? 'Nothing to suggest — every join stitch can see is already declared, staged or dismissed.'
-                  : scopedSuggestions.length === 0
-                    ? `None inside ${active.value}: all ${suggestions.length} candidates join a model in another scope.`
+                  : scopeFilter === 'scope' && scopedSuggestions.length === 0
+                    ? `None inside ${active.value}: all ${suggestions.length} candidates join a model in another scope. Switch to "all scopes" to work through them here.`
                     : 'None from this source. The counts above show what the others hold.'}
               </p>
             ) : (
               <ul className="suggest-list">
                 {shownSuggestions.map((entry) => {
-                  // everything listed is in scope and resolvable now; only the draw
-                  // cap can still keep one off the canvas
-                  const notDrawn = !erd.suggested.some((rel) => rel.id === entry.id)
+                  const drawn = erd.suggested.some((rel) => rel.id === entry.id)
+                  // A pair the canvas draws neither end of is not "not drawn", it
+                  // is somewhere else — so say WHERE instead, which is the context
+                  // that replaces seeing it (#121). Only an in-scope pair the draw
+                  // cap kept off gets the bare "not drawn".
+                  const rel = suggestionRels.get(entry.id)
+                  const elsewhere =
+                    !drawn && rel && !(inScopeIds.has(rel.fromModelId) && inScopeIds.has(rel.toModelId))
+                      ? relationshipScopeLabel(index, rel)
+                      : null
+                  const notDrawn = !drawn && !elsewhere
                   return (
                     <li key={entry.id} className="suggest-entry">
                       <code className="suggest-pair">
@@ -986,6 +1047,14 @@ export function ErdPage({
                         {notDrawn && (
                           <span className="muted" title="listed here, but not drawn on this canvas">
                             not drawn
+                          </span>
+                        )}
+                        {elsewhere && (
+                          <span
+                            className="muted suggest-elsewhere"
+                            title={`this pair lives in ${elsewhere} — accepting it stages the columns by name, no drawing needed`}
+                          >
+                            {elsewhere}
                           </span>
                         )}
                       </div>

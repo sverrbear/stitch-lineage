@@ -250,3 +250,82 @@ def test_two_tuple_database_map_still_supported():
     result = bind(dbt_nodes, [make_field(101, "MATCH_ID", "FCT_MATCHES")], MAP)
     assert result.edges == []  # no prefix configured -> no strip
     assert result.unbound_models == [FCT]
+
+
+# --- exclusion from the bind denominator (#119) ------------------------------
+
+
+def make_packaged_model(uid, name, package, schema="MARTS"):
+    node = make_model(uid=uid, name=name, schema=schema)
+    node.properties["package"] = package
+    return node
+
+
+ELEMENTARY = "model.elementary.dbt_run_results"
+
+
+def test_exclude_packages_leaves_the_denominator():
+    """An excluded model is neither bound nor unbound -- it is out of the ratio."""
+    dbt_nodes = [
+        make_model(),
+        make_column(FCT, "match_id"),
+        make_packaged_model(ELEMENTARY, "dbt_run_results", "elementary"),
+    ]
+    result = bind(
+        dbt_nodes,
+        [make_field(101, "MATCH_ID", "FCT_MATCHES")],
+        MAP,
+        exclude_packages=["elementary"],
+    )
+    assert result.models_total == 1
+    assert result.models_bound == 1
+    assert result.models_excluded == 1
+    assert result.unbound_models == []
+
+
+def test_without_exclusion_the_package_model_is_unbound():
+    dbt_nodes = [
+        make_model(),
+        make_column(FCT, "match_id"),
+        make_packaged_model(ELEMENTARY, "dbt_run_results", "elementary"),
+    ]
+    result = bind(dbt_nodes, [make_field(101, "MATCH_ID", "FCT_MATCHES")], MAP)
+    assert result.models_total == 2
+    assert result.models_excluded == 0
+    assert result.unbound_models == [ELEMENTARY]
+
+
+def test_exclude_packages_is_case_insensitive():
+    dbt_nodes = [make_packaged_model(ELEMENTARY, "dbt_run_results", "Elementary")]
+    result = bind(dbt_nodes, [], MAP, exclude_packages=["ELEMENTARY"])
+    assert result.models_excluded == 1
+    assert result.models_total == 0
+
+
+def test_exclude_models_matches_name_globs():
+    dbt_nodes = [
+        make_model(),
+        make_model(uid="model.smitten.stg_users", name="stg_users"),
+        make_model(uid="model.smitten.stg_matches", name="stg_matches"),
+    ]
+    result = bind(dbt_nodes, [], MAP, exclude_models=["stg_*"])
+    assert result.models_excluded == 2
+    assert result.models_total == 1
+    assert result.unbound_models == [FCT]
+
+
+def test_excluded_model_still_binds_its_columns():
+    """Exclusion is a counting rule; the lineage is real whether we expected it or not."""
+    excluded = make_packaged_model(ELEMENTARY, "dbt_run_results", "elementary")
+    excluded.table = "DBT_RUN_RESULTS"
+    dbt_nodes = [excluded, make_column(ELEMENTARY, "run_id")]
+    result = bind(
+        dbt_nodes,
+        [make_field(101, "RUN_ID", "DBT_RUN_RESULTS")],
+        MAP,
+        exclude_packages=["elementary"],
+    )
+    assert len(result.edges) == 1
+    assert result.models_bound == 0  # bound, but out of the ratio it was excluded from
+    assert result.models_total == 0
+    assert result.models_excluded == 1

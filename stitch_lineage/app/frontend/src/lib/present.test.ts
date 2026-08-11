@@ -9,6 +9,7 @@ import {
   setTablePrefixes,
   hasHiddenPrefix,
   fullName,
+  isArchived,
   isPlaceholder,
   metabaseRelation,
   nodeContext,
@@ -169,5 +170,36 @@ describe('table_prefix hidden from displayed physical names (#80)', () => {
   it('leaves the exact warehouse relation alone — that one is a locator', () => {
     setTablePrefixes(['sis_'])
     expect(warehouseRelation(get('model.demo.fct_revenue'))).toBe('marts.sis_fct_revenue')
+  })
+})
+
+// #122: "Match to Conversation Ratio" appeared three times with nothing to tell
+// the three apart.
+describe('card context and archived flag', () => {
+  const card = (properties: Record<string, unknown>): GraphNode => ({
+    node_id: 'mb_card::418',
+    node_type: 'mb_card',
+    name: 'Match to Conversation Ratio',
+    properties,
+  })
+
+  it('locates a card by its collection breadcrumb', () => {
+    expect(nodeContext(index, card({ collection_path: 'Growth/Retention' }))).toBe(
+      'Growth/Retention',
+    )
+  })
+
+  it('still reads a graph built before the breadcrumb existed', () => {
+    expect(nodeContext(index, card({ collection_name: 'Marts' }))).toBe('Marts')
+  })
+
+  it('says nothing rather than guessing when the card has no collection', () => {
+    expect(nodeContext(index, card({ collection_id: null }))).toBeNull()
+  })
+
+  it('flags archived, and only when it is true', () => {
+    expect(isArchived(card({ archived: true }))).toBe(true)
+    expect(isArchived(card({ archived: false }))).toBe(false)
+    expect(isArchived(card({}))).toBe(false)
   })
 })
