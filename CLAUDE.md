@@ -5,15 +5,15 @@ stitch: dbt ↔ Metabase column lineage + interactive ERD. Local-first; the dbt 
 ## Session bootstrap (after a context clear)
 
 1. Read this file and `SPEC.md`, then `gh issue list` + `gh pr list` for live state.
-2. Respawn the **delivery-manager** (Haiku agent, name `delivery-manager`) with the standing checklist below, and re-arm a ~20-minute session cron that pings it.
+2. Re-arm a ~20-minute session cron that fires the reconciliation checklist below at the main session. (The delivery-manager subagent is retired — do not respawn it.)
 3. Coding work continues issue-by-issue with Opus worktree agents (below). The main session orchestrates and handles git only — it does not hand-write code (saves Fable quota).
 
 ## The workflow
 
-- **GitHub issues are the unit of work.** User feedback → issue (concise, factual, labeled bug/enhancement + phase-N/backlog). The delivery-manager also derives issues from SPEC.md gaps.
-- **Delivery-manager (Haiku)** runs reconciliation passes on a ~20-min ping: detect merged/closed PRs, close + re-label issues (merges to non-default branches don't fire "Fixes #N" — close manually), verify issue↔PR links, report anomalies only. It never merges anything.
+- **GitHub issues are the unit of work.** User feedback → issue (concise, factual, labeled bug/enhancement + phase-N/backlog). Issues are also derived from SPEC.md gaps.
+- **Reconciliation passes** run in the main session on a ~20-min cron, with plain `gh` commands: detect merged/closed PRs, close + re-label issues (merges to non-default branches don't fire "Fixes #N" — close manually), verify issue↔PR links, re-sync open PR branches staled by a merge, check agent liveness by worktree diff evidence (dead agents are resumed by SendMessage to their name — never cloned into a shared worktree), surface material updates only.
 - **Coding agents are Opus**, one per issue (or one per coherent group), each in its own git worktree: `git -C <repo> worktree add ~/Desktop/stitch-worktrees/<name> -b <branch> origin/main`, own `.venv` (`pip install -e ".[dev]"`), frontend work also `npm install` in `stitch_lineage/app/frontend`.
-- **One individually mergeable PR per issue**, body starts `Fixes #N`. Anything touching the committed frontend `dist/` must be SEQUENTIAL/stacked (parallel dist rebuilds always conflict). Conventional commits ending `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
+- **One individually mergeable PR per issue**, body starts `Fixes #N`. **Never stack PRs** — every PR branches from origin/main with base `main` and stands alone. Lanes touching the committed frontend `dist/` still work one issue at a time (one dist rebuild per PR); dist conflicts between open PRs are expected and resolved by the post-merge re-sync (merge origin/main, rebuild `dist/`, push). Conventional commits ending `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
 - **Nobody merges except Sverrir.** Ever. Agents push + open PRs and stop.
 - **Branch protection on main**: 1 review + green `test` check + **strict up-to-date-with-main** — every merge stales the remaining PRs. Re-sync survivors after each merge, or consolidate several green PRs into one release PR (precedent: #42) when the user wants one click.
 
