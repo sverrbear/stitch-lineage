@@ -10,6 +10,7 @@
 - **Phase 2 is a plan/apply model, not direct write-back** — §8.2 below. Drawings stage locally; an explicit `stitch apply` writes dbt `relationships` tests.
 - **Phases 0 and 1 are shipped**, including `stitch build --docs/auto_docs`, per-database `table_prefix` (dev artifacts bind to a prod-pointed BI database), manifest-columns fallback for the sqlglot schema map, and system badges (Snowflake/Metabase marks) on every node in the app.
 - **Amended 2026-08-10** (product review): the order of work and the boundaries of the product are written down — §12.1 priority order, §12.2 scope guardrails. Phases are unchanged.
+- **Amended 2026-08-11** (status reconciliation): §12's table is brought current. Phase 2 shipped — staged relationships and `stitch apply` (#24/#27), staged descriptions and apply from the app (#70/#71/#72), the suggestion layer (#30) — except `layout.yml` saved views and node positions (#31), which are not built; phase 3's native SQL (#32) and MBQL 5 (#22) shipped, leaving #33/#34/#35. §12.1's three priorities are all delivered. Scope, phase boundaries and §12.2's guardrails are unchanged: this records what shipped, it decides nothing new.
 
 ---
 
@@ -373,7 +374,7 @@ FastAPI on localhost serving a prebuilt React SPA (bundled in the wheel; install
 
 **ERD canvas.** Tables as nodes with expandable columns; solid edges are declared relationships read from the repo. Three creation gestures: drag column-handle → column-handle (simple), multi-select column pairs (composite), drag table header → table header (conceptual). The modal infers the shape, offers cardinality, and shows the exact YAML diff before writing (§8.2). Saved views scope the canvas by dbt tag or schema — `marts_revenue` opens as its own diagram, never a 200-node hairball.
 
-**Suggestion layer.** Dashed candidate edges from: (a) Metabase implicit-join `source-field` usage — users are already joining these tables; (b) naming conventions (`*_id` → `dim_*.id` etc.); (c) Phase 3: join predicates observed in native card SQL. Accept opens the write-back modal; dismiss records to `layout.yml` so it stays dismissed. This is what makes the initial backfill an hour of accepting suggestions instead of an afternoon of dragging.
+**Suggestion layer.** Dashed candidate edges from: (a) Metabase implicit-join `source-field` usage — users are already joining these tables; (b) naming conventions (`*_id` → `dim_*.id` etc.); (c) not built: join predicates observed in native card SQL — that SQL is parsed now (§7.4, #32), but nothing mines it for candidates, so `suggest` ships (a) and (b) only. Accept opens the write-back modal; dismiss records to `layout.yml` so it stays dismissed. This is what makes the initial backfill an hour of accepting suggestions instead of an afternoon of dragging.
 
 **Search — first version, not later polish.** One search box, keyboard-first (`/` to focus, `⌘K` palette), querying everything in `graph.json`: dbt models, columns, Metabase fields, cards and dashboards — by name, description, tag, and card/dashboard title. Results grouped by node type, ranked exact-prefix > word-boundary > fuzzy, with type-ahead. Selecting a result opens its detail panel:
 
@@ -435,10 +436,10 @@ A scheduled nightly job runs full `stitch build` (with Metabase) on main and com
 
 | Phase | Scope | Status |
 |---|---|---|
-| **0** | `build`: dbt models **+ column lineage via sqlglot on compiled SQL** + MBQL cards; `graph.json` deterministic + `--check`; coverage report incl. lineage trace rate; recursive `impact` + GitHub Action; `stitch search` (CLI); `doctor` basics, plus `doctor --dead` for estate hygiene — unconsumed columns, models feeding nothing, archived-but-bound cards (#88) | **shipped** (impact shelved by default — see v0.5 deltas) |
+| **0** | `build`: dbt models **+ column lineage via sqlglot on compiled SQL** + MBQL cards; `graph.json` deterministic + `--check`; coverage report incl. lineage trace rate; recursive `impact` — previous-build baseline and build summary (#53), `--column` point query (#86), SHA-keyed local history (#87) — + GitHub Action; `stitch search` (CLI); `doctor` basics, plus `doctor --dead` for estate hygiene — unconsumed columns, models feeding nothing, archived-but-bound cards (#88) | **shipped** (only the committed-baseline PR-comment workflow stays optional — §10, #36) |
 | **1** | `serve`: **search + detail panels** (the entry point), end-to-end column lineage view, catalog, read-only ERD; `export --format site` | **shipped** |
-| **2** | Editable canvas → **staged relationships + `stitch apply`** (§8.2, issues #24/#27), suggestion layer, `layout.yml` | next |
-| **3** | Metabase **native SQL** cards via sqlglot + template-tag substitution (#32, shipped; modern Metabase also emits **MBQL 5 lib/stages** for saved questions — #22, shipped ahead of phase order), rename heuristics, `--verify-lineage` (ACCESS_HISTORY), Metabase version matrix | ongoing |
+| **2** | Editable canvas → **staged relationships + `stitch apply`** (§8.2, issues #24/#27), staged descriptions and apply from the app (#70/#71/#72), suggestion layer (#30); `layout.yml` holds dismissed suggestions, but saved views and node positions (#31) are not built, and composite/conceptual shapes (#55) are backlogged | **shipped** except `layout.yml` saved views (#31) |
+| **3** | Metabase **native SQL** cards via sqlglot + template-tag substitution (#32, shipped; modern Metabase also emits **MBQL 5 lib/stages** for saved questions — #22, shipped ahead of phase order); rename heuristics (#33), `--verify-lineage` over ACCESS_HISTORY (#34), Metabase version matrix (#35) | ongoing |
 
 Work is tracked as GitHub issues; the tracker, not this table, is the operational truth.
 
@@ -446,11 +447,13 @@ Work is tracked as GitHub issues; the tracker, not this table, is the operationa
 
 Phases describe scope, not sequence. The current order of work cuts across them:
 
-1. **Local impact.** The previous-build baseline plus a blast-radius summary on every build (#53), then the point query `stitch impact --column` — a blast radius askable *before* an edit, not only as a diff after one (#86) — and SHA-keyed local history (#87). This returns §10's killer feature to the local-only world where the graph now lives; the committed baseline stays the CI variant for teams that keep one.
-2. **`stitch init`** (#29, §6.0). Every install after the first one starts here, and setup friction is a product feature.
+1. ~~**Local impact.** The previous-build baseline plus a blast-radius summary on every build (#53), then the point query `stitch impact --column` — a blast radius askable *before* an edit, not only as a diff after one (#86) — and SHA-keyed local history (#87). This returns §10's killer feature to the local-only world where the graph now lives; the committed baseline stays the CI variant for teams that keep one.~~ Shipped: all three, and the README now opens on the blast radius rather than the catalog (§13, #89). The committed baseline remains the CI variant (#36).
+2. ~~**`stitch init`** (#29, §6.0). Every install after the first one starts here, and setup friction is a product feature.~~ Shipped: the wizard derives from `dbt_project.yml` and the manifest instead of asking (§6.0).
 3. ~~**Metabase native SQL cards** (#32, §7.4). `native SQL cards 0/41` was the honest headline limit of the tool for every shop that is not MBQL-only.~~ Shipped: native cards parse (§7.4).
 
-Canvas and ERD polish ranks below all three, and a broken core chain outranks all cosmetic work: while card detail shows no source columns (#25), how the ERD looks is not the problem.
+**All three delivered as of 2026-08-11.** Sequence from here is the tracker's, not this section's.
+
+Canvas and ERD polish ranked below all three, and a broken core chain still outranks all cosmetic work — that ordering principle stands. Its example has expired: card detail showed no source columns (#25) and now shows them, so canvas and restyle work is no longer sitting behind a broken chain.
 
 ### 12.2 Scope guardrails — what stitch is not
 
@@ -469,5 +472,5 @@ Each of these was a reasonable-sounding idea. They are decided against, not defe
 - **Frontend bundling.** Shipping a prebuilt SPA in the wheel means a JS build step in *release* CI and wheel size in the tens of MB. Acceptable; the alternative (npm at install time) is not, for a pip package.
 - **Metabase API drift.** Pin 49+ (API keys), keep a tested version matrix, treat every response shape as untrusted, keep raw payloads for repro.
 - **Adjacency to `dbt-metabase`.** If it grows column-level exposures, Phase 0's differentiation shrinks. Open an issue with the maintainer early — Phase 0 might be strongest as an upstream contribution plus this repo owning the viewer/editor.
-- **Sole maintainer with a day job.** One maintainer is a repo, not a project, unless the CI feature earns contributors. Optimize the README for the impact-comment screenshot.
+- **Sole maintainer with a day job.** One maintainer is a repo, not a project, unless the CI feature earns contributors. Optimize the README for the impact-comment screenshot — done (#89): it opens on `impact --column` output, and the local commands need no CI to demo.
 - **Scope creep, one reasonable feature at a time.** No single addition looks like a mistake; the cost shows up as a second half-finished surface competing for the same maintainer. §12.2 is the answer, and its test is the core chain — a new surface waits until column → field → card → dashboard is complete and correct, not until the backlog is empty.
