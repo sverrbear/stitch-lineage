@@ -1875,6 +1875,15 @@ kbd {
   font-size: 12px;
 }
 
+/* A model whose schema file stitch cannot rewrite (#132). Amber, like everything
+   else in this app that means "this may not be what you want": the edit is not
+   offered, and pointing at it says why. */
+.desc-unwritable {
+  color: var(--amber);
+  border-bottom: 1px dotted var(--amber);
+  cursor: help;
+}
+
 .desc-was summary {
   cursor: pointer;
   color: var(--text-muted);
@@ -2318,6 +2327,23 @@ kbd {
 
 .flow-node.root .flow-node-name {
   font-weight: 600;
+}
+
+/* The name is a link and the rest of the card is not (#140). At rest it reads as
+   the identifier it always was — a canvas of underlined blue names would be a wall
+   of chrome — and the affordance appears on hover, which is when the reader needs
+   to know the two halves do different things. The pointer stays on the name alone:
+   the card body re-traces, which is not navigation. */
+.flow-node-link {
+  color: inherit;
+  cursor: pointer;
+}
+
+.flow-node-link:hover,
+.flow-node-link:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .flow-node-sub {

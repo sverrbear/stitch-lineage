@@ -26,8 +26,11 @@ import { modelStar } from '../lib/modelStar'
 import {
   listStaged,
   listStagedDescriptions,
+  fetchWriteability,
   probeStaging,
+  refusalFor,
   type StagedDescription,
+  type Writeability,
   type StagedRelationship,
 } from '../lib/staging'
 import {
@@ -65,6 +68,8 @@ interface Staging {
   /** Staged relationships, resolved onto the graph (what the mini star draws). */
   relationships: ErdStagedRelationship[]
   descriptions: StagedDescription[]
+  /** Models whose schema file apply could never write, and why (#132). */
+  writeability: Writeability
   refresh: () => Promise<void>
 }
 
@@ -78,6 +83,7 @@ function useStaging(index: GraphIndex): Staging {
   const [canStage, setCanStage] = useState(false)
   const [staged, setStaged] = useState<StagedRelationship[]>([])
   const [descriptions, setDescriptions] = useState<StagedDescription[]>([])
+  const [writeability, setWriteability] = useState<Writeability>(new Map())
 
   const refresh = useCallback(async () => {
     try {
@@ -98,6 +104,8 @@ function useStaging(index: GraphIndex): Staging {
     void probeStaging(meta.staging_enabled).then(async (enabled) => {
       if (cancelled || !enabled) return
       setCanStage(true)
+      const refusals = await fetchWriteability()
+      if (!cancelled) setWriteability(refusals)
       await refresh()
     })
     return () => {
@@ -106,7 +114,7 @@ function useStaging(index: GraphIndex): Staging {
   }, [meta.staging_enabled, refresh])
 
   const relationships = useMemo(() => resolveStaged(index, staged).drawable, [index, staged])
-  return { canStage, relationships, descriptions, refresh }
+  return { canStage, relationships, descriptions, writeability, refresh }
 }
 
 /** The staged edit sitting over this entity's description, if there is one. */
@@ -207,6 +215,7 @@ function ColumnPanel({ nodeId }: { nodeId: string }) {
               applied={node.description}
               staged={stagedFor(staging.descriptions, entity, node.column ?? displayName(node))}
               canStage={staging.canStage}
+              refusal={refusalFor(staging.writeability, entity)}
               onChanged={staging.refresh}
             />
           ) : undefined
@@ -453,6 +462,7 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
             applied={node.description}
             staged={stagedFor(staging.descriptions, entity, null)}
             canStage={staging.canStage}
+            refusal={refusalFor(staging.writeability, entity)}
             onChanged={staging.refresh}
           />
         }
