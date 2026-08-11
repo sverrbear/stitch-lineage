@@ -41,6 +41,24 @@ def _version_tuple(tag: str) -> tuple[int, ...]:
     return tuple(numbers)
 
 
+def _http_error(response: requests.Response) -> str:
+    """ "HTTP 400: message" -- Metabase's own words when it has any, for the mend summary."""
+    detail = ""
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        for key in ("message", "error", "cause"):
+            value = body.get(key)
+            if isinstance(value, str) and value:
+                detail = value
+                break
+    elif isinstance(body, str) and body:
+        detail = body
+    return f"HTTP {response.status_code}: {detail}" if detail else f"HTTP {response.status_code}"
+
+
 def _as_list(payload: Any, endpoint: str) -> list[dict[str, Any]]:
     """Tolerate both bare-list and {"data": [...]} response shapes (varies by version)."""
     if isinstance(payload, list):
@@ -95,26 +113,46 @@ class MetabaseClient:
         self._session = requests.Session()
         self._session.headers["x-api-key"] = api_key
 
-    def _get(self, path: str, params: dict[str, str] | None = None) -> Any:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        params: dict[str, str] | None = None,
+        json_body: Any = None,
+    ) -> Any:
+        """One HTTP call with retry, for every verb this client uses.
+
+        Retrying a write is safe because every write mend issues is idempotent: a PUT
+        carries the whole `dataset_query` (or `archived: true`), and a revert names one
+        revision id. A retried write can therefore only re-assert the state it was already
+        asking for -- what it cannot do is stack up a different result.
+        """
         url = f"{self.url}{path}"
         last_error = ""
         for attempt in range(_RETRY_ATTEMPTS):
             try:
-                response = self._session.get(url, params=params, timeout=self.timeout)
+                response = self._session.request(
+                    method, url, params=params, json=json_body, timeout=self.timeout
+                )
             except requests.RequestException as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
             else:
                 if response.ok:
+                    if not response.content:
+                        return None
                     try:
                         return response.json()
                     except ValueError as exc:
                         raise MetabaseAPIError(f"non-JSON response from {url}: {exc}") from exc
-                last_error = f"HTTP {response.status_code}"
+                last_error = _http_error(response)
                 if response.status_code != 429 and response.status_code < 500:
                     raise MetabaseAPIError(f"{last_error} from {url}")
             if attempt < _RETRY_ATTEMPTS - 1 and self.backoff:
                 time.sleep(self.backoff * 2**attempt)
         raise MetabaseAPIError(f"{last_error} from {url} after {_RETRY_ATTEMPTS} attempts")
+
+    def _get(self, path: str, params: dict[str, str] | None = None) -> Any:
+        return self._request("GET", path, params=params)
 
     def _extract_version(self, properties: Any) -> str:
         version = properties.get("version") if isinstance(properties, dict) else None
@@ -179,6 +217,90 @@ class MetabaseClient:
             return _as_list(self._get("/api/native-query-snippet"), "/api/native-query-snippet")
         except MetabaseAPIError:
             return []
+
+    # ----------------------------------------------------------------------------------
+    # `stitch mend` (issue #143): the read probes and the four writes it is allowed to make.
+    #
+    # Everything here is per-object and named, never bulk: mend writes one card at a time
+    # so the summary can name every card it touched and the revert can undo exactly one
+    # thing. All of it returns raw payloads, like the rest of this client -- deciding what a
+    # response means is mend/apply.py's job.
+    # ----------------------------------------------------------------------------------
+
+    def current_user(self) -> dict[str, Any]:
+        """GET /api/user/current -- who the API key is, for `doctor --write-access`."""
+        payload = self._get("/api/user/current")
+        if not isinstance(payload, dict):
+            raise MetabaseAPIError("unexpected response shape from /api/user/current")
+        return payload
+
+    def get_card(self, card_id: int) -> dict[str, Any]:
+        """GET /api/card/{card_id} -- the single-card payload, with `updated_at` and `can_write`.
+
+        The staleness guard reads this immediately before writing: the listing payload the
+        plan was built from is minutes old by then, and a card someone edited in between is
+        a card mend must leave alone.
+        """
+        payload = self._get(f"/api/card/{card_id}")
+        if not isinstance(payload, dict):
+            raise MetabaseAPIError(f"unexpected response shape for card {card_id}")
+        return payload
+
+    def update_card(self, card_id: int, changes: dict[str, Any]) -> dict[str, Any]:
+        """PUT /api/card/{card_id} -- a partial update: only the keys mend is changing."""
+        payload = self._request("PUT", f"/api/card/{card_id}", json_body=changes)
+        return payload if isinstance(payload, dict) else {}
+
+    def run_card_query(self, card_id: int) -> dict[str, Any]:
+        """POST /api/card/{card_id}/query -- re-execute a card to prove the rewrite runs.
+
+        Returns the raw result envelope. Metabase reports a query failure INSIDE a 202
+        response ({"status": "failed", "error": ...}) as readily as by status code, so both
+        have to be read -- see mend/apply.py's query_error().
+        """
+        payload = self._request("POST", f"/api/card/{card_id}/query")
+        return payload if isinstance(payload, dict) else {}
+
+    def card_revisions(self, card_id: int) -> list[dict[str, Any]]:
+        """GET /api/revision?entity=card&id={card_id} -- newest first, per Metabase.
+
+        Returns [] rather than raising when the instance will not serve revisions: mend
+        falls back to restoring the `before` query it captured, which is a worse audit
+        trail but the same repair.
+        """
+        try:
+            payload = self._get("/api/revision", params={"entity": "card", "id": str(card_id)})
+        except MetabaseAPIError:
+            return []
+        return payload if isinstance(payload, list) else []
+
+    def latest_card_revision(self, card_id: int) -> int | None:
+        """The revision id to revert to -- the card's state as mend found it."""
+        for revision in self.card_revisions(card_id):
+            if isinstance(revision, dict) and isinstance(revision.get("id"), int):
+                return revision["id"]
+        return None
+
+    def revert_card(self, card_id: int, revision_id: int) -> dict[str, Any]:
+        """POST /api/revision/revert -- undo a write through Metabase's own history."""
+        payload = self._request(
+            "POST",
+            "/api/revision/revert",
+            json_body={"entity": "card", "id": card_id, "revision_id": revision_id},
+        )
+        return payload if isinstance(payload, dict) else {}
+
+    def update_dashcards(self, dash_id: int, dashcards: list[dict[str, Any]]) -> dict[str, Any]:
+        """PUT /api/dashboard/{dash_id} with the full dashcards array.
+
+        Metabase 49+ takes dashcard edits on the dashboard itself; the whole array goes
+        back, which is why mend reads the dashboard immediately before writing rather than
+        trusting the copy in the plan.
+        """
+        payload = self._request(
+            "PUT", f"/api/dashboard/{dash_id}", json_body={"dashcards": dashcards}
+        )
+        return payload if isinstance(payload, dict) else {}
 
     def fetch_all(self, database_names: list[str]) -> MetabasePayload:
         """Fetch everything resolve_metabase needs, in one bundle.

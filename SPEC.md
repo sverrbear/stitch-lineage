@@ -453,6 +453,7 @@ A scheduled nightly job runs full `stitch build` (with Metabase) on main and com
 | **1** | `serve`: **search + detail panels** (the entry point), end-to-end column lineage view, catalog, read-only ERD; `export --format site` | **shipped** |
 | **2** | Editable canvas → **staged relationships + `stitch apply`** (§8.2, issues #24/#27), staged descriptions and apply from the app (#70/#71/#72), suggestion layer (#30); `layout.yml` holds dismissed suggestions, but saved views and node positions (#31) are not built, and composite/conceptual shapes (#55) are backlogged | **shipped** except `layout.yml` saved views (#31) |
 | **3** | Metabase **native SQL** cards via sqlglot + template-tag substitution (#32, shipped; modern Metabase also emits **MBQL 5 lib/stages** for saved questions — #22, shipped ahead of phase order); rename heuristics (#33), `--verify-lineage` over ACCESS_HISTORY (#34), Metabase version matrix (#35) | ongoing |
+| **4** | **`stitch mend`** — impact-driven card remediation (§14, #143): `impact --format json`, a deterministic plan with one action per affected card (repoint / strip / archive / notify), per-action autonomy, and an apply loop whose every write is snapshotted, re-executed and auto-reverted; `doctor --write-access`; the one-job post-deploy Action template | ongoing |
 
 Work is tracked as GitHub issues; the tracker, not this table, is the operational truth.
 
@@ -487,3 +488,92 @@ Each of these was a reasonable-sounding idea. They are decided against, not defe
 - **Adjacency to `dbt-metabase`.** If it grows column-level exposures, Phase 0's differentiation shrinks. Open an issue with the maintainer early — Phase 0 might be strongest as an upstream contribution plus this repo owning the viewer/editor.
 - **Sole maintainer with a day job.** One maintainer is a repo, not a project, unless the CI feature earns contributors. Optimize the README for the impact-comment screenshot — done (#89): it opens on `impact --column` output, and the local commands need no CI to demo.
 - **Scope creep, one reasonable feature at a time.** No single addition looks like a mistake; the cost shows up as a second half-finished surface competing for the same maintainer. §12.2 is the answer, and its test is the core chain — a new surface waits until column → field → card → dashboard is complete and correct, not until the backlog is empty.
+
+## 14. `stitch mend` — closing the loop impact opens
+
+§10 names what a schema change broke. Nothing repaired it. In the pilot repo one feature-deprecation PR silently broke **29 live cards across 6 dashboards**: roughly two-thirds were cards that should have been archived with the dead feature, the rest healthy general-purpose cards that merely referenced one removed column — a dead filter, one series among many. All of the damage was mechanical to describe, most of it mechanical to repair, and none of it was repaired, because the repair surface was 29 hand-edits in a browser.
+
+`mend` is that repair, as a plan a human reads and a machine applies.
+
+```
+prod dbt rebuild ──► Metabase sync_schema ──► stitch build ──► stitch impact --format json
+                                                                     │  (columns non-empty)
+                                                               stitch mend --plan
+                                                                     │
+                                                     Slack notice (webhook): the full plan
+                                                                     │
+                                                               stitch mend --apply
+                                                                     │
+                                                 per card: write ► validate ► revert on error
+                                                                     │
+                                                               Slack summary
+```
+
+One post-deploy job. No artifact handoff, no environment gate, no runner held pending.
+
+**Why no approval gate (decided 2026-08-11, #143).** A plan rots while it waits: every hour, more cards drift and silently degrade to `stale`, so a slow approval is a *partial* repair. The gate was never the safety mechanism either — safety is the staleness guard, the revision snapshot, post-write re-execution, auto-revert, notify-only collections and a summary that names every card, all of which are retained. And for **repoint**, the largest action class, human approval already happened: the rename was made deliberately in a reviewed PR and declared explicitly on the command line. A second button approves nothing new. The honest exception is **strip**, which is handled by per-action autonomy rather than by gating the whole plan. The gated flow survives as a documented variant in `action/stitch-mend.yml`.
+
+### 14.1 The plan — one action per card
+
+Input is the impact diff plus an optional **declared** rename map (`--rename fct_orders.amount=fct_orders.amount_usd`, repeatable). No inference: that is #33, and it can feed this map later. Declared-only is what keeps the plan deterministic and the blame legible.
+
+| Action | When | Write |
+|---|---|---|
+| **repoint** | the column is in the rename map *and* its new column resolves to a live Metabase field | rewrite `["field", old_id, …]` → new field id across every query stage *and* the dashcard `parameter_mappings` |
+| **strip** | the removed column appears only in non-essential clauses | delete the dead clause (a filter; one breakout of several; an order-by; one aggregation of several) |
+| **archive** | the card's essential substance is dead — its only aggregation, its sole dimension | `archived: true`, never a delete |
+| **notify** | the card is in a collection mend must not touch, its action is dialed out of `mend.auto`, it is native SQL, or it is reached only through another card | none — listed for a human |
+
+**The essentialness rule, stated once:** a clause is essential if removing it changes what the card *is about*, not just how much it shows. Sole aggregation → essential. One filter among the criteria → not. `expressions` and join conditions are always essential (a custom column is a definition other clauses build on; a join condition decides which rows exist at all), so a dead reference inside one refuses the rewrite rather than deleting it.
+
+Three consequences worth stating because each was a decision:
+
+- **A card can carry two repairs, and is labelled by the worse one.** A card holding both a renamed and a removed reference is a `strip` whose diff also carries the repoint — leaving the dead reference behind to keep the label pure would ship a query that does not run. If `strip` is dialed out, the whole card downgrades to notify.
+- **An unresolvable declared rename never decays into a strip.** If Metabase has not synced the new column yet, there is no field id to point at — and stripping the clause would delete a reference to a column that still exists under another name. Those cards become `notify`, and the plan says which rename it could not follow.
+- **Removing one aggregation of several renumbers the rest.** A legacy `["aggregation", N]` elsewhere in the query is remapped, and a reference to a *removed* aggregation takes its own clause with it. Without that, the card still runs and answers a different question — the exact failure this feature exists to prevent.
+
+The plan is a deterministic file (`.stitch/mend_plan.json`): per card the id, action, reason, before/after `dataset_query`, dashcard edits, the `updated_at` observed at plan time and the latest revision id. Ordering is card-on-card dependency depth then card id, so a card is repaired after the card it sources. Nothing volatile is in the body — no `generated_at` — so the same graphs and the same rename map produce a byte-identical plan. Renderers: `--format slack | github-comment | text`, all three from one gathering, with **strip first** because it is the one action whose wrongness is silent.
+
+### 14.2 Autonomy — per action, not per plan
+
+```yaml
+mend:
+  slack_webhook: ${STITCH_SLACK_WEBHOOK_URL}   # env reference only, like metabase.api_key
+  auto: [repoint, strip, archive]               # remove one -> it downgrades to notify
+  notify_only_collections: ["*Personal*"]       # never written to; listed for humans
+```
+
+All three on by default. `strip` is the one worth a decision: a card with a dead filter removed does not *look* broken — it runs, and shows different numbers under the same title, which re-execution validation cannot catch. Some owners would rather see the error card and decide. `notify` is deliberately not configurable: it is the absence of a write, not an autonomy level.
+
+### 14.3 Apply — every write reversible
+
+Per card, in order: **staleness guard** (re-read the card; `updated_at` moved since plan time → skip as `stale`, because a human edited it and their edit outranks ours — the same principle as `stitch apply`'s dirty-file refusal; `--force` overrides) → **snapshot** the revision id → **`PUT /api/card/:id`** with only what changed → **validate** by re-executing the card (a failure arrives as a status code, a `status` that is not a success word, *or* an `error` beside a happy status — all three are read) → **revert** through the revisions API, falling back to restoring the `before` query the plan captured, and saying loudly when it could neither.
+
+Archive actions set the flag and are not re-executed: the query did not change, so a run would prove nothing, and Metabase's archive is already reversible. A dashcard write is done by reading the dashboard back and replacing only the named dashcards — `PUT /api/dashboard/:id` takes the whole array, and sending the plan's copy would silently revert anything else that moved. A dashcard failure does **not** revert the card: the card is repaired and proved to run, and undoing that because a dashboard write failed helps nobody.
+
+The summary — applied / archived / stale / failed / skipped / notify, every card named, `failed` first because it is an alarm and strips next because they are silent — goes to Slack and to stdout. Any `failed` exits non-zero. **The plan is the dry run**; apply additionally prints a unified diff of every `dataset_query` it writes into the job log, so a CI log answers "what exactly changed in card #412" without opening Metabase.
+
+`stitch doctor --write-access` is the pre-flight: who the API key is, how many cards report `can_write`, whether revision history (the revert target) is readable, and what `mend.auto` will actually do. It writes nothing.
+
+### 14.4 Why this is post-deploy, not PR-time
+
+Repointing needs the **new** field ids, which exist only after the warehouse has rebuilt and Metabase has synced. So mend runs in the post-deploy job. A PR-time `mend --plan --format github-comment` preview (no apply) is a cheap later addition now that the plan half exists.
+
+### 14.5 The seam
+
+Two additions to §4, both of them the existing rules holding rather than bending:
+
+- The HTTP seam now reads **only `io/` clients speak HTTP** — `io/metabase_client.py` and `io/slack_webhook.py`. What the rule protects was never the file count; it is that HTTP lives at the edge behind a named client so everything above it is testable with no network. Two clients, and no more without a spec change.
+- `mend/` splits the same way `resolve/` and `io/` do: `plan`, `rewrite`, `render` and `models` are **pure** (graphs and raw payloads in, a plan out) and `apply` is the only module that reaches `io/`. Both are `import-linter` contracts. Rewriting reuses the resolver's own shape vocabulary rather than carrying a second opinion about where a field ref can hide — rewriting is the inverse of the walk, and two walkers would diverge on the first Metabase upgrade.
+
+### 14.6 Out of scope
+
+- Rewriting **native SQL card text**. Resolution is not rewriting; SQL surgery via sqlglot is its own feature. A native card that references a dead column is reported, never edited.
+- Rename **inference** (#33 can feed the map later).
+- Any hosted approval service, or a Slack app with a callback endpoint (§12.2).
+- Changing what a card *means* beyond removing references to columns that no longer exist.
+
+### 14.7 Risks
+
+- **This writes to user-authored BI content without a human gate.** The protections are structural rather than ceremonial: every write is snapshotted against Metabase's revision history, validated by re-execution, auto-reverted on error, confined to declared renames and dead references, and named card-by-card in the summary. The worst case is a revert, not a loss. Trust erodes on the first silent bad strip — which is exactly why `strip` is dialable and why the summary shows strips before anything that merely worked.
+- **Revisions API drift.** Same posture as the standing Metabase-API risk (§13): version matrix, untrusted response shapes, raw payloads retained. If an instance will not serve revisions, mend says so in `doctor --write-access` and reverts by restoring the captured query instead.

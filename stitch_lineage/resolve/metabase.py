@@ -30,11 +30,16 @@ from stitch_lineage.resolve.native_sql import (
 #   MBQL 5  {"lib/type": "mbql/query", "stages": [...]} -- a flat chain of stages
 # Everything below walks them through shared helpers so the evidence vocabulary,
 # confidence rules and coverage counters are identical on both.
-_CLAUSE_KEYS = ("fields", "breakout", "aggregation", "filter", "expressions", "order-by")
+#
+# The shape vocabulary here (CLAUSE_KEYS, STAGE_CLAUSE_LABELS, query_kind, ref_parts,
+# collect_refs, is_native_stage) is public because `stitch mend` rewrites what this module
+# reads (mend/rewrite.py): rewriting is the inverse of the walk, and two independent
+# notions of "where a field ref can hide" would drift on the first Metabase upgrade.
+CLAUSE_KEYS = ("fields", "breakout", "aggregation", "filter", "expressions", "order-by")
 
 # MBQL 5 renamed `filter` to `filters`; the clause LABEL stays `filter` so a Metabase
 # upgrade does not rewrite every edge's evidence in graph.json.
-_STAGE_CLAUSE_LABELS = {
+STAGE_CLAUSE_LABELS = {
     "fields": "fields",
     "breakout": "breakout",
     "aggregation": "aggregation",
@@ -43,10 +48,10 @@ _STAGE_CLAUSE_LABELS = {
     "order-by": "order-by",
 }
 
-_LEGACY_QUERY = "legacy"
-_STAGE_QUERY = "stages"
-_NATIVE_QUERY = "native"
-_QUERY_TYPES = {_LEGACY_QUERY: "query", _STAGE_QUERY: "query", _NATIVE_QUERY: "native"}
+LEGACY_QUERY = "legacy"
+STAGE_QUERY = "stages"
+NATIVE_QUERY = "native"
+_QUERY_TYPES = {LEGACY_QUERY: "query", STAGE_QUERY: "query", NATIVE_QUERY: "native"}
 
 
 class MetabaseResolution(BaseModel):
@@ -69,7 +74,7 @@ class MetabaseResolution(BaseModel):
     unresolved_field_refs: list[dict[str, Any]] = Field(default_factory=list)
 
 
-def _collection_paths(collections: list[dict[str, Any]]) -> dict[Any, dict[str, Any]]:
+def collection_index(collections: list[dict[str, Any]]) -> dict[Any, dict[str, Any]]:
     """Index collections by id, each with its full name path ("Archive 2020/Old dashboards")."""
     by_id = {col.get("id"): col for col in collections if isinstance(col, dict)}
     indexed: dict[Any, dict[str, Any]] = {}
@@ -102,9 +107,9 @@ def _collection_path_of(indexed: dict[Any, dict[str, Any]], collection_id: Any) 
     return path or None
 
 
-def _excluded_collection_ids(collections: list[dict[str, Any]], patterns: list[str]) -> set[Any]:
+def collection_ids_matching(collections: list[dict[str, Any]], patterns: list[str]) -> set[Any]:
     excluded: set[Any] = set()
-    for col_id, info in _collection_paths(collections).items():
+    for col_id, info in collection_index(collections).items():
         is_personal = info["personal_owner_id"] is not None
         for pattern in patterns:
             if (
@@ -134,7 +139,7 @@ def _source_card_id(container: dict[str, Any]) -> int | None:
     return _card_source_id(container.get("source-table"))
 
 
-def _ref_parts(ref: list[Any]) -> tuple[Any, dict[str, Any] | None]:
+def ref_parts(ref: list[Any]) -> tuple[Any, dict[str, Any] | None]:
     """(target, opts) of a clause ref, for either argument order.
 
     Legacy puts the id/name first: ["field", <id-or-name>, opts]. MBQL 5 moved the
@@ -148,7 +153,7 @@ def _ref_parts(ref: list[Any]) -> tuple[Any, dict[str, Any] | None]:
     return target, opts
 
 
-class _Ref(NamedTuple):
+class Ref(NamedTuple):
     """One collected field ref: the raw clause (verbatim, for `stitch doctor`), its
     shape-normalized target (field id or column name) and opts, the clause label it
     sits under, whether it came from opts["source-field"], and the join aliases of the
@@ -164,10 +169,10 @@ class _Ref(NamedTuple):
     join_aliases: dict[str, Any]
 
 
-def _collect_refs(
+def collect_refs(
     node: Any,
     clause: str,
-    refs: list[_Ref],
+    refs: list[Ref],
     join_aliases: dict[str, Any],
     upstream_cards: list[int],
 ) -> None:
@@ -181,12 +186,12 @@ def _collect_refs(
     if isinstance(node, list):
         head = node[0] if node else None
         if head == "field" and len(node) >= 2:
-            target, opts = _ref_parts(node)
-            refs.append(_Ref(node, target, opts, clause, False, join_aliases))
+            target, opts = ref_parts(node)
+            refs.append(Ref(node, target, opts, clause, False, join_aliases))
             source_field = opts.get("source-field") if isinstance(opts, dict) else None
             if source_field is not None:
                 refs.append(
-                    _Ref(
+                    Ref(
                         ["field", source_field, None],
                         source_field,
                         None,
@@ -197,21 +202,21 @@ def _collect_refs(
                 )
             return
         if head == "metric" and len(node) >= 2:
-            metric_card, _ = _ref_parts(node)
+            metric_card, _ = ref_parts(node)
             if isinstance(metric_card, int):
                 upstream_cards.append(metric_card)
             return
         for item in node:
-            _collect_refs(item, clause, refs, join_aliases, upstream_cards)
+            collect_refs(item, clause, refs, join_aliases, upstream_cards)
     elif isinstance(node, dict):
         for value in node.values():
-            _collect_refs(value, clause, refs, join_aliases, upstream_cards)
+            collect_refs(value, clause, refs, join_aliases, upstream_cards)
 
 
 def _walk_query(
     query: dict[str, Any],
     prefix: str,
-    refs: list[_Ref],
+    refs: list[Ref],
     upstream_cards: list[int],
 ) -> None:
     """Walk a legacy MBQL query, descending into source-query and joins.
@@ -223,9 +228,9 @@ def _walk_query(
     upstream = _source_card_id(query)
     if upstream is not None:
         upstream_cards.append(upstream)
-    for key in _CLAUSE_KEYS:
+    for key in CLAUSE_KEYS:
         if key in query:
-            _collect_refs(query[key], f"{prefix}{key}", refs, aliases, upstream_cards)
+            collect_refs(query[key], f"{prefix}{key}", refs, aliases, upstream_cards)
     joins = query.get("joins")
     for join in joins if isinstance(joins, list) else []:
         if not isinstance(join, dict):
@@ -236,18 +241,18 @@ def _walk_query(
         if join_upstream is not None:
             upstream_cards.append(join_upstream)
         if "condition" in join:
-            _collect_refs(
+            collect_refs(
                 join["condition"], f"{prefix}joins.condition", refs, aliases, upstream_cards
             )
         if isinstance(join.get("fields"), list):
-            _collect_refs(join["fields"], f"{prefix}joins.fields", refs, aliases, upstream_cards)
+            collect_refs(join["fields"], f"{prefix}joins.fields", refs, aliases, upstream_cards)
         if isinstance(join.get("source-query"), dict):
             _walk_query(join["source-query"], f"{prefix}joins.source-query.", refs, upstream_cards)
     if isinstance(query.get("source-query"), dict):
         _walk_query(query["source-query"], f"{prefix}source-query.", refs, upstream_cards)
 
 
-def _is_native_stage(stage: Any) -> bool:
+def is_native_stage(stage: Any) -> bool:
     """True for an MBQL 5 native stage: {"lib/type": "mbql.stage/native", "native": <sql>}.
 
     Both the lib/type tag and the native payload are accepted -- instances in the wild
@@ -270,7 +275,7 @@ def _join_source(join_stages: list[Any]) -> Any:
 def _walk_stages(
     stages: list[Any],
     prefix: str,
-    refs: list[_Ref],
+    refs: list[Ref],
     upstream_cards: list[int],
 ) -> None:
     """Walk an MBQL 5 stage chain -- the flat equivalent of nested source-query.
@@ -290,11 +295,11 @@ def _walk_stages(
         upstream = _source_card_id(stage)
         if upstream is not None:
             upstream_cards.append(upstream)
-        if _is_native_stage(stage):
+        if is_native_stage(stage):
             continue
-        for key, label in _STAGE_CLAUSE_LABELS.items():
+        for key, label in STAGE_CLAUSE_LABELS.items():
             if key in stage:
-                _collect_refs(stage[key], f"{stage_prefix}{label}", refs, scope, upstream_cards)
+                collect_refs(stage[key], f"{stage_prefix}{label}", refs, scope, upstream_cards)
         joins = stage.get("joins")
         for join in joins if isinstance(joins, list) else []:
             if not isinstance(join, dict):
@@ -305,7 +310,7 @@ def _walk_stages(
             # MBQL 5 pluralized `condition` -> `conditions`; the label stays singular
             for key, label in (("conditions", "joins.condition"), ("fields", "joins.fields")):
                 if key in join:
-                    _collect_refs(join[key], f"{stage_prefix}{label}", refs, scope, upstream_cards)
+                    collect_refs(join[key], f"{stage_prefix}{label}", refs, scope, upstream_cards)
             if join_stages:
                 _walk_stages(
                     join_stages, f"{stage_prefix}joins.source-query.", refs, upstream_cards
@@ -335,7 +340,7 @@ def _stage_context(stages: list[Any]) -> tuple[str, Any] | None:
     return ("table", source) if isinstance(source, int) else None
 
 
-def _query_kind(dataset_query: Any) -> str | None:
+def query_kind(dataset_query: Any) -> str | None:
     """Classify a card's dataset_query, or None when there is no query to walk.
 
     MBQL 5 wraps native SQL too ({"lib/type": "mbql/query", "stages": [{"lib/type":
@@ -348,10 +353,10 @@ def _query_kind(dataset_query: Any) -> str | None:
     if dataset_query.get("lib/type") == "mbql/query" or isinstance(stages, list):
         if not isinstance(stages, list) or not stages:
             return None
-        return _NATIVE_QUERY if _is_native_stage(stages[0]) else _STAGE_QUERY
+        return NATIVE_QUERY if is_native_stage(stages[0]) else STAGE_QUERY
     if dataset_query.get("type") == "native":
-        return _NATIVE_QUERY
-    return _LEGACY_QUERY if isinstance(dataset_query.get("query"), dict) else None
+        return NATIVE_QUERY
+    return LEGACY_QUERY if isinstance(dataset_query.get("query"), dict) else None
 
 
 class _CardWalk(BaseModel):
@@ -411,7 +416,7 @@ def _resolve_by_name(
                 ref = column.get("field_ref")
                 # ["aggregation", 0] / ["expression", "name"] are not field refs
                 if isinstance(ref, list) and len(ref) >= 2 and ref[0] == "field":
-                    target, _ = _ref_parts(ref)
+                    target, _ = ref_parts(ref)
                     if isinstance(target, int):
                         candidates.append(target)
         if not candidates and source_id in walks:
@@ -514,8 +519,8 @@ def resolve_metabase(
     # the same index the exclude patterns match on, reused to name where a card
     # lives -- three cards called "Match to Conversation Ratio" are only telling
     # apart by their collection (#122)
-    collection_paths = _collection_paths(payload.collections)
-    excluded = _excluded_collection_ids(payload.collections, exclude_collections)
+    collection_paths = collection_index(payload.collections)
+    excluded = collection_ids_matching(payload.collections, exclude_collections)
     included_schemas = {schema.casefold() for schema in include_schemas or []}
 
     db_names = {
@@ -593,23 +598,23 @@ def resolve_metabase(
     walks: dict[int, _CardWalk] = {}
     kinds: dict[int, str | None] = {}
     natives: dict[int, NativeResolution] = {}
-    deferred: list[tuple[int, _Ref, tuple[str, Any] | None]] = []
+    deferred: list[tuple[int, Ref, tuple[str, Any] | None]] = []
     for card in cards_in_scope:
         card_id = card["id"]
         dataset_query = card.get("dataset_query")
-        kind = _query_kind(dataset_query)
+        kind = query_kind(dataset_query)
         kinds[card_id] = kind
         walk = _CardWalk()
-        refs: list[_Ref] = []
-        if kind == _LEGACY_QUERY:
+        refs: list[Ref] = []
+        if kind == LEGACY_QUERY:
             query = dataset_query["query"]
             context = _source_context(query)
             _walk_query(query, "", refs, walk.upstream_cards)
-        elif kind == _STAGE_QUERY:
+        elif kind == STAGE_QUERY:
             stages = dataset_query["stages"]
             context = _stage_context(stages)
             _walk_stages(stages, "", refs, walk.upstream_cards)
-        elif kind == _NATIVE_QUERY:
+        elif kind == NATIVE_QUERY:
             # the native SQL sits on dataset_query.native (legacy) or on the first stage
             # (MBQL 5); both shapes carry their template tags beside it
             stages = dataset_query.get("stages")
@@ -758,7 +763,7 @@ def resolve_metabase(
             )
         )
 
-        if kind == _NATIVE_QUERY:
+        if kind == NATIVE_QUERY:
             result.native_cards_total += 1
         else:
             result.mbql_cards_total += 1
@@ -830,7 +835,7 @@ def resolve_metabase(
         if problems:
             result.unresolved_cards.append(card_id)
             result.unresolved_field_refs.extend(problems)
-        elif kind == _NATIVE_QUERY:
+        elif kind == NATIVE_QUERY:
             result.native_cards_resolved += 1
         else:
             result.mbql_cards_resolved += 1
