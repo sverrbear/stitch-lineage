@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   countBySource,
+  defaultScopeFilter,
+  defaultSourceFilter,
   dismissSuggestion,
   filterBySource,
   listSuggestions,
@@ -141,5 +143,37 @@ describe('source filter', () => {
   it('keeps rank order inside a filtered source', () => {
     const ranked = rankSuggestions(filterBySource(many, 'implicit_join'))
     expect(ranked.map((s) => s.score)).toEqual([204, 12])
+  })
+})
+
+// #121: the panel's default tab was "implicit join (0)" even where "naming (25)"
+// had content — the first thing every reader saw was an empty list.
+describe('defaultSourceFilter', () => {
+  it('still leads with implicit joins when they have anything', () => {
+    expect(defaultSourceFilter({ implicit_join: 15, naming: 325, all: 340 })).toBe('implicit_join')
+  })
+
+  it('opens on naming rather than on an empty implicit-join tab', () => {
+    expect(defaultSourceFilter({ implicit_join: 0, naming: 25, all: 25 })).toBe('naming')
+  })
+
+  it('opens on the lead tab when there is genuinely nothing anywhere', () => {
+    expect(defaultSourceFilter({ implicit_join: 0, naming: 0, all: 0 })).toBe('implicit_join')
+  })
+})
+
+// #121: from the default scope the panel showed 0 of 271 and a sentence about
+// why — a dead end at the exact moment the tool is supposed to earn its keep.
+describe('defaultScopeFilter', () => {
+  it('opens on every candidate when this scope holds none of them', () => {
+    expect(defaultScopeFilter(0, 271)).toBe('all')
+  })
+
+  it('stays on the scope when the scope has its own to work through', () => {
+    expect(defaultScopeFilter(25, 271)).toBe('scope')
+  })
+
+  it('does not claim other scopes have something when nothing does', () => {
+    expect(defaultScopeFilter(0, 0)).toBe('scope')
   })
 })

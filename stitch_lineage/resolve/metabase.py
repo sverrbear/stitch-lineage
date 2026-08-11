@@ -91,6 +91,17 @@ def _collection_paths(collections: list[dict[str, Any]]) -> dict[Any, dict[str, 
     return indexed
 
 
+def _collection_path_of(indexed: dict[Any, dict[str, Any]], collection_id: Any) -> str | None:
+    """A card's collection as a breadcrumb ("Growth/Retention"); None when it has none.
+
+    Metabase's root collection has no entry (collection_id is null there), and a card
+    can outlive the collection listing it came with -- neither is worth a fake name.
+    """
+    entry = indexed.get(collection_id)
+    path = str(entry.get("path", "")) if entry else ""
+    return path or None
+
+
 def _excluded_collection_ids(collections: list[dict[str, Any]], patterns: list[str]) -> set[Any]:
     excluded: set[Any] = set()
     for col_id, info in _collection_paths(collections).items():
@@ -500,6 +511,10 @@ def resolve_metabase(
     Pure: payload in, nodes/edges out. No filesystem or network access.
     """
     result = MetabaseResolution()
+    # the same index the exclude patterns match on, reused to name where a card
+    # lives -- three cards called "Match to Conversation Ratio" are only telling
+    # apart by their collection (#122)
+    collection_paths = _collection_paths(payload.collections)
     excluded = _excluded_collection_ids(payload.collections, exclude_collections)
     included_schemas = {schema.casefold() for schema in include_schemas or []}
 
@@ -726,6 +741,9 @@ def resolve_metabase(
             "display": card.get("display"),
             "query_type": query_type,
         }
+        collection_path = _collection_path_of(collection_paths, card.get("collection_id"))
+        if collection_path:
+            properties["collection_path"] = collection_path
         # the table-level degrade: a native card whose columns did not fully resolve still
         # says which physical tables it reads, which the column edges no longer cover
         if native is not None and native.problems and native.tables:

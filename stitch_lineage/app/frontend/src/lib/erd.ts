@@ -397,6 +397,25 @@ export function erdCounts(erd: ErdData): ErdCounts {
   }
 }
 
+/**
+ * Where a candidate's two models live, for a panel listing pairs the current
+ * canvas draws neither end of: `"visualisation → models"`, or one scope name
+ * when both ends share it. Null when the graph knows neither.
+ *
+ * A cross-scope suggestion is judged on the pair, not the picture, so this is
+ * the context that replaces seeing it drawn (#121).
+ */
+export function relationshipScopeLabel(
+  index: GraphIndex,
+  rel: Pick<ErdStagedRelationship, 'fromModelId' | 'toModelId'>,
+): string | null {
+  const from = index.nodesById.get(rel.fromModelId)?.schema || null
+  const to = index.nodesById.get(rel.toModelId)?.schema || null
+  if (!from && !to) return null
+  if (from === to) return from
+  return `${from ?? '?'} → ${to ?? '?'}`
+}
+
 /** "100 models · 2 relationships · +2 joined from other scopes" */
 export function erdCountsLabel(counts: ErdCounts): string {
   const parts = [

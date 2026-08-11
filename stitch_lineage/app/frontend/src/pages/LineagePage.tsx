@@ -5,6 +5,7 @@
 // solid, parsed/inferred/fuzzy = dashed with an evidence tooltip.
 
 import {
+  applyNodeChanges,
   Background,
   Controls,
   Handle,
@@ -13,9 +14,10 @@ import {
   ReactFlow,
   type Edge,
   type Node,
+  type NodeChange,
   type NodeProps,
 } from '@xyflow/react'
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { SystemBadge } from '../components/badges'
 import { GraphLegend } from '../components/bits'
 import { useStitch } from '../data'
@@ -146,6 +148,26 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
     return { nodes: flowNodes, edges: flowEdges, truncated: lineage.truncated, impact }
   }, [index, nodeId, root, grain, rootEntityId])
 
+  /**
+   * The canvas needs its OWN copy of the nodes and an `onNodesChange` to write
+   * back into, because that callback is the only route React Flow has to record
+   * what it measured each card at. Without it the store's nodes stay unmeasured
+   * however big they render, and anything downstream of a measurement gets
+   * nothing to work with — which is why the minimap was drawing zero rectangles
+   * and reading as a blank white panel bottom-right (#122).
+   *
+   * A new lineage is a new drawing, so it replaces this wholesale rather than
+   * merging: the layout is computed per root and grain, and carrying anything
+   * over from the previous one would be a stale position.
+   */
+  const [flowNodes, setFlowNodes] = useState<LineageFlowNode[]>(nodes)
+  useEffect(() => setFlowNodes(nodes), [nodes])
+  const onNodesChange = useCallback(
+    (changes: NodeChange<LineageFlowNode>[]) =>
+      setFlowNodes((current) => applyNodeChanges(changes, current)),
+    [],
+  )
+
   if (!root) {
     return (
       <main className="graph-page">
@@ -211,13 +233,17 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
       </div>
       <div className="graph-canvas">
         <ReactFlow
-          nodes={nodes}
+          nodes={flowNodes}
+          onNodesChange={onNodesChange}
           edges={edges}
           nodeTypes={nodeTypes}
           fitView
           minZoom={0.05}
           nodesConnectable={false}
-          nodesDraggable
+          // The fan-out layout is computed per root, and this page has no "reset
+          // view" to undo a drag with — so it is a read-only picture, which is
+          // what it has always been in practice (drags never survived a render).
+          nodesDraggable={false}
           elementsSelectable
           nodeClickDistance={CLICK_SLOP_PX}
           proOptions={{ hideAttribution: true }}
