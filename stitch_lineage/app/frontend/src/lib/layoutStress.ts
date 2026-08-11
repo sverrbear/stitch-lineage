@@ -22,20 +22,21 @@
 //     one majorization is guaranteed to decrease.
 //
 //   * HUBS INTERIOR, DEGREE-1 LEAVES PERIPHERAL (Sverrir, #101). Each table also
-//     gets a target distance `r_i` from its own community's centroid, worth
-//     `radialStrength` of an edge, with `r_i` falling from the community's radius
-//     for a leaf to zero for its busiest table. This is a stress term of exactly
-//     the same shape as an edge — an anchor rather than a spring — so it is
-//     minimised alongside everything else instead of fighting it. It is what
-//     separates a degree-1 leaf from a degree-3 table that happens to sit the same
-//     number of hops out.
+//     gets a target distance `r_i` from the CONSTELLATION's centroid, worth
+//     `radialStrength` of an edge, from an annulus assignment that seats the busiest
+//     tables innermost (see `radialTargets`). This is a stress term of exactly the
+//     same shape as an edge — an anchor rather than a spring — so it is minimised
+//     alongside everything else instead of fighting it.
 //
-//   * RECTANGULAR COLLISION. Cards are not points. From halfway through the
-//     iterations a damped separation sweep runs after each majorization step, using
-//     each card's real measured width and height, so tables settle into positions
-//     that a 300×246 rectangle can actually occupy instead of positions a point
-//     could. (The hard guarantee is `separateBoxes`; this is the part that lets the
-//     optimiser see the constraint while it still has freedom to move.)
+//   * RECTANGULAR COLLISION, WEIGHTED BY DEGREE. Cards are not points. From halfway
+//     through the iterations a damped separation sweep runs after each majorization
+//     step, using each card's real measured width and height, so tables settle into
+//     positions that a 300×246 rectangle can actually occupy instead of positions a
+//     point could. Each card's mass is its degree, so when a busy table's neighbours
+//     cannot all fit on one orbit it is the LEAVES that give way — the ordering the
+//     radial term asks for comes out of the collision instead of fighting it. (The
+//     hard guarantee is `separateBoxes`; this is the part that lets the optimiser see
+//     the constraint while it still has freedom to move.)
 //
 // Deterministic throughout: nodes are indexed by sorted id, the start is a fixed
 // sunflower spiral, and there is no random number anywhere in the file — an unseeded
@@ -143,25 +144,24 @@ export function stressLayout(
   for (const list of adjacency) list.sort((a, b) => a - b)
 
   const target = shortestPaths(adjacency, community, idealLength, idealLength * clusterSpread)
-  const radius = radialTargets(adjacency, groups, target)
+  const { radius, active: radial } = radialTargets(adjacency, idealLength)
 
-  const boxes: SeparationBox[] = ids.map((id) => {
+  const boxes: SeparationBox[] = ids.map((id, i) => {
     const node = byId.get(id) as StressNode
-    return { id, cx: 0, cy: 0, w: node.w, h: node.h }
+    // mass = degree: see SeparationBox.mass for why the collision has to know this
+    return { id, cx: 0, cy: 0, w: node.w, h: node.h, mass: Math.max(1, adjacency[i].length) }
   })
-  seed(boxes, adjacency, groups, idealLength, clusterSpread)
+  seed(boxes, adjacency, radius, radial, groups, idealLength, clusterSpread)
 
   const collisionFrom = Math.floor(iterations * COLLISION_FROM)
   for (let iteration = 0; iteration < iterations; iteration++) {
-    const centroid = groups.map((group) => {
-      let x = 0
-      let y = 0
-      for (const i of group) {
-        x += boxes[i].cx
-        y += boxes[i].cy
-      }
-      return { x: x / group.length, y: y / group.length }
-    })
+    // one anchor for the constellation: the radial term is about where a table sits
+    // in the picture, not where it sits inside its own cluster
+    const anchor = { x: 0, y: 0 }
+    for (const box of boxes) {
+      anchor.x += box.cx / count
+      anchor.y += box.cy / count
+    }
 
     // Gauss-Seidel: each node moves to the position that minimises the majorizing
     // quadratic given where everything else is right now. In sorted-id order, so
@@ -183,16 +183,28 @@ export function stressLayout(
         denominator += weight
       }
 
-      // the radial anchor: an edge to a fixed point at the community's middle
-      const anchor = centroid[community[i]]
-      const r = radius[i]
-      const anchorWeight = radialStrength / Math.max(idealLength, r) ** 2
-      const dx = boxes[i].cx - anchor.x
-      const dy = boxes[i].cy - anchor.y
-      const distance = Math.max(EPSILON, Math.hypot(dx, dy))
-      numeratorX += anchorWeight * (anchor.x + (r * dx) / distance)
-      numeratorY += anchorWeight * (anchor.y + (r * dy) / distance)
-      denominator += anchorWeight
+      // the radial anchor: a stress term of the same shape as an edge, but to a
+      // fixed point in the middle of the constellation rather than to another table
+      if (radial) {
+        const r = radius[i]
+        // The anchor competes with the node's own relationships, so its weight is
+        // scaled BY DEGREE to keep that competition proportional. Weighting it
+        // uniformly gets the authority exactly backwards: against a hub's twenty
+        // edges a single anchor is noise, so the hub drifts off the middle, while
+        // against a leaf's one edge the same anchor dominates. Both errors point the
+        // same way — the hub ends up outside its own leaves — and no amount of
+        // `radialStrength` fixes an anchor pointing the wrong way. Per degree,
+        // `radialStrength` reads as "worth this fraction of each relationship the
+        // table has", and it holds a hub in the middle as firmly as it pushes a leaf
+        // out.
+        const anchorWeight = (radialStrength * Math.max(1, adjacency[i].length)) / idealLength ** 2
+        const dx = boxes[i].cx - anchor.x
+        const dy = boxes[i].cy - anchor.y
+        const distance = Math.max(EPSILON, Math.hypot(dx, dy))
+        numeratorX += anchorWeight * (anchor.x + (r * dx) / distance)
+        numeratorY += anchorWeight * (anchor.y + (r * dy) / distance)
+        denominator += anchorWeight
+      }
 
       if (denominator > 0) {
         boxes[i].cx = numeratorX / denominator
@@ -203,8 +215,54 @@ export function stressLayout(
     if (iteration >= collisionFrom) relaxOverlaps(boxes, gutter, 0.5)
   }
 
+  alignPrincipalAxis(boxes)
   for (const box of boxes) positions.set(box.id, { x: box.cx, y: box.cy })
   return positions
+}
+
+/**
+ * Stress is rotation-invariant: the objective cannot tell a constellation from the
+ * same constellation turned thirty degrees, so majorization leaves the orientation
+ * to whatever the start happened to imply. That gauge freedom has to be spent
+ * deliberately, or it is spent badly — two tables joined by one relationship came
+ * out stacked corner to corner, and the main constellation came out tall and narrow
+ * on a canvas that is wide.
+ *
+ * So the solution is rotated onto its own principal axis: the eigenvector of the
+ * centres' covariance, laid along x. The widest direction of whatever the graph
+ * turned out to be becomes the widest direction of the viewport, and a pair becomes
+ * a pair side by side. Distances — and therefore the stress — are untouched;
+ * rectangles are axis-aligned, so the overlap guarantee still runs afterwards.
+ */
+function alignPrincipalAxis(boxes: SeparationBox[]): void {
+  if (boxes.length < 2) return
+  let meanX = 0
+  let meanY = 0
+  for (const box of boxes) {
+    meanX += box.cx / boxes.length
+    meanY += box.cy / boxes.length
+  }
+  let xx = 0
+  let yy = 0
+  let xy = 0
+  for (const box of boxes) {
+    const dx = box.cx - meanX
+    const dy = box.cy - meanY
+    xx += dx * dx
+    yy += dy * dy
+    xy += dx * dy
+  }
+  // a round blob has no principal axis worth honouring; leave it where it is
+  if (Math.abs(xy) < EPSILON && Math.abs(xx - yy) < EPSILON) return
+  const angle = 0.5 * Math.atan2(2 * xy, xx - yy)
+  const cos = Math.cos(-angle)
+  const sin = Math.sin(-angle)
+  for (const box of boxes) {
+    const dx = box.cx - meanX
+    const dy = box.cy - meanY
+    box.cx = meanX + dx * cos - dy * sin
+    box.cy = meanY + dx * sin + dy * cos
+  }
 }
 
 /**
@@ -245,42 +303,173 @@ function shortestPaths(
 }
 
 /**
- * How far from its community's middle each table wants to sit. Zero for the
- * community's busiest table, the community's own radius for a degree-1 leaf, and
- * `log(degree)` in between — linear in degree would put a degree-3 table almost as
- * far out as a leaf whenever one hub has twenty relationships, which is exactly the
- * shape a real analytics schema has.
+ * How far from the constellation's middle each table wants to sit — the term that
+ * makes the picture read hubs-in-the-middle, leaves-at-the-edge (Sverrir, #101).
+ *
+ * Tables are ORDERED first: by how many relationships they are from the busiest
+ * table in the component, and — the part that matters — busiest-first within each
+ * of those distances. Then they are seated outward into annuli one ideal length
+ * apart, each annulus taking as many as its circumference has room for. So the
+ * tables that hold the schema together take the inner annulus and the degree-1
+ * leaves are seated after them, which is the requirement stated as a target rather
+ * than hoped for as a side effect.
+ *
+ * Two details earn their keep:
+ *
+ *   * The base is the UNWEIGHTED hop count. Letting the community spreading into
+ *     the radius as well was a bug worth naming: a cluster's own degree-3 hub was
+ *     pushed a spread-multiplier out and ended up further from the middle than the
+ *     degree-1 leaves of the cluster beside it — the requirement upside down.
+ *
+ *   * An annulus is a TARGET, not a seat. It says which ring a table belongs to;
+ *     majorization and rectangular collision then pull the ring in as tight as the
+ *     cards allow, which is why this costs so much less edge length than seating
+ *     cards on circles does. A table can never be seated inside its own parent
+ *     (`hops` floors the ring), so a subtree still reads outward.
+ *
+ * The whole component shares one anchor — its centroid — so this is a statement
+ * about the constellation, which is what the reader is looking at. A component with
+ * no degree hierarchy at all (a pair, a ring) gets no radial term: there is no hub
+ * to put in the middle and it would only stretch it.
  */
 function radialTargets(
   adjacency: readonly number[][],
-  groups: readonly number[][],
-  target: readonly number[][],
-): number[] {
-  const radius = new Array<number>(adjacency.length).fill(0)
-  for (const group of groups) {
-    let hub = group[0]
-    for (const i of group) if (adjacency[i].length > adjacency[hub].length) hub = i
-    const highest = adjacency[hub].length
-    if (highest <= 1) continue
-    let extent = 0
-    for (const i of group) {
-      const d = target[hub][i]
-      if (Number.isFinite(d)) extent = Math.max(extent, d)
-    }
-    for (const i of group) {
-      const degree = Math.max(1, adjacency[i].length)
-      radius[i] = extent * (1 - Math.log(degree) / Math.log(highest))
-    }
+  idealLength: number,
+): { radius: number[]; active: boolean } {
+  const count = adjacency.length
+  const radius = new Array<number>(count).fill(0)
+  let hub = 0
+  for (let i = 0; i < count; i++) {
+    if (adjacency[i].length > adjacency[hub].length) hub = i
   }
-  return radius
+  if (adjacency[hub].length < 2) return { radius, active: false }
+
+  const hops = new Array<number>(count).fill(Infinity)
+  hops[hub] = 0
+  let frontier = [hub]
+  while (frontier.length > 0) {
+    const next: number[] = []
+    for (const i of frontier) {
+      for (const other of adjacency[i]) {
+        if (Number.isFinite(hops[other])) continue
+        hops[other] = hops[i] + 1
+        next.push(other)
+      }
+    }
+    frontier = next
+  }
+
+  const order: number[] = []
+  for (let i = 0; i < count; i++) if (i !== hub) order.push(i)
+  order.sort(
+    (a, b) =>
+      (Number.isFinite(hops[a]) ? hops[a] : count) - (Number.isFinite(hops[b]) ? hops[b] : count) ||
+      adjacency[b].length - adjacency[a].length ||
+      a - b,
+  )
+
+  // how many cards an annulus has circumference for, at one ideal length of arc each
+  const capacity = (ring: number) => Math.max(1, Math.floor(2 * Math.PI * ring))
+  let ring = 1
+  let seated = 0
+  for (const i of order) {
+    const floor = Number.isFinite(hops[i]) ? hops[i] : 1
+    if (floor > ring) {
+      ring = floor
+      seated = 0
+    }
+    if (seated >= capacity(ring)) {
+      ring += 1
+      seated = 0
+    }
+    radius[i] = ring * idealLength
+    seated += 1
+  }
+  return { radius, active: true }
 }
 
 /**
- * The starting arrangement — communities on a ring, and inside each one a sunflower
- * spiral ordered busiest-first, so the iterations begin from something that already
- * has the right shape. Fixed constants only: the same graph always starts here.
+ * The starting arrangement, and it matters more than a start usually does.
+ *
+ * Majorization is a LOCAL method: it will compact and tidy the configuration it is
+ * given, but it will not reconsider which table sits at which coordinate, because
+ * exchanging two tables is not a small move in a continuous objective. Whatever
+ * ordering the start implies is very largely the ordering that survives. A blind
+ * sunflower spiral therefore threw away the one thing the radial term was for — the
+ * leaves it happened to seed near the middle stayed near the middle, and the anchor
+ * could not outvote twenty rectangles all needing somewhere to be.
+ *
+ * So the start IS the annulus assignment: every table on the ring
+ * `radialTargets` gave it, and inside a ring seated near the neighbour it hangs off,
+ * so subtrees begin contiguous and stay that way. Iteration then pulls the rings in
+ * as tight as the cards allow, which is where the edge length comes back — seating
+ * cards on circles and leaving them there is what costs a third more than it needs
+ * to.
+ *
+ * Fixed constants only: the same graph always starts here.
  */
 function seed(
+  boxes: SeparationBox[],
+  adjacency: readonly number[][],
+  radius: readonly number[],
+  radial: boolean,
+  groups: readonly number[][],
+  idealLength: number,
+  clusterSpread: number,
+): void {
+  if (!radial) {
+    seedSunflower(boxes, adjacency, groups, idealLength, clusterSpread)
+    return
+  }
+  const angle = new Map<number, number>()
+  const rings = [...new Set(radius)].sort((a, b) => a - b)
+  for (const ring of rings) {
+    const occupants = radius
+      .map((r, i) => ({ r, i }))
+      .filter((entry) => entry.r === ring)
+      .map((entry) => entry.i)
+      .sort((a, b) => adjacency[b].length - adjacency[a].length || boxes[a].id.localeCompare(boxes[b].id))
+    if (ring === 0) {
+      for (const i of occupants) {
+        angle.set(i, 0)
+        boxes[i].cx = 0
+        boxes[i].cy = 0
+      }
+      continue
+    }
+    // each table would like to sit on the side of the ring its parent is on
+    const preferred = new Map<number, number>()
+    occupants.forEach((i, rank) => {
+      let sin = 0
+      let cos = 0
+      for (const other of adjacency[i]) {
+        const known = angle.get(other)
+        if (known === undefined) continue
+        sin += Math.sin(known)
+        cos += Math.cos(known)
+      }
+      preferred.set(
+        i,
+        sin === 0 && cos === 0 ? (2 * Math.PI * rank) / occupants.length : Math.atan2(sin, cos),
+      )
+    })
+    // keep that ORDER but space them evenly, so a ring is never a heap on one side
+    const seatedOrder = [...occupants].sort(
+      (a, b) =>
+        (preferred.get(a) as number) - (preferred.get(b) as number) ||
+        boxes[a].id.localeCompare(boxes[b].id),
+    )
+    seatedOrder.forEach((i, rank) => {
+      const theta = (2 * Math.PI * rank) / seatedOrder.length
+      angle.set(i, theta)
+      boxes[i].cx = Math.cos(theta) * ring
+      boxes[i].cy = Math.sin(theta) * ring
+    })
+  }
+}
+
+/** The fallback start for a component with no hub to build rings around. */
+function seedSunflower(
   boxes: SeparationBox[],
   adjacency: readonly number[][],
   groups: readonly number[][],

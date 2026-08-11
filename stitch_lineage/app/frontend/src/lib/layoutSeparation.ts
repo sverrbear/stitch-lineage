@@ -30,6 +30,21 @@ export interface SeparationBox {
   cy: number
   w: number
   h: number
+  /**
+   * How hard this card is to shove, defaulting to 1. Relaxation splits a repair
+   * between the pair in inverse proportion, so a heavy card holds its ground and a
+   * light one gives way.
+   *
+   * The layout sets it to the table's degree. Twenty cards do not fit on one orbit
+   * around a busy table, so some must give way to an outer layer, and an equal split
+   * chooses which ones by geometry alone — degree-blind. Weighting by degree measured
+   * out as keeping each community's busiest table nearest its own middle where an
+   * equal split did not, and shortening the longest relationship. It is a bias on who
+   * yields, not a guarantee about the final order: a hub held outward by its own
+   * satellites stays there, which is why the radial ordering is a weighted objective
+   * and not a promise.
+   */
+  mass?: number
 }
 
 /**
@@ -75,16 +90,21 @@ export function relaxOverlaps(
       const p = penetration(a, b, gutter)
       if (p.x <= TOLERANCE || p.y <= TOLERANCE) continue
       worst = Math.max(worst, Math.min(p.x, p.y))
+      // inverse-mass split: the heavier card keeps its place
+      const massA = Math.max(1, a.mass ?? 1)
+      const massB = Math.max(1, b.mass ?? 1)
+      const shareA = massB / (massA + massB)
+      const shareB = massA / (massA + massB)
       // the cheaper axis: moving 20px sideways beats moving 200px down
       if (p.x < p.y) {
         // a deterministic direction even when two cards share a centre line
-        const push = ((p.x * damping) / 2) * (a.cx < b.cx || (a.cx === b.cx && a.id < b.id) ? -1 : 1)
-        a.cx += push
-        b.cx -= push
+        const push = p.x * damping * (a.cx < b.cx || (a.cx === b.cx && a.id < b.id) ? -1 : 1)
+        a.cx += push * shareA
+        b.cx -= push * shareB
       } else {
-        const push = ((p.y * damping) / 2) * (a.cy < b.cy || (a.cy === b.cy && a.id < b.id) ? -1 : 1)
-        a.cy += push
-        b.cy -= push
+        const push = p.y * damping * (a.cy < b.cy || (a.cy === b.cy && a.id < b.id) ? -1 : 1)
+        a.cy += push * shareA
+        b.cy -= push * shareB
       }
     }
   }

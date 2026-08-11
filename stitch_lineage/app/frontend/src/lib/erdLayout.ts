@@ -18,12 +18,17 @@
 //   OBJECTIVES, minimised —
 //     * total relationship length and the number of relationships that cross;
 //     * tables that join each other sit together (graph communities);
-//     * a community's busiest table is interior, its degree-1 leaves peripheral.
+//     * the busiest tables sit interior and degree-1 leaves peripheral. This one
+//       pulls AGAINST edge length on a real schema — seating twenty leaves far enough
+//       out to clear a hub's own satellites is what makes the relationships long — so
+//       it is a weighted objective (`radialStrength`), not a constraint.
 //
 //   MACHINERY — greedy-modularity community detection (`communitiesOf`), stress
-//   majorization with a radial term and rectangular collision (`layoutStress`),
-//   guaranteed overlap removal (`layoutSeparation`), and a crossing-reducing local
-//   search over equal-sized cards (`layoutSwaps`).
+//   majorization seeded on degree-ordered annuli, with rectangular collision weighted
+//   by degree (`layoutStress`), and guaranteed overlap removal (`layoutSeparation`).
+//   Crossings are not optimised directly: majorization from that seed already brings
+//   them to zero on the real scopes, and a swap-based local search over the result was
+//   measured to change nothing, so it is not carried.
 //
 // Every step is ordered by table id and seeded by constants, so the same graph
 // always gives the same map and the canvas does not reshuffle between opens.
@@ -32,7 +37,6 @@
 
 import { separateBoxes, type SeparationBox } from './layoutSeparation'
 import { stressLayout } from './layoutStress'
-import { reduceCrossings } from './layoutSwaps'
 
 export interface ErdLayoutNode {
   id: string
@@ -78,7 +82,7 @@ const DEFAULTS = {
   gutter: 28,
   componentGap: 120,
   iterations: 240,
-  clusterSpread: 1.9,
+  clusterSpread: 1.15,
   radialStrength: 0.55,
 } as const
 
@@ -186,7 +190,7 @@ export function layoutErd(
 
 /**
  * One constellation: community detection, then majorization for the coordinates,
- * then the overlap guarantee, then the crossing search. Returns centre-based boxes.
+ * then the overlap guarantee. Returns centre-based boxes.
  */
 function placeComponent(
   component: Component,
@@ -214,7 +218,6 @@ function placeComponent(
   })
 
   separateBoxes(boxes, gutter)
-  reduceCrossings(boxes, component.edges, idealLength)
   return boxes
 }
 
