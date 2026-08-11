@@ -1,14 +1,21 @@
 name: Publish to PyPI
 
-# Publishes via PyPI Trusted Publishing (OIDC) — no API token stored anywhere.
-# One-time setup on pypi.org: Account -> Publishing -> add a pending publisher:
+# Publishes via PyPI Trusted Publishing (OIDC) — no API token is stored anywhere.
+#
+# The publisher registered on pypi.org pins these exact names; changing any of them breaks
+# the trust relationship and the upload is rejected:
 #   project: stitch-lineage, owner: sverrbear, repo: stitch-lineage,
 #   workflow: publish.yml, environment: pypi
-# Then publishing = create a GitHub release (tag v0.1.0 etc.) and this runs.
+#
+# Releasing = push a v* tag. `git tag v0.3.0 && git push origin v0.3.0` runs this; creating a
+# GitHub release from a new tag pushes the tag too, so that path still works. Tagging is the
+# whole trigger, so the tag must already match the version in pyproject.toml — the first job
+# refuses to build otherwise, before anything can reach PyPI.
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
 
 permissions:
   contents: read
@@ -21,15 +28,43 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Verify release tag matches pyproject version
+
+      - name: Verify the tag matches the pyproject version
         run: |
           version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
-            echo "release tag '${GITHUB_REF_NAME}' does not match pyproject version 'v${version}'" >&2
+            echo "::error::tag '${GITHUB_REF_NAME}' does not match pyproject version 'v${version}'"
             exit 1
           fi
-      - run: python -m pip install build
+
+      - run: python -m pip install build twine
       - run: python -m build
+
+      # The worst failure mode this package has is publishing a `stitch serve` with no UI:
+      # the frontend dist/ is gitignored and only reaches the wheel because hatchling is told
+      # to treat it as an artifact, so a packaging change can drop it silently and nothing
+      # else would notice until a user installed it. Fail the release instead.
+      - name: Verify the built frontend is inside the wheel
+        run: |
+          wheel=$(ls dist/*.whl)
+          echo "checking $wheel"
+          if ! unzip -l "$wheel" | grep -q 'stitch_lineage/app/frontend/dist/index.html'; then
+            echo "::error::$wheel has no stitch_lineage/app/frontend/dist/index.html -- 'stitch serve' would ship with no UI. Rebuild the frontend (npm run build) and commit dist/ before tagging."
+            unzip -l "$wheel"
+            exit 1
+          fi
+          # index.html alone is a shell: without the hashed bundles the app loads to a blank page
+          assets=$(unzip -l "$wheel" | grep -c 'stitch_lineage/app/frontend/dist/assets/' || true)
+          if [ "$assets" -lt 2 ]; then
+            echo "::error::$wheel carries index.html but only $assets file(s) under dist/assets/ -- the app would not load."
+            exit 1
+          fi
+          echo "frontend files in the wheel:"
+          unzip -l "$wheel" | grep 'stitch_lineage/app/frontend/dist/'
+
+      - name: Check the package metadata renders on PyPI
+        run: twine check dist/*
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist
@@ -42,7 +77,7 @@ jobs:
       name: pypi
       url: https://pypi.org/p/stitch-lineage
     permissions:
-      id-token: write
+      id-token: write # the OIDC token the trusted publisher exchanges; no password anywhere
     steps:
       - uses: actions/download-artifact@v4
         with:

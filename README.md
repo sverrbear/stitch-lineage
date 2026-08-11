@@ -1,12 +1,14 @@
+<!-- Image and link targets are absolute on purpose: this README is the PyPI project page too,
+     and PyPI resolves nothing relative to the repo. -->
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-    <img src="assets/logo-light.svg" width="300" alt="stitch">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/sverrbear/stitch-lineage/main/assets/logo-dark.svg">
+    <img src="https://raw.githubusercontent.com/sverrbear/stitch-lineage/main/assets/logo-light.svg" width="300" alt="stitch">
   </picture>
 </p>
 
-[![image](https://img.shields.io/github/license/sverrbear/stitch-lineage.svg)](LICENSE)
-[![image](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg)](pyproject.toml)
+[![image](https://img.shields.io/github/license/sverrbear/stitch-lineage.svg)](https://github.com/sverrbear/stitch-lineage/blob/main/LICENSE)
+[![image](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://github.com/sverrbear/stitch-lineage/blob/main/pyproject.toml)
 [![image](https://img.shields.io/github/actions/workflow/status/sverrbear/stitch-lineage/ci.yml?branch=main&label=test)](https://github.com/sverrbear/stitch-lineage/actions/workflows/ci.yml)
 
 dbt ↔ Metabase column lineage — so you know what a column change breaks before you make it.
@@ -25,11 +27,12 @@ tool touches Metabase with anything but a GET.
 Requires **Python 3.11+**, a dbt project whose artifacts you can generate, and **Metabase 49 or
 newer** (the first release with API keys).
 
-This project is in active development — v0.2.1, alpha. Full design in [SPEC.md](SPEC.md) (v0.5);
-work is tracked as [GitHub issues](https://github.com/sverrbear/stitch-lineage/issues).
+This project is in active development — v0.2.1, alpha. Full design in
+[SPEC.md](https://github.com/sverrbear/stitch-lineage/blob/main/SPEC.md) (v0.5); work is tracked as
+[GitHub issues](https://github.com/sverrbear/stitch-lineage/issues).
 
 <p align="center">
-  <img src="assets/lineage.png" alt="The stitch lineage view: one column traced from its source table through dbt models into Metabase fields, cards and dashboards" width="100%">
+  <img src="https://raw.githubusercontent.com/sverrbear/stitch-lineage/main/assets/lineage.png" alt="The stitch lineage view: one column traced from its source table through dbt models into Metabase fields, cards and dashboards" width="100%">
 </p>
 <p align="center">
   <sub><code>stitch serve</code> — one column's blast radius, source to dashboard. Synthetic demo project.</sub>
@@ -53,14 +56,18 @@ work is tracked as [GitHub issues](https://github.com/sverrbear/stitch-lineage/i
 
 ### Installation
 
-stitch is installed from git. There is no PyPI package — that is deliberate (see the
-[FAQ](#why-is-there-no-pypi-package)):
+```shell
+pip install stitch-lineage
+```
+
+Releases are cut from tags, so PyPI is the stable channel. To ride `main` instead — alpha moves
+fast, and this is what you want if you are following the issues — install from git:
 
 ```shell
 pip install git+https://github.com/sverrbear/stitch-lineage.git
 ```
 
-The browser app ships prebuilt, so installing never needs a node toolchain.
+Either way the browser app ships prebuilt, so installing never needs a node toolchain.
 
 ### Usage
 
@@ -162,7 +169,7 @@ guess. Builds with uncommitted changes store nothing and say so — that graph d
 tree, not the commit. `stitch history` lists what is stored.
 
 In CI, `stitch impact --format github-comment` posts the same blast radius as a PR comment,
-`--format slack` as a deploy alert (workflow templates in [`action/`](action/)), and
+`--format slack` as a deploy alert (workflow templates in [`action/`](https://github.com/sverrbear/stitch-lineage/tree/main/action)), and
 `--fail-on-impact` exits 1 when a column was removed or type-changed. That path does need a baseline
 `graph.json` committed on the base branch, which is why it is not the default story.
 `--format json` emits the same diff as data, which is what `stitch mend` runs on.
@@ -223,7 +230,7 @@ filter removed still runs, and shows different numbers under the same title. Rem
 `mend.auto` and those cards get listed instead of edited. `stitch doctor --write-access` checks that
 the API key can write, and writes nothing itself. The post-deploy workflow — sync, build, impact,
 plan, Slack notice, apply, summary, in one job — is
-[`action/stitch-mend.yml`](action/stitch-mend.yml), which documents a human-gated variant alongside.
+[`action/stitch-mend.yml`](https://github.com/sverrbear/stitch-lineage/blob/main/action/stitch-mend.yml), which documents a human-gated variant alongside.
 
 ## The app
 
@@ -233,7 +240,7 @@ badge of the system it lives in — Snowflake on the warehouse side, Metabase on
 glance shows where one ends and the other begins. Cards deep-link back into Metabase.
 
 <p align="center">
-  <img src="assets/erd.png" alt="The stitch ERD: two scoped models with a validated relationship drawn between their key columns" width="100%">
+  <img src="https://raw.githubusercontent.com/sverrbear/stitch-lineage/main/assets/erd.png" alt="The stitch ERD: two scoped models with a validated relationship drawn between their key columns" width="100%">
 </p>
 
 In the ERD you can **draw** relationships: drag one column's handle onto another's, name the
@@ -451,12 +458,17 @@ No. `.stitch/` is local and gitignored, including the per-commit baselines `impa
 Teams that want git history of the graph can commit it, and the CI comment workflow does need that,
 but nothing in the local flow requires it.
 
-### Why is there no PyPI package?
+### Should I install from PyPI or from git?
 
-Distribution is deliberately git-install (SPEC.md). stitch is alpha and pinned to conventions in
-your own repo; installing from a ref you chose keeps you in control of when it changes. The
-packaging is real — `pyproject.toml` builds a wheel with the app bundled — so this can change later
-without anything else changing.
+PyPI unless you have a reason not to: `pip install stitch-lineage` gets you the last tagged release,
+which is the version the docs describe. Install from git when you want a fix that has landed on
+`main` but has not been tagged yet.
+
+There was no PyPI package until 2026-08-11 — the SPEC called git-install deliberate, on the grounds
+that pinning to a ref you chose keeps you in control of when the tool changes. That reasoning
+applies to a ref, not to a registry: a tagged PyPI release is just as pinnable and far easier to
+install. Releases publish from a `v*` tag through PyPI Trusted Publishing (OIDC, no API tokens), and
+the workflow refuses to publish a wheel that does not contain the built app.
 
 ## Contributing
 
@@ -473,10 +485,10 @@ ruff format --check . # formatting
 lint-imports          # architecture seams (SPEC.md §4)
 ```
 
-The app's source lives in [`stitch_lineage/app/frontend/`](stitch_lineage/app/frontend/) and its own
+The app's source lives in [`stitch_lineage/app/frontend/`](https://github.com/sverrbear/stitch-lineage/tree/main/stitch_lineage/app/frontend) and its own
 README covers that stack. The built `dist/` is committed and bundled into the wheel — rebuild it
 with `npm run build` there whenever `src/` changes.
 
 ## License
 
-`stitch` is distributed under the terms of the [MIT license](LICENSE).
+`stitch` is distributed under the terms of the [MIT license](https://github.com/sverrbear/stitch-lineage/blob/main/LICENSE).
