@@ -249,6 +249,41 @@ _RENAME_NOTE = "Renames appear as remove+add: a renamed column shows up here as 
 _NO_IMPACT = "✅ no downstream-impacting column changes"
 
 
+def format_build_summary(diff: ColumnDiff, report: ImpactReport) -> str | None:
+    """One line for the end of `stitch build`: what changed since the previous build.
+
+    None when both graphs carry the same columns -- a build that changed nothing stays
+    quiet. Additions are counted but carry no blast radius, so they get no arrow clause.
+    """
+    changes = []
+    if diff.removed:
+        changes.append(f"{_plural(len(diff.removed), 'column')} removed")
+    if diff.type_changed:
+        changes.append(f"{len(diff.type_changed)} type-changed")
+    if diff.added:
+        changes.append(f"{len(diff.added)} added")
+    if not changes:
+        return None
+
+    line = f"since last build: {', '.join(changes)}"
+    if not (diff.removed or diff.type_changed):
+        return line
+
+    # a node reachable from two changed columns is one impacted card, not two
+    impacted = {
+        item.node_id: item.node_type for items in report.impacted.values() for item in items
+    }
+    cards = sum(1 for node_type in impacted.values() if node_type is NodeType.MB_CARD)
+    dashboards = sum(1 for node_type in impacted.values() if node_type is NodeType.MB_DASHBOARD)
+    if not cards:
+        reach = "no Metabase cards affected"
+    elif dashboards:
+        reach = f"{_plural(cards, 'card')} on {_plural(dashboards, 'dashboard')} affected"
+    else:
+        reach = f"{_plural(cards, 'card')} affected"
+    return f"{line} -> {reach} (run 'stitch impact' for the tree)"
+
+
 def format_github_comment(diff: ColumnDiff, report: ImpactReport, graph: Graph) -> str:
     """Render the PR comment per SPEC.md section 10.
 

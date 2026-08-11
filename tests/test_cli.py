@@ -37,6 +37,15 @@ metabase:
 SCOPED_CONFIG = VALID_CONFIG + 'serve:\n  erd_default_scope: "schema:MARTS"\n'
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _uncoloured(output: str) -> str:
+    """CI sets GITHUB_ACTIONS, which makes typer force-colour its help -- and rich's
+    option highlighter then splits '--base-file' across style codes mid-token."""
+    return _ANSI.sub("", output)
+
+
 def _write_graph(tmp_path, nodes=()):
     graph = Graph(generated_at="2026-08-06T00:00:00+00:00", nodes=list(nodes))
     write_graph(graph, tmp_path / ".stitch" / "graph.json")
@@ -49,8 +58,19 @@ def _marts_model():
 def test_help_lists_commands():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    for command in ("build", "search", "suggest", "doctor", "export", "init", "serve", "history"):
-        assert command in result.output
+    output = _uncoloured(result.output)
+    for command in (
+        "build",
+        "search",
+        "suggest",
+        "doctor",
+        "export",
+        "impact",
+        "init",
+        "serve",
+        "history",
+    ):
+        assert command in output
 
 
 def test_history_works_without_a_config_and_points_at_build(tmp_path, monkeypatch):
@@ -69,15 +89,15 @@ def test_history_works_without_a_config_and_points_at_build(tmp_path, monkeypatc
     }
 
 
-def test_impact_is_shelved_hidden_but_invocable():
-    # shelved: hidden from --help, but the command keeps working when invoked directly
-    top_help = runner.invoke(app, ["--help"])
-    assert top_help.exit_code == 0
-    assert "impact" not in top_help.output
-
+def test_impact_help_documents_every_baseline_source():
     own_help = runner.invoke(app, ["impact", "--help"])
     assert own_help.exit_code == 0
-    assert "Shelved pending the committed-baseline workflow" in own_help.output
+    output = _uncoloured(own_help.output)
+    assert "--base-file" in output
+    assert "graph.prev.json" in output
+    # the --base local-history path (issue #87) and the point query (issue #86)
+    assert "history" in output
+    assert "--column" in output
 
 
 def test_version():
@@ -393,6 +413,26 @@ def test_explicitly_passed_missing_config_is_a_hard_error(tmp_path, monkeypatch)
         result = runner.invoke(app, [*command, "--config", "nope.yml"])
         assert result.exit_code == 1, command
         assert "config file not found" in result.output
+
+
+def test_impact_without_a_baseline_names_both_ways_out(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
+    _write_graph(tmp_path)
+    result = runner.invoke(app, ["impact"])
+    assert result.exit_code == 1
+    assert "no baseline at .stitch/graph.prev.json" in result.output
+    assert "run 'stitch build' twice" in result.output
+    assert "--base-file <path>" in result.output
+
+
+def test_impact_base_file_must_exist(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
+    _write_graph(tmp_path)
+    result = runner.invoke(app, ["impact", "--base-file", "nope.json"])
+    assert result.exit_code == 1
+    assert "baseline file not found: nope.json" in result.output
 
 
 def test_impact_rejects_unknown_format(tmp_path, monkeypatch):
@@ -752,13 +792,23 @@ def test_impact_json_and_format_are_scoped_to_their_own_paths(tmp_path, monkeypa
     assert "use --json with --column" in _plain(wrong_format.output)
 
 
-def test_impact_column_documented_on_the_hidden_command(tmp_path, monkeypatch):
+def test_impact_column_documented_on_the_command(tmp_path, monkeypatch):
+    # impact is no longer hidden: the previous-build snapshot (#53) gave it a default
+    # baseline, so the top-level help lists it again
     monkeypatch.chdir(tmp_path)
     top_help = runner.invoke(app, ["--help"])
-    assert "impact" not in _plain(top_help.output)
+    assert "impact" in _plain(top_help.output)
     own_help = runner.invoke(app, ["impact", "--help"])
     assert own_help.exit_code == 0
     assert "--column" in _plain(own_help.output)
+
+
+def test_impact_column_rejects_a_baseline(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    for extra in (["--base", "main"], ["--base-file", "graph.json"]):
+        result = runner.invoke(app, ["impact", "--column", "fct.col", *extra])
+        assert result.exit_code == 1
+        assert "takes no baseline" in _plain(result.output)
 
 
 def test_impact_column_without_a_graph_points_at_build(tmp_path, monkeypatch):

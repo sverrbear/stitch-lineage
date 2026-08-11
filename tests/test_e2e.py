@@ -284,6 +284,66 @@ def test_build_no_metabase_without_baseline_is_dbt_only(project, monkeypatch):
     assert "models bound" not in rerun.output
 
 
+# --- local impact: previous-build snapshot + build summary --------------------
+
+
+def test_first_build_takes_no_snapshot_and_a_no_op_rebuild_stays_quiet(project):
+    prev_path = project / ".stitch" / "graph.prev.json"
+    first = _full_build()
+    assert not prev_path.exists()
+    assert "since last build" not in first.output
+
+    written = (project / ".stitch" / "graph.json").read_text()
+    second = _full_build()
+    assert prev_path.read_text() == written
+    assert "since last build" not in second.output  # only the volatile header moved
+
+
+def test_rebuild_after_a_dropped_column_summarizes_the_blast_radius(project):
+    _full_build()
+    _drop_stg_payments_amount_usd(project)
+    with responses.RequestsMock():
+        result = runner.invoke(app, ["build", "--no-metabase"])
+    assert result.exit_code == 0, result.output
+    # 4 cards, not 3: card 205 is native SQL, which resolves since #105 and consumes the
+    # same mb_field::102 the MBQL cards do -- the summary counts both card kinds alike
+    assert (
+        "since last build: 2 columns removed -> 4 cards on 1 dashboard affected "
+        "(run 'stitch impact' for the tree)"
+    ) in result.output
+
+
+def test_impact_defaults_to_the_previous_build(project, monkeypatch):
+    _full_build()
+    _drop_stg_payments_amount_usd(project)
+    with responses.RequestsMock():
+        assert runner.invoke(app, ["build", "--no-metabase"]).exit_code == 0
+    monkeypatch.delenv("STITCH_METABASE_URL")
+    monkeypatch.delenv("STITCH_METABASE_API_KEY")
+
+    bare = runner.invoke(app, ["impact"])
+    assert bare.exit_code == 0, bare.output
+    assert "2 columns removed or renamed" in bare.output
+    assert "stg_payments.amount_usd" in bare.output
+    assert "#201 Orders overview" in bare.output
+
+    kept = project / "kept-graph.json"
+    shutil.copy(project / ".stitch" / "graph.prev.json", kept)
+    explicit = runner.invoke(app, ["impact", "--base-file", str(kept)])
+    assert explicit.exit_code == 0, explicit.output
+    # same baseline bytes -> same payload; only the stderr provenance names a different source
+    assert explicit.stdout == bare.stdout
+    assert "baseline: the graph your previous build overwrote" in bare.stderr
+    assert explicit.stderr.strip() == f"baseline: {kept}"
+
+    # --base-file wins over the snapshot: against the current graph nothing changed
+    self_diff = runner.invoke(
+        app, ["impact", "--base-file", str(project / ".stitch" / "graph.json")]
+    )
+    assert self_diff.exit_code == 0, self_diff.output
+    assert "no downstream-impacting column changes" in self_diff.output
+
+
 # --- impact -----------------------------------------------------------------
 
 
@@ -359,9 +419,10 @@ def test_impact_baseline_missing_at_ref_names_the_fix(project):
     result = runner.invoke(app, ["impact", "--base", "main"])
     assert result.exit_code == 1
     assert "no committed baseline at main:.stitch/graph.json" in result.output
-    assert "diffs the current build against the graph committed on the base ref" in result.output
+    assert "--base diffs the current build against the graph committed on that ref" in result.output
     assert "run 'stitch build' and commit .stitch/graph.json" in result.output
     assert "--base <ref>" in result.output
+    assert "drop --base to diff against your own previous build" in result.output
 
 
 def test_impact_bad_base_ref_keeps_the_raw_git_error(project):
@@ -426,6 +487,49 @@ def test_impact_prefers_local_history_over_the_committed_graph(project):
     assert result.exit_code == 0, result.output
     assert "no downstream-impacting column changes" in result.output
     assert "local history snapshot" in result.stderr
+
+
+def test_prev_build_and_commit_history_answer_different_questions(project, monkeypatch):
+    """Bare impact is "since my last build", --base is "since that commit" (#53 vs #87).
+
+    Same repo state, same graph, two commands -- and each is right to disagree.
+    """
+    base_sha = _gitignored_repo(project)
+    _full_build()  # clean tree: main's graph goes into history; no graph.prev.json yet
+    _drop_stg_payments_amount_usd(project)
+    for _ in range(2):
+        with responses.RequestsMock():
+            rebuild = runner.invoke(app, ["build", "--no-metabase"])
+        assert rebuild.exit_code == 0, rebuild.output
+    # the second rebuild changed nothing, so the build summary stays quiet
+    assert "since last build" not in rebuild.output
+    assert "history: no snapshot stored" in rebuild.output  # dirty tree throughout
+
+    monkeypatch.delenv("STITCH_METABASE_URL")
+    monkeypatch.delenv("STITCH_METABASE_API_KEY")
+
+    bare = runner.invoke(app, ["impact"])
+    assert bare.exit_code == 0, bare.output
+    assert "no downstream-impacting column changes" in bare.output
+    assert "previous build" in bare.stderr
+
+    since_main = runner.invoke(app, ["impact", "--base", "main"])
+    assert since_main.exit_code == 0, since_main.output
+    assert "2 columns removed or renamed" in since_main.output
+    assert f"local history snapshot for {base_sha[:7]}" in since_main.stderr
+
+    # an explicit file outranks --base: same two baselines on disk, provenance says which
+    kept = project / "kept-graph.json"
+    shutil.copy(project / ".stitch" / "graph.prev.json", kept)
+    both = runner.invoke(app, ["impact", "--base", "main", "--base-file", str(kept)])
+    assert both.exit_code == 0, both.output
+    assert both.stdout == bare.stdout
+    assert both.stderr.strip() == f"baseline: {kept}"
+
+    # and --column asks neither question: it walks the current graph, so no baseline
+    point = runner.invoke(app, ["impact", "--column", "raw_payments.amount"])
+    assert point.exit_code == 0, point.output
+    assert point.stderr == ""
 
 
 def test_history_lists_stored_baselines(project):

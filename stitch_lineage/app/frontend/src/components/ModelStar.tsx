@@ -17,7 +17,6 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { cardinalityMarkers } from '../lib/erd'
 import { layoutErd } from '../lib/erdLayout'
 import {
   STAR_CARD_WIDTH,
@@ -28,7 +27,7 @@ import {
 } from '../lib/modelStar'
 import { displayName } from '../lib/present'
 import { erdHref, navigate, nodeHref } from '../router'
-import { ErdMarkers, ErdRoutedEdge } from './ErdEdge'
+import { ErdRoutedEdge } from './ErdEdge'
 
 type StarFlowNode = Node<
   {
@@ -165,7 +164,6 @@ export function ModelStar({ star }: { star: ModelStarData | null }) {
     const edges: Edge[] = star.neighbours.flatMap((neighbour) =>
       neighbour.joins.map((join) => {
         const outgoing = join.direction === 'outgoing'
-        const { start, end } = cardinalityMarkers(join.cardinality)
         const label = joinLabel(join, displayName(star.hub), displayName(neighbour.node))
         return {
           id: join.id,
@@ -185,8 +183,9 @@ export function ModelStar({ star }: { star: ModelStarData | null }) {
               rowKey(neighbour.node.node_id, join.otherColumn),
             ],
           },
-          markerStart: start,
-          markerEnd: end,
+          // No 1/⋇ cardinality glyphs: at this size they are a row of ticks
+          // nobody reads, and the join's own `from → to` label already says
+          // which way it points. (#110 does the same for the ERD canvas.)
         }
       }),
     )
@@ -240,9 +239,7 @@ export function ModelStar({ star }: { star: ModelStarData | null }) {
             instance.current = created
             refit()
           }}
-        >
-          <ErdMarkers />
-        </ReactFlow>
+        />
       </div>
       <p className="muted star-note">
         {star.hiddenNeighbours > 0

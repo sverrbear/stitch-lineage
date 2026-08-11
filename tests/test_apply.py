@@ -21,7 +21,7 @@ from stitch_lineage.graph.schema import (
     NodeType,
     column_node_id,
 )
-from stitch_lineage.io.graph_store import read_graph, write_graph
+from stitch_lineage.io.graph_store import previous_graph_path, read_graph, write_graph
 from stitch_lineage.io.staged_store import (
     StagedDescription,
     StagedRelationship,
@@ -523,6 +523,29 @@ def test_the_patched_graph_is_byte_identical_to_a_built_one(repo, store, tmp_pat
         edges=[_applied_edge(source="stitch apply", write_to="relationships_test")],
     )
     assert graph_path.read_bytes() == reference.read_bytes()
+
+
+def test_the_patch_leaves_the_previous_build_snapshot_alone(repo, store):
+    # only `stitch build` snapshots: a patch adds relates_to edges, which impact never
+    # traverses, so rolling the snapshot forward here would only lose the answer to
+    # "what did my last build change" (issue #53)
+    graph_path = _graph_file(repo)
+    snapshot = previous_graph_path(graph_path)
+    shutil.copyfile(graph_path, snapshot)
+    before = snapshot.read_bytes()
+    _stage(store, _entry())
+
+    assert _run("--yes").exit_code == 0
+    assert len(_relates_to(graph_path)) == 1
+    assert snapshot.read_bytes() == before
+
+
+def test_the_patch_does_not_invent_a_snapshot(repo, store):
+    graph_path = _graph_file(repo)
+    _stage(store, _entry())
+
+    assert _run("--yes").exit_code == 0
+    assert not previous_graph_path(graph_path).exists()
 
 
 def test_no_graph_update_leaves_the_graph_alone(repo, store):

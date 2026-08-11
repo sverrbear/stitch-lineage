@@ -90,8 +90,15 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
   // flipping the toggle on a column lands on its model instead of nothing.
   const rootEntityId = root ? (entityIdOf(root) ?? nodeId) : nodeId
 
-  const { nodes, edges, truncated } = useMemo(() => {
-    if (!root) return { nodes: [] as LineageFlowNode[], edges: [] as Edge[], truncated: false }
+  const { nodes, edges, truncated, impact } = useMemo(() => {
+    if (!root) {
+      return {
+        nodes: [] as LineageFlowNode[],
+        edges: [] as Edge[],
+        truncated: false,
+        impact: { cards: 0, dashboards: 0 },
+      }
+    }
     const lineage = lineageFor(index, nodeId)
     const focusId = grain === 'table' ? rootEntityId : nodeId
     const view =
@@ -129,7 +136,14 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
         },
       }
     })
-    return { nodes: flowNodes, edges: flowEdges, truncated: lineage.truncated }
+    // The question is "what breaks if I change this?", so the answer leads and
+    // the topology below is the evidence for it (principle 01).
+    const impact = { cards: 0, dashboards: 0 }
+    for (const node of view.nodes) {
+      if (node.node_type === 'mb_card') impact.cards += 1
+      else if (node.node_type === 'mb_dashboard') impact.dashboards += 1
+    }
+    return { nodes: flowNodes, edges: flowEdges, truncated: lineage.truncated, impact }
   }, [index, nodeId, root, grain, rootEntityId])
 
   if (!root) {
@@ -144,12 +158,34 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
     <main className="graph-page">
       <div className="graph-toolbar">
         <span className="graph-toolbar-title">
-          <SystemBadge nodeType={root.node_type} /> Lineage of <strong>{displayName(root)}</strong>
-          <span className="muted">
-            {' '}
-            ({NODE_TYPE_NAME[root.node_type]}
-            {rootContext ? ` · ${rootContext}` : ''})
+          <SystemBadge nodeType={root.node_type} />
+          {/* a column is qualified by its model, because a bare column name is
+              the ambiguity that costs an afternoon (principle 02) */}
+          <span className="graph-toolbar-name" title={root.node_id}>
+            {root.node_type === 'column' && rootContext ? `${rootContext}.` : ''}
+            {displayName(root)}
           </span>
+          <span className="muted">
+            {NODE_TYPE_NAME[root.node_type]}
+            {root.node_type !== 'column' && rootContext ? ` · ${rootContext}` : ''}
+          </span>
+        </span>
+        {/* The answer, before the graph that supports it — but a truncated walk
+            stops before it has seen everything, and "0 dashboards" off a capped
+            BFS is a confidently wrong answer. Past the cap the counts are floors
+            and say so, in the colour this app uses for "may be incomplete". */}
+        <span
+          className={`graph-toolbar-impact${truncated ? ' partial' : ''}`}
+          title={
+            truncated
+              ? 'This walk hit its node cap, so these are lower bounds — the real counts are higher.'
+              : undefined
+          }
+        >
+          {impact.cards.toLocaleString()}
+          {truncated ? '+' : ''} card{impact.cards === 1 && !truncated ? '' : 's'} ·{' '}
+          {impact.dashboards.toLocaleString()}
+          {truncated ? '+' : ''} dashboard{impact.dashboards === 1 && !truncated ? '' : 's'}
         </span>
         <div className="grain-toggle" role="group" aria-label="Lineage grain">
           {(['column', 'table'] as const).map((option) => (

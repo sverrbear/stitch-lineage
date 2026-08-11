@@ -33,6 +33,7 @@ from stitch_lineage.graph.impact import (
     ColumnLookup,
     column_blast_radius,
     format_blast_radius,
+    format_build_summary,
     format_github_comment,
     format_slack_comment,
     impact_from_graphs,
@@ -54,7 +55,9 @@ from stitch_lineage.io.artifacts import StitchArtifactError, load_catalog, load_
 from stitch_lineage.io.dbt_runner import StitchDbtRunnerError, run_docs_generate
 from stitch_lineage.io.graph_store import (
     graphs_semantically_equal,
+    previous_graph_path,
     read_graph,
+    snapshot_previous,
     write_graph,
 )
 from stitch_lineage.io.history_store import (
@@ -553,6 +556,7 @@ def _run_build(
         )
 
         drifted = False
+        previous: Graph | None = None
         history_note: str | None = None
         if check:
             if not graph_path.is_file():
@@ -560,9 +564,11 @@ def _run_build(
             drifted = not graphs_semantically_equal(read_graph(graph_path), graph)
         else:
             write_task = progress.add_task("writing graph", total=1)
-            # asked before the write: writing graph.json itself would look like a dirty
-            # tree in a repo that tracks .stitch/
+            # asked before anything under .stitch/ is written: writing graph.json (or the
+            # graph.prev.json snapshot below) would itself look like a dirty tree in a
+            # repo that tracks .stitch/
             head, dirty = _git_head_state(config.parent)
+            previous = snapshot_previous(graph_path)
             write_graph(graph, graph_path)
             history_note = _store_history_snapshot(
                 graph, history_dir(out_dir), head, dirty, cfg.output.history_retention
@@ -583,6 +589,10 @@ def _run_build(
         return
     console.print(f"wrote {graph_path} ({len(nodes)} nodes, {len(edges)} edges)")
     _print_coverage(graph.coverage, metabase_side, case_mismatch_count, bindings_total)
+    if previous is not None:
+        summary = format_build_summary(*impact_from_graphs(previous, graph))
+        if summary:
+            console.print(summary, soft_wrap=True)
     if history_note:
         console.print(history_note, soft_wrap=True)
 
@@ -667,13 +677,13 @@ def _baseline_graph(base: str, graph_path: Path) -> Graph:
         if "exists on disk, but not in" in stderr or "does not exist in" in stderr:
             console.print(f"[red]error:[/red] no committed baseline at {base}:{ref_path}")
             console.print(
-                "  stitch impact diffs the current build against the graph committed "
-                "on the base ref.",
+                "  --base diffs the current build against the graph committed on that ref.",
                 soft_wrap=True,
             )
             console.print(
                 f"  fix: on the base branch, run 'stitch build' and commit {ref_path} "
-                "-- or pass --base <ref> that has one.",
+                "-- or pass --base <ref> that has one, or drop --base to diff against "
+                "your own previous build.",
                 soft_wrap=True,
             )
             console.print(
@@ -685,6 +695,52 @@ def _baseline_graph(base: str, graph_path: Path) -> Graph:
         _fail(f"could not load the baseline via 'git show {base}:{ref_path}' -- {stderr}")
     err_console.print(f"baseline: graph.json committed at {base}:{ref_path}", soft_wrap=True)
     return Graph.model_validate_json(result.stdout)
+
+
+def _impact_baseline(base: str | None, base_file: Path | None, graph_path: Path) -> Graph:
+    """--base-file, then --base <git ref>, then the previous build's snapshot.
+
+    The two local stores answer different questions and neither can stand in for the
+    other: graph.prev.json is "the graph my last build overwrote" (any tree, any commit,
+    replaced every build), while .stitch/history/<sha>.json.gz is "the graph as of commit
+    <sha>" (clean trees only, issue #87) and is reached through --base.
+
+    Every branch names the baseline it chose on stderr, the rule issue #87 introduced:
+    with three sources, which one answered is never left to be inferred, and stdout stays
+    exactly the payload that `--format github-comment` pipes.
+    """
+    if base_file is not None:
+        if not base_file.is_file():
+            _fail(f"baseline file not found: {base_file}")
+        try:
+            graph = read_graph(base_file)
+        except ValueError as exc:
+            _fail(f"{base_file} is not a stitch graph -- {exc}")
+        err_console.print(f"baseline: {base_file}", soft_wrap=True)
+        return graph
+    if base is not None:
+        return _baseline_graph(base, graph_path)
+
+    previous = previous_graph_path(graph_path)
+    if not previous.is_file():
+        console.print(f"[red]error:[/red] no baseline at {previous}")
+        console.print(
+            "  every 'stitch build' snapshots the graph it overwrites, so the baseline "
+            "appears on your second build.",
+            soft_wrap=True,
+        )
+        console.print(
+            "  fix: run 'stitch build' twice -- or pass --base <git-ref> to diff since a "
+            "commit ('stitch history'), or --base-file <path> for a baseline you kept.",
+            soft_wrap=True,
+        )
+        raise typer.Exit(code=1)
+    try:
+        graph = read_graph(previous)
+    except ValueError as exc:
+        _fail(f"{previous} does not parse -- delete it and run 'stitch build' twice ({exc})")
+    err_console.print(f"baseline: the graph your previous build overwrote ({previous})")
+    return graph
 
 
 def _plain_text(comment: str) -> str:
@@ -735,12 +791,20 @@ def _impact_column(graph: Graph, graph_path: Path, query: str, json_output: bool
     typer.echo(format_blast_radius(radius))
 
 
-@app.command(hidden=True)
+@app.command()
 def impact(
     base: Annotated[
-        str,
-        typer.Option("--base", help="Git ref whose committed graph.json is the baseline."),
-    ] = "origin/main",
+        str | None,
+        typer.Option(
+            "--base",
+            help="Git ref to diff against: its stored history snapshot, else its "
+            "committed graph.json.",
+        ),
+    ] = None,
+    base_file: Annotated[
+        Path | None,
+        typer.Option("--base-file", help="Path to a graph.json to use as the baseline."),
+    ] = None,
     column: Annotated[
         str | None,
         typer.Option(
@@ -765,13 +829,16 @@ def impact(
     ] = False,
     config: ConfigOpt = None,
 ) -> None:
-    """Diff the candidate graph against the baseline and walk the downstream blast radius.
+    """Diff the current graph against a baseline and walk the downstream blast radius.
+
+    Baselines, in precedence order: --base-file <path>, --base <git-ref>, and otherwise
+    .stitch/graph.prev.json -- the graph your previous build overwrote. So a bare
+    'stitch impact' answers "what did my last build change, and what does it hit in
+    Metabase" with no git ceremony.
 
     --base resolves locally first: the SHA-keyed snapshot 'stitch build' stored for that
     ref's merge-base with HEAD ('stitch history' lists them), and only then the graph.json
     committed on the ref. The baseline used is printed to stderr.
-
-    Shelved pending the committed-baseline workflow; invoke directly if you keep your own baselines.
 
     --column skips the diff entirely: it walks the current graph.json downstream from one
     column and prints the blast radius, so "what would a change here break" can be asked
@@ -784,12 +851,16 @@ def impact(
     if column is not None:
         if output_format != "text":
             _fail(f"--format {output_format} is for the diff path; use --json with --column")
+        if base is not None or base_file is not None:
+            _fail(
+                "--column queries the current graph; it takes no baseline (drop --base/--base-file)"
+            )
         _impact_column(_read_graph_or_fail(graph_path), graph_path, column, json_output)
         return
     if json_output:
         _fail("--json requires --column; the diff path uses --format github-comment or slack")
     candidate = _read_graph_or_fail(graph_path)
-    baseline = _baseline_graph(base, graph_path)
+    baseline = _impact_baseline(base, base_file, graph_path)
     diff, report = impact_from_graphs(baseline, candidate)
     if output_format == "slack":
         typer.echo(format_slack_comment(diff, report, baseline))
