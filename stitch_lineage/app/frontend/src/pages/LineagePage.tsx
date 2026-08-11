@@ -22,7 +22,7 @@ import { SystemBadge } from '../components/badges'
 import { GraphLegend } from '../components/bits'
 import { useStitch } from '../data'
 import { CLICK_SLOP_PX } from '../lib/canvas'
-import type { GraphIndex } from '../lib/graph'
+import { metabaseLink, type GraphIndex } from '../lib/graph'
 import { lineageFor, layoutLineage } from '../lib/lineage'
 import { CONFIDENCE_HELP, NODE_TYPE_NAME, displayName, nodeContext } from '../lib/present'
 import { entityIdOf, layerEntities, rollUp, type Grain, type RollupEdge } from '../lib/rollup'
@@ -32,17 +32,50 @@ import type { Confidence, GraphEdge, GraphNode } from '../types'
 /** One card shape for all six node types: badge + name + type · context. */
 type LineageFlowNode = Node<{ node: GraphNode; context: string | null; isRoot: boolean }, 'lineage'>
 
+/**
+ * Where a node's NAME goes when clicked (#140): the thing itself. A Metabase card
+ * or dashboard opens in Metabase; everything else opens its detail page here.
+ *
+ * A field gets the detail page too. Metabase's own field URLs need the database and
+ * table ids as well, and the graph carries only the field id — so rather than build
+ * a link that 404s, a field's name goes where a dbt node's does.
+ */
+export function titleTarget(
+  node: GraphNode,
+  metabaseUrl: string | null,
+): { href: string; external: boolean } {
+  const link = metabaseLink(metabaseUrl, node)
+  return link ? { href: link, external: true } : { href: nodeHref(node.node_id), external: false }
+}
+
 function LineageNode({ data }: NodeProps<LineageFlowNode>) {
   const { node, context, isRoot } = data
+  const { meta } = useStitch()
   const name = displayName(node)
+  const target = titleTarget(node, meta.metabase_url)
   return (
     <div className={`flow-node system-${node.node_type.startsWith('mb_') ? 'mb' : 'dbt'}${isRoot ? ' root' : ''}`}>
       <Handle type="target" position={Position.Left} className="flow-handle" />
       <div className="flow-node-title">
         <SystemBadge nodeType={node.node_type} />
-        <span className="flow-node-name" title={name}>
+        {/* The name is the ONLY part of the card that navigates; the body re-roots
+            the trace. stopPropagation is what keeps the two apart — React Flow's
+            onNodeClick sits on the wrapper, so a click that reaches it is a click
+            that missed this link. */}
+        <a
+          className="flow-node-name flow-node-link"
+          href={target.href}
+          title={
+            target.external
+              ? `Open “${name}” in Metabase`
+              : `Open the ${NODE_TYPE_NAME[node.node_type]} page for ${name}`
+          }
+          target={target.external ? '_blank' : undefined}
+          rel={target.external ? 'noreferrer' : undefined}
+          onClick={(event) => event.stopPropagation()}
+        >
           {name}
-        </span>
+        </a>
       </div>
       <div className="flow-node-sub" title={context ?? undefined}>
         <span className="flow-node-kind">{NODE_TYPE_NAME[node.node_type]}</span>
@@ -229,7 +262,9 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
           Details
         </a>
         {truncated && <span className="muted">large fan-out truncated</span>}
-        <span className="muted graph-toolbar-hint">click a node for details</span>
+        <span className="muted graph-toolbar-hint">
+          click a node to re-trace from it · click its name to open it
+        </span>
       </div>
       <div className="graph-canvas">
         <ReactFlow
@@ -247,7 +282,14 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
           elementsSelectable
           nodeClickDistance={CLICK_SLOP_PX}
           proOptions={{ hideAttribution: true }}
-          onNodeClick={(_, node) => navigate(nodeHref(node.id))}
+          // The body of a card re-roots the trace on it, in place (#140): exploring a
+          // chain is click-click-click along it, with no detour through search or a
+          // detail panel. Navigating to the element itself is the NAME's job, and
+          // the Details button's -- both of which stop the click before it lands here.
+          onNodeClick={(_, node) => {
+            if (node.id === nodeId) return
+            navigate(lineageHref(node.id, grain))
+          }}
           onEdgeMouseEnter={(event, edge) => {
             const text = (edge.data as { tooltip?: string } | undefined)?.tooltip
             if (text) setTip({ x: event.clientX, y: event.clientY, text })
