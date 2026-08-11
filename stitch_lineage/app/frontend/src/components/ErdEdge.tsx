@@ -70,12 +70,7 @@ export function ErdRoutedEdge({
   targetY,
   sourcePosition,
   targetPosition,
-  label,
-  labelStyle,
-  labelShowBg,
-  labelBgStyle,
-  labelBgPadding,
-  labelBgBorderRadius,
+  data,
   style,
   interactionWidth,
 }: EdgeProps) {
@@ -112,21 +107,31 @@ export function ErdRoutedEdge({
     return { points: routeEdge(anchors.from, anchors.to, obstacles, { soft: own }) }
   }, [cards, source, target, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition])
 
-  const label_ = polylineMidpoint(points)
+  // The ✓ is the only thing still drawn ON a relationship (#118). The
+  // `from_column → to_column` pill that used to sit at this midpoint is gone: at
+  // real density it was a wall of text over the canvas, and the pair it named is
+  // read off the two column rows the edge lights up in their cards instead.
+  const validated = (data as { validated?: boolean } | undefined)?.validated === true
+  const mid = polylineMidpoint(points)
 
   return (
-    <BaseEdge
-      path={roundedPath(points, CORNER_PX)}
-      label={label}
-      labelX={label_.x}
-      labelY={label_.y}
-      labelStyle={labelStyle}
-      labelShowBg={labelShowBg}
-      labelBgStyle={labelBgStyle}
-      labelBgPadding={labelBgPadding}
-      labelBgBorderRadius={labelBgBorderRadius}
-      style={style}
-      interactionWidth={interactionWidth}
-    />
+    <>
+      <BaseEdge
+        path={roundedPath(points, CORNER_PX)}
+        style={style}
+        interactionWidth={interactionWidth}
+      />
+      {validated && (
+        <text
+          className="erd-edge-validated"
+          x={mid.x}
+          y={mid.y}
+          textAnchor="middle"
+          dominantBaseline="central"
+        >
+          ✓
+        </text>
+      )}
+    </>
   )
 }

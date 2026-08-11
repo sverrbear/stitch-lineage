@@ -1,7 +1,9 @@
 // Read-only ERD (spec §9): models as table nodes with expandable column
 // lists, relates_to edges between column handles (solid; ✓ badge when
-// validated). A scope selector (schema / dbt tag) keeps it from ever
-// rendering a 200-node hairball — one scope at a time.
+// validated) that carry no caption of their own — hovering or clicking one
+// lights the two column rows it joins, in their cards (#118). A scope selector
+// (schema / dbt tag) keeps it from ever rendering a 200-node hairball — one
+// scope at a time.
 
 import {
   applyNodeChanges,
@@ -229,6 +231,15 @@ const nodeTypes = { erdModel: ErdModelNode }
 const edgeTypes = { erdRouted: ErdRoutedEdge }
 const EDGE_TYPE = 'erdRouted'
 
+/** A relationship the reader is pointing at or has clicked, and the rows it lights. */
+type ErdEdgePick = { id: string; columns: string[] }
+
+/** What an edge lights up, read back off the edge React Flow hands to the handler. */
+function edgePick(edge: Edge): ErdEdgePick {
+  const data = edge.data as { columns?: string[] } | undefined
+  return { id: edge.id, columns: data?.columns ?? [] }
+}
+
 function scopeKey(scope: ErdScope): string {
   return `${scope.kind}:${scope.value}`
 }
@@ -303,15 +314,14 @@ export function ErdPage({
   // the CSS box (#62). `measuredHeights` is a ref because it is layout input,
   // not render output; the counter is what re-runs the layout when it changes.
   /**
-   * The relationship under the pointer. A permanent `user_id → user_id` label
-   * floating mid-canvas was noise on a real scope (#65); the pair belongs on the
-   * edge you are actually looking at, and on the two rows it joins.
+   * The relationship under the pointer, and the one that was clicked. Nothing is
+   * written on the line any more: a `user_id → user_id` pill mid-canvas was noise
+   * on a real scope even one edge at a time (#65, #118). What a relationship joins
+   * is shown where the columns actually are — the two rows light up in their cards.
+   * Hover is the glance; the click is what keeps them lit while you read elsewhere.
    */
-  const [hovered, setHovered] = useState<{
-    id: string
-    label: string
-    columns: string[]
-  } | null>(null)
+  const [hovered, setHovered] = useState<ErdEdgePick | null>(null)
+  const [picked, setPicked] = useState<ErdEdgePick | null>(null)
   const measuredHeights = useRef<Record<string, number>>({})
   const measuredWidths = useRef<Record<string, number>>({})
   const [measuredVersion, setMeasuredVersion] = useState(0)
@@ -395,9 +405,22 @@ export function ErdPage({
   const resolved = useMemo(() => resolveStaged(index, staged), [index, staged])
   const workspace = useMemo(() => workspaceView(staged, descriptions), [staged, descriptions])
   const litColumns = useMemo<ReadonlySet<string>>(
-    () => new Set(hovered?.columns ?? []),
-    [hovered],
+    () => new Set([...(picked?.columns ?? []), ...(hovered?.columns ?? [])]),
+    [picked, hovered],
   )
+
+  /**
+   * Putting the hover out is not the edge's own job, because its `mouseleave`
+   * cannot be trusted: React Flow rebuilds every edge's SVG wrapper whenever any
+   * node changes — and lighting two rows changes their cards, so the element the
+   * pointer is over is destroyed the instant it is hovered and never reports the
+   * pointer leaving. Measured on the real graph: expanding or dragging one table
+   * replaces all 35 edge elements. So the canvas clears it instead — any pointer
+   * move that is not over a relationship. The updater returns the same value when
+   * there is nothing lit, which is what keeps a pointer-move handler cheap.
+   */
+  const clearHover = useCallback(() => setHovered((current) => (current ? null : current)), [])
+
   // Suggestions arrive graph-wide (hundreds on a real project). Scope them to the
   // ERD first: both endpoints inside it, which is exactly what the canvas can draw.
   const inScopeIds = useMemo(
@@ -624,6 +647,11 @@ export function ErdPage({
 
   const edges = useMemo(() => {
     if (!erd) return [] as Edge[]
+    // Which two rows an edge lights is the whole of what it says now, so every edge
+    // carries them and nothing carries a caption (#118).
+    const state = (id: string) =>
+      `${hovered?.id === id ? ' hovered' : ''}${picked?.id === id ? ' picked' : ''}`
+
     const edges: Edge[] = erd.relationships.map((rel, i) => ({
       id: `rel-${i}`,
       source: rel.fromModelId,
@@ -631,12 +659,9 @@ export function ErdPage({
       target: rel.toModelId,
       targetHandle: rel.toColumn,
       type: EDGE_TYPE,
-      className: `erd-edge${hovered?.id === `rel-${i}` ? ' hovered' : ''}`,
-      // the pair is on the edge you point at, never floating over the canvas
-      label: hovered?.id === `rel-${i}` ? hovered.label : undefined,
-      labelShowBg: true,
+      className: `erd-edge${state(`rel-${i}`)}`,
       data: {
-        pair: `${rel.fromColumn} → ${rel.toColumn}${rel.validated ? ' ✓' : ''}`,
+        validated: rel.validated,
         columns: [
           erdColumnNodeId(rel.fromModelId, rel.fromColumn),
           erdColumnNodeId(rel.toModelId, rel.toColumn),
@@ -654,12 +679,9 @@ export function ErdPage({
         target: rel.toModelId,
         targetHandle: rel.toColumn,
         type: EDGE_TYPE,
-        className: `erd-edge suggested${hovered?.id === `suggested-${rel.id}` ? ' hovered' : ''}`,
+        className: `erd-edge suggested${state(`suggested-${rel.id}`)}`,
         style: { strokeDasharray: '2 5', strokeWidth: 1.6 },
-        label: hovered?.id === `suggested-${rel.id}` ? hovered.label : undefined,
-        labelShowBg: true,
         data: {
-          pair: `${rel.fromColumn} → ${rel.toColumn} · suggested`,
           columns: [
             erdColumnNodeId(rel.fromModelId, rel.fromColumn),
             erdColumnNodeId(rel.toModelId, rel.toColumn),
@@ -677,12 +699,9 @@ export function ErdPage({
         target: rel.toModelId,
         targetHandle: rel.toColumn,
         type: EDGE_TYPE,
-        className: `erd-edge staged${hovered?.id === `staged-${rel.id}` ? ' hovered' : ''}`,
+        className: `erd-edge staged${state(`staged-${rel.id}`)}`,
         style: { strokeDasharray: '5 4' },
-        label: hovered?.id === `staged-${rel.id}` ? hovered.label : undefined,
-        labelShowBg: true,
         data: {
-          pair: `${rel.fromColumn} → ${rel.toColumn} · staged`,
           columns: [
             erdColumnNodeId(rel.fromModelId, rel.fromColumn),
             erdColumnNodeId(rel.toModelId, rel.toColumn),
@@ -691,7 +710,7 @@ export function ErdPage({
       })
     }
     return edges
-  }, [erd, hovered])
+  }, [erd, hovered, picked])
 
   // React Flow owns node positions while a drag is in flight; the layout owns them
   // otherwise. `manual` is the reader's overrides, and resetting the view drops it.
@@ -733,6 +752,9 @@ export function ErdPage({
   useEffect(() => {
     setManual({})
     setLayoutStale(false)
+    // a relationship picked in the old scope is not on this canvas: put it out
+    setPicked(null)
+    setHovered(null)
     setExpanded(autoExpandedModels(erd?.models ?? []))
     fitSoon()
   }, [activeKey])
@@ -843,11 +865,21 @@ export function ErdPage({
           connectionRadius={40}
           nodesDraggable
           onNodesChange={onNodesChange}
-          onEdgeMouseEnter={(_event, edge) => {
-            const data = edge.data as { pair?: string; columns?: string[] } | undefined
-            setHovered({ id: edge.id, label: data?.pair ?? '', columns: data?.columns ?? [] })
+          onEdgeMouseEnter={(_event, edge) => setHovered(edgePick(edge))}
+          onEdgeMouseLeave={clearHover}
+          // the pointer moved somewhere on the canvas that is not a relationship —
+          // over the background, over a card — so nothing is being pointed at
+          onPaneMouseMove={(event) => {
+            if (!(event.target as Element | null)?.closest?.('.react-flow__edge')) clearHover()
           }}
-          onEdgeMouseLeave={() => setHovered(null)}
+          onPaneMouseLeave={clearHover}
+          // Clicking a relationship keeps its two rows lit after the pointer has
+          // moved on — which is what you need to compare the columns it joins with
+          // the rest of either card. The same edge again, or the canvas, puts it out.
+          onEdgeClick={(_event, edge) =>
+            setPicked((current) => (current?.id === edge.id ? null : edgePick(edge)))
+          }
+          onPaneClick={() => setPicked(null)}
           onInit={(instance) => {
             flow.current = instance
           }}

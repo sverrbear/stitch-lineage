@@ -115,7 +115,7 @@ export function GraphLegend({
             <svg width="26" height="8">
               <line x1="0" y1="4" x2="26" y2="4" className="legend-line-solid" />
             </svg>
-            declared relationship — labelled <code>from → to</code>
+            declared relationship — hover or click it to light the columns it joins
           </span>
           <span className="legend-item">
             <span className="validated-badge">✓</span> validated (relationships test)
