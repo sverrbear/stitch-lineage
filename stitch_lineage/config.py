@@ -70,7 +70,11 @@ class MetabaseConfig(BaseModel):
 
 
 class RelationshipsConfig(BaseModel):
-    write_to: Literal["meta", "relationships_test", "contract_constraint"] = "meta"
+    # A drawn relationship is written as a dbt `relationships` test by default (#134):
+    # dbt-native and tool-agnostic -- dbt-metabase infers FKs from these tests and
+    # dbterd reads them -- where the `metabase.fk_*` meta keys only one tool understands.
+    # `meta` and `contract_constraint` stay available for repos that want them.
+    write_to: Literal["meta", "relationships_test", "contract_constraint"] = "relationships_test"
     # exactly [target_table_key, target_field_key]; consumed by resolve_dbt
     fk_meta_keys: list[str] = Field(
         default_factory=lambda: ["metabase.fk_target_table", "metabase.fk_target_field"],

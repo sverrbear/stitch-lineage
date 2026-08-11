@@ -158,19 +158,19 @@ describe('chooseAnchors — the side each end attaches to', () => {
   })
 })
 
-// What the side choice is FOR, now that the drawn edge is one straight segment
-// (#130). Nothing bends around anything any more, so the anchoring is the only
-// thing standing between a relationship and a line drawn out through the back of
-// its own card. These assert on the segment that actually gets drawn.
-describe('chooseAnchors — the straight segment it produces', () => {
-  const segment = (from: AnchorEnd, to: AnchorEnd, obstacles: RoutingRect[] = []) => {
+// What the side choice is FOR, composed with the router that consumes it (#139).
+// The anchors decide which border a relationship leaves from; the router then keeps
+// the elbowed run in the corridors between the cards. These assert on the path that
+// actually gets drawn, not on either half alone.
+describe('chooseAnchors — the elbowed path it produces', () => {
+  const drawn = (from: AnchorEnd, to: AnchorEnd, obstacles: RoutingRect[] = []) => {
     const chosen = chooseAnchors(from, to, obstacles)
-    return [chosen.from, chosen.to]
+    return routeEdge(chosen.from, chosen.to, obstacles, { soft: [from.rect, to.rect] })
   }
 
   it('never draws a relationship through either of its own two cards', () => {
     // a ring of partners all the way around one card: whichever way the line goes,
-    // it leaves from a border that faces its partner, so it never re-enters either box
+    // it leaves from a border that faces its partner and never re-enters either box
     const source = card('hub', 1000, 1000)
     for (let i = 0; i < 24; i++) {
       const angle = (2 * Math.PI * i) / 24
@@ -179,34 +179,53 @@ describe('chooseAnchors — the straight segment it produces', () => {
         Math.round(1000 + Math.cos(angle) * 900),
         Math.round(1000 + Math.sin(angle) * 700),
       )
-      expect(pathHitsRects(segment(end(source), end(target)), [source, target])).toEqual([])
+      expect(pathHitsRects(drawn(end(source), end(target)), [source, target])).toEqual([])
     }
   })
 
   it('holds even when the two cards nearly touch', () => {
-    // the tight case: a dimension parked right beside its fact, where an anchor on the
-    // wrong border would have almost no room to be wrong in
     const source = card('a', 0, 0)
     for (const target of [card('b', 320, 0), card('b', 0, 220), card('b', -320, 30)]) {
-      expect(pathHitsRects(segment(end(source), end(target)), [source, target])).toEqual([])
+      expect(pathHitsRects(drawn(end(source), end(target)), [source, target])).toEqual([])
     }
   })
 
-  it('draws exactly two points, whatever is parked in the way', () => {
-    // the Power BI bargain: a card in the corridor no longer buys a detour. It may
-    // still move the anchors, but what is drawn stays one segment.
+  it('turns square: every segment of the drawn path is axis-aligned', () => {
+    const source = card('a', 0, 0)
+    const target = card('b', 900, 520)
+    const wall = card('wall', 420, 200)
+    const points = drawn(end(source), end(target), [wall])
+    expect(points.length).toBeGreaterThan(1)
+    for (let i = 0; i < points.length - 1; i++) {
+      const dx = Math.abs(points[i + 1].x - points[i].x)
+      const dy = Math.abs(points[i + 1].y - points[i].y)
+      expect(dx < 0.01 || dy < 0.01, `segment ${i} is diagonal`).toBe(true)
+    }
+  })
+
+  it('goes around a card parked in the corridor rather than through it', () => {
+    // the elbow earns its keep here: a straight line between these two cuts the wall
     const source = card('a', 0, 0)
     const target = card('b', 0, 600)
     const wall = card('wall', 0, 320, CARD_W, 80)
-    expect(segment(end(source), end(target), [wall])).toHaveLength(2)
+    expect(pathHitsRects(drawn(end(source), end(target), [wall]), [wall])).toEqual([])
   })
 
-  it('puts the ✓ at the middle of the segment, not at a bend', () => {
-    const [from, to] = segment(end(card('a', 0, 0)), end(card('b', 700, 40)))
-    expect(polylineMidpoint([from, to])).toEqual({
-      x: (from.x + to.x) / 2,
-      y: (from.y + to.y) / 2,
+  it('puts the ✓ on the line, measured along it rather than across a corner', () => {
+    const points = drawn(end(card('a', 0, 0)), end(card('b', 700, 400)))
+    const mid = polylineMidpoint(points)
+    // the midpoint lies on one of the segments, not in the empty space a corner spans
+    const onPath = points.slice(0, -1).some((a, i) => {
+      const b = points[i + 1]
+      const cross = (b.x - a.x) * (mid.y - a.y) - (b.y - a.y) * (mid.x - a.x)
+      const within =
+        mid.x >= Math.min(a.x, b.x) - 0.01 &&
+        mid.x <= Math.max(a.x, b.x) + 0.01 &&
+        mid.y >= Math.min(a.y, b.y) - 0.01 &&
+        mid.y <= Math.max(a.y, b.y) + 0.01
+      return Math.abs(cross) < 0.01 && within
     })
+    expect(onPath).toBe(true)
   })
 })
 

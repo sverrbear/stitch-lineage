@@ -12,6 +12,9 @@ export type EdgeType =
 
 export type Confidence = 'exact' | 'parsed' | 'inferred' | 'fuzzy' | 'declared' | 'validated'
 
+/** Where a column's data_type came from -- the waterfall in resolve/types.py (#149). */
+export type DataTypeSource = 'catalog' | 'metabase' | 'inferred'
+
 export interface GraphNode {
   node_id: string
   node_type: NodeType
@@ -21,6 +24,8 @@ export interface GraphNode {
   table?: string | null
   column?: string | null
   data_type?: string | null
+  /** Absent whenever data_type is: no type means no provenance to report. */
+  data_type_source?: DataTypeSource | null
   description?: string | null
   owner?: string | null
   properties: Record<string, unknown>

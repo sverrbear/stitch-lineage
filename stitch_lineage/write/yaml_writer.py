@@ -690,12 +690,35 @@ def _write_relationships_test(
     relationships["to"] = f"ref('{entry.to_model}')"
     relationships["field"] = entry.to_column
     if config.validated_test_severity:
+        # Explicit, and warn by default: a relationship stitch inferred and a human
+        # drew must never be the reason someone's pipeline goes red (#134). Setting
+        # validated_test_severity to "" opts out and writes a bare test.
         severity = CommentedMap()
         severity["severity"] = config.validated_test_severity
         relationships["config"] = severity
     test = CommentedMap()
     test["relationships"] = relationships
     tests.append(test)
+    _write_cardinality(column, entry, config)
+
+
+def _write_cardinality(
+    column: CommentedMap, entry: StagedRelationship, config: RelationshipsConfig
+) -> None:
+    """Give the arity a home next to the test that carries the FK fact (#134).
+
+    A `relationships` test says these two columns join. It cannot say whether the
+    join is many-to-one or one-to-one -- dbt has no field for that -- so drawing a
+    one-to-one and rebuilding used to hand back a many-to-one, and the ERD drew the
+    wrong thing. The cardinality therefore keeps the one meta key it already had,
+    and ONLY that key: none of the `metabase.fk_*` keys come with it, because the
+    test is now the declaration and duplicating it there is what #135 exists to
+    clean up.
+    """
+    if not entry.cardinality:
+        return
+    meta = _ensure_meta(column)
+    meta[config.cardinality_meta_key] = entry.cardinality
 
 
 def _write_meta(

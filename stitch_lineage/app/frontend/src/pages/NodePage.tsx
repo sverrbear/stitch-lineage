@@ -265,8 +265,15 @@ function ColumnPanel({ nodeId }: { nodeId: string }) {
           {detail.model ? <NodeChip node={detail.model} /> : '—'}
         </Fact>
         <Fact label="data type">
-          {/* "unknown" alone reads as a bug; the graph knows why, so it says so (#122) */}
+          {/* "unknown" alone reads as a bug; the graph knows why, so it says so (#122).
+              A type that DID resolve says which source answered for it (#149): the
+              catalog, the Metabase sync and a sqlglot guess are not equal evidence. */}
           <span title={dataType.hint ?? undefined}>{dataType.text}</span>
+          {dataType.source ? (
+            <span className="type-source" title={dataType.source.hint}>
+              {dataType.source.label}
+            </span>
+          ) : null}
         </Fact>
         {/* the display name may hide a routing prefix, so the real dbt name
             stays one line away (#69) */}

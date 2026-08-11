@@ -241,19 +241,12 @@ export function simplify(points: readonly Point[]): Point[] {
 }
 
 /**
- * The whole ERD relationship, Power BI style: one segment, anchor to anchor (#130).
+ * An SVG `d` for a planned path, corners rounded by `radius`.
  *
- * There is deliberately nothing between the two points — no corridor, no corner,
- * no curve. Which BORDER each end leaves from is still chosen per pair (see
- * lib/edgeAnchors), so a straight line sets off towards the card it is going to;
- * what it no longer does is bend around whatever is in the way. Cards are kept
- * out of the way by the layout instead (#129).
+ * The ERD passes 0: Power BI's relationship lines turn square (#139), and
+ * `simplify` has already dropped every collinear point, so what is left is exactly
+ * the real corners.
  */
-export function straightPath(from: Point, to: Point): string {
-  return `M ${from.x},${from.y} L ${to.x},${to.y}`
-}
-
-/** An SVG `d` with the corners rounded — a planned path still has to look drawn. */
 export function roundedPath(points: readonly Point[], radius = 8): string {
   const path = simplify(points)
   if (path.length === 0) return ''
@@ -285,7 +278,13 @@ export function roundedPath(points: readonly Point[], radius = 8): string {
 }
 
 /** Grid lines: inside the region, sorted, deduped to half a pixel, count-capped. */
-function lines(values: number[], low: number, high: number, cap: number): number[] {
+function lines(
+  values: number[],
+  low: number,
+  high: number,
+  cap: number,
+  required: readonly number[] = [],
+): number[] {
   const inside = values.filter((value) => value >= low - 0.5 && value <= high + 0.5)
   inside.push(low, high)
   inside.sort((a, b) => a - b)
@@ -299,6 +298,15 @@ function lines(values: number[], low: number, high: number, cap: number): number
   const step = (kept.length - 1) / (cap - 1)
   const thinned: number[] = []
   for (let i = 0; i < cap; i++) thinned.push(kept[Math.round(i * step)])
+  // The two stub points' own lines are not optional (#139). Thinning used to drop
+  // them on a dense scope, and then the route's first move was from the stub to a
+  // grid line a few pixels away -- a short DIAGONAL at each end of an otherwise
+  // square path, which is exactly the shape the elbow exists to replace.
+  for (const value of required) {
+    if (value < low - 0.5 || value > high + 0.5) continue
+    if (!thinned.some((other) => Math.abs(other - value) <= 0.5)) thinned.push(value)
+  }
+  thinned.sort((a, b) => a - b)
   return thinned.filter((value, i) => i === 0 || value - thinned[i - 1] > 0.5)
 }
 
@@ -409,10 +417,22 @@ export function routeEdge(
     return false
   }
 
-  // The straight run first: a dimension beside its fact must not be planned into
-  // a detour, and this is also what keeps a big scope cheap to draw.
-  if (!blocked(start, end, hard) && !blocked(start, end, soft)) {
-    return simplify([from, start, end, to])
+  // The cheap case first: a dimension beside its fact must not be planned into a
+  // detour, and this is also what keeps a big scope cheap to draw. It stays SQUARE
+  // though (#139) -- running stub to stub directly is a diagonal whenever the two
+  // stubs are not already on a line, which was most of them, and a diagonal is the
+  // one shape the elbow exists to replace. Aligned stubs are one run; everything
+  // else turns at the corner the two normals share, and only if that turn is clear.
+  const open = (points: readonly Point[]) =>
+    points.every(
+      (point, i) =>
+        i === 0 || (!blocked(points[i - 1], point, hard) && !blocked(points[i - 1], point, soft)),
+    )
+  if (Math.abs(start.x - end.x) < 0.5 || Math.abs(start.y - end.y) < 0.5) {
+    if (open([start, end])) return simplify([from, start, end, to])
+  } else {
+    const squared = [start, ...dogleg(start, end, from.side, to.side), end]
+    if (open(squared)) return simplify([from, ...squared, to])
   }
 
   for (const reach of [detour, detour * 3, detour * 9]) {
@@ -437,12 +457,14 @@ export function routeEdge(
       region.left,
       region.right,
       maxGridLines,
+      [start.x, end.x],
     )
     const ys = lines(
       [start.y, end.y, ...edges.flatMap((box) => [box.top, box.bottom])],
       region.top,
       region.bottom,
       maxGridLines,
+      [start.y, end.y],
     )
     const path = search(xs, ys, start, end, from.side, to.side, walls, own, {
       turnPenalty,

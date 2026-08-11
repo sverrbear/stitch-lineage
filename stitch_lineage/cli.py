@@ -81,6 +81,7 @@ from stitch_lineage.io.staged_store import (
 from stitch_lineage.resolve.bind import bind
 from stitch_lineage.resolve.dbt import TRACE_REASON_LABELS, resolve_dbt
 from stitch_lineage.resolve.metabase import resolve_metabase
+from stitch_lineage.resolve.types import TypeWaterfallResult, apply_type_waterfall
 from stitch_lineage.write.yaml_writer import WritePlan
 
 app = typer.Typer(
@@ -303,6 +304,27 @@ def _main(
 _CASE_MISMATCH_NORM_SHARE = 0.9
 
 
+def _print_type_sources(result: TypeWaterfallResult) -> None:
+    """One line for the type waterfall: how many columns each source answered for.
+
+    Printed even when everything came from the catalog, because the number that matters
+    to anyone reading it is the one still unknown -- and a line that only appears when
+    the news is good is a line nobody learns to look for.
+    """
+    typed = result.from_catalog + result.from_metabase + result.from_inferred
+    total = typed + result.unknown
+    if not total:
+        return
+    sources = [f"{result.from_catalog} catalog"]
+    if result.from_metabase:
+        sources.append(f"{result.from_metabase} Metabase")
+    if result.from_inferred:
+        sources.append(f"{result.from_inferred} inferred")
+    if result.unknown:
+        sources.append(f"{result.unknown} unknown")
+    console.print(f"{'column types':<20} {typed}/{total} typed   ({', '.join(sources)})")
+
+
 def _print_coverage(
     coverage: Coverage,
     metabase_side: bool,
@@ -396,9 +418,22 @@ def build(
             help="Run 'dbt docs generate' first (overrides dbt.auto_docs either way).",
         ),
     ] = None,
+    infer_types: Annotated[
+        bool,
+        typer.Option(
+            "--infer-types",
+            help="Infer types for columns no catalog or Metabase field could type (sqlglot).",
+        ),
+    ] = False,
 ) -> None:
     """Resolve dbt artifacts and the Metabase API into .stitch/graph.json."""
-    _run_build(config=config, no_metabase=no_metabase, check=check, docs=docs)
+    _run_build(
+        config=config,
+        no_metabase=no_metabase,
+        check=check,
+        docs=docs,
+        infer_types=infer_types,
+    )
 
 
 def _run_build(
@@ -407,6 +442,7 @@ def _run_build(
     no_metabase: bool = False,
     check: bool = False,
     docs: bool | None = None,
+    infer_types: bool = False,
 ) -> None:
     """The build pipeline itself, so `stitch apply --build` runs it instead of half of it.
 
@@ -451,6 +487,7 @@ def _run_build(
             on_progress=lambda done, total: progress.update(
                 trace_task, completed=done, total=total
             ),
+            infer_types=infer_types,
         )
 
         nodes = list(dbt_res.nodes)
@@ -568,6 +605,12 @@ def _run_build(
                 unresolved_field_refs=mb_res.unresolved_field_refs,
             )
 
+        # after binding: step 2 of the waterfall reads the binds_to edges just produced
+        types_task = progress.add_task("resolving types", total=1)
+        type_res = apply_type_waterfall(nodes, edges, dbt_res.inferred_types)
+        nodes = type_res.nodes
+        progress.update(types_task, completed=1)
+
         graph = Graph(
             generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
             dbt_invocation_id=manifest.get("metadata", {}).get("invocation_id"),
@@ -611,6 +654,7 @@ def _run_build(
         return
     console.print(f"wrote {graph_path} ({len(nodes)} nodes, {len(edges)} edges)")
     _print_coverage(graph.coverage, metabase_side, case_mismatch_count, bindings_total)
+    _print_type_sources(type_res)
     if previous is not None:
         summary = format_build_summary(*impact_from_graphs(previous, graph))
         if summary:
