@@ -15,22 +15,19 @@
 // Unchanged through all three issues:
 //   * which BORDER each end leaves from is chosen per pair (#100/#106), so the first
 //     run sets off towards the card it is headed for, not out of the back of its own;
-//   * the ✓ sits at the midpoint measured ALONG the path, so it lands on the line
-//     rather than beside a corner;
 //   * every stroke, dash and colour. None of this touches styling, and none of the
 //     indicators in Power BI's own reference come with it — no 1/* glyphs (#117
 //     removed those), no arrow boxes, no direction markers. Just the elbowed line.
+//
+// And now nothing at all is drawn ON a relationship (#164): the ✓ that marked a
+// validated one is gone, and validated-ness is carried by the stroke itself — see
+// `.erd-edge.validated` in styles.css. A glyph pinned to a midpoint is a caption by
+// another name, and at fit zoom over 30 relationships it was a field of ticks.
 
 import { BaseEdge, Position, useStore, type EdgeProps } from '@xyflow/react'
 import { useMemo } from 'react'
 import { chooseAnchors } from '../lib/edgeAnchors'
-import {
-  polylineMidpoint,
-  roundedPath,
-  routeEdge,
-  type AnchorSide,
-  type RoutingRect,
-} from '../lib/edgeRouting'
+import { roundedPath, routeEdge, type AnchorSide, type RoutingRect } from '../lib/edgeRouting'
 
 /**
  * Corner radius of the routed path. Zero: Power BI turns square, and a rounded
@@ -91,7 +88,6 @@ export function ErdRoutedEdge({
   targetY,
   sourcePosition,
   targetPosition,
-  data,
   style,
   interactionWidth,
 }: EdgeProps) {
@@ -130,31 +126,13 @@ export function ErdRoutedEdge({
     return { points: routeEdge(anchors.from, anchors.to, obstacles, { soft: own }) }
   }, [cards, source, target, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition])
 
-  // The ✓ is the only thing still drawn ON a relationship (#118). The
-  // `from_column → to_column` pill that used to sit at this midpoint is gone: at
-  // real density it was a wall of text over the canvas, and the pair it named is
-  // read off the two column rows the edge lights up in their cards instead.
-  const validated = (data as { validated?: boolean } | undefined)?.validated === true
-  const mid = polylineMidpoint(points)
-
+  // Nothing is drawn on the line any more: the column pair is read off the two rows
+  // the edge lights in their cards (#118), and validated-ness off the stroke (#164).
   return (
-    <>
-      <BaseEdge
-        path={roundedPath(points, CORNER_PX)}
-        style={style}
-        interactionWidth={interactionWidth}
-      />
-      {validated && (
-        <text
-          className="erd-edge-validated"
-          x={mid.x}
-          y={mid.y}
-          textAnchor="middle"
-          dominantBaseline="central"
-        >
-          ✓
-        </text>
-      )}
-    </>
+    <BaseEdge
+      path={roundedPath(points, CORNER_PX)}
+      style={style}
+      interactionWidth={interactionWidth}
+    />
   )
 }
