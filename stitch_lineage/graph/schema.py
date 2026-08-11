@@ -40,6 +40,21 @@ class Confidence(StrEnum):
     VALIDATED = "validated"
 
 
+class DataTypeSource(StrEnum):
+    """Where a column's `data_type` came from -- the waterfall in resolve.types.
+
+    Ordered by authority: the dbt build artifacts describe the relation this project
+    builds, Metabase's field metadata describes the one the warehouse actually has,
+    and an inferred type is a parse result nobody has confirmed. A column with no
+    data_type carries no source at all -- absence is the honest answer, never a
+    fourth "unknown" value pretending to be provenance.
+    """
+
+    CATALOG = "catalog"
+    METABASE = "metabase"
+    INFERRED = "inferred"
+
+
 def column_node_id(model_unique_id: str, column_name: str) -> str:
     """Node id for a dbt column: '{model_unique_id}::{column_name}', column lowercased."""
     return f"{model_unique_id}::{column_name.lower()}"
@@ -96,6 +111,8 @@ class Node(BaseModel):
     table: str | None = None
     column: str | None = None
     data_type: str | None = None
+    # provenance for data_type, set together with it and absent whenever it is None
+    data_type_source: DataTypeSource | None = None
     description: str | None = None
     owner: str | None = None
     properties: dict[str, Any] = Field(default_factory=dict)

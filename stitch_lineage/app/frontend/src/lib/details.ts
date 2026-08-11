@@ -1,7 +1,7 @@
 // Per-node-type detail computations for the routed detail panels (spec §9).
 // Pure TS, unit-testable.
 
-import type { GraphEdge, GraphNode } from '../types'
+import type { DataTypeSource, GraphEdge, GraphNode } from '../types'
 import {
   type GraphIndex,
   type Reach,
@@ -251,6 +251,30 @@ export interface DataTypeLabel {
   text: string
   /** The explanation, when "unknown" needs one. */
   hint: string | null
+  /** Where the type came from, for the subtext under it. Null when there is no type. */
+  source: { label: string; hint: string } | null
+}
+
+/**
+ * The provenance subtext for a resolved type (#149). Types no longer come from one
+ * place, so the line has to say which -- a NUMBER(38,0) the warehouse reported and a
+ * DOUBLE sqlglot guessed at are not the same claim, and only one of them is safe to
+ * act on. Same principle as confidence on an edge: show the weaker evidence, do not
+ * launder it into the strong case by rendering both identically.
+ */
+const TYPE_SOURCE: Record<DataTypeSource, { label: string; hint: string }> = {
+  catalog: {
+    label: 'from the dbt catalog',
+    hint: 'Read from this build’s dbt artifacts — the catalog the target actually built, or a data_type declared in schema.yml.',
+  },
+  metabase: {
+    label: 'from Metabase sync',
+    hint: 'This column has no entry in the dbt catalog, so the type comes from the Metabase field it binds to — the warehouse type Metabase recorded when it synced the database. Metabase syncs the whole schema, so it knows types for relations your target never built.',
+  },
+  inferred: {
+    label: 'inferred from expression',
+    hint: 'Nothing observed this column’s type: sqlglot worked it out from the compiled SQL. A parse result, not a warehouse fact, and spelled the way sqlglot spells types rather than the way the warehouse does.',
+  },
 }
 
 const UNKNOWN_REASON: Record<string, { suffix: string; hint: string }> = {
@@ -266,13 +290,17 @@ const UNKNOWN_REASON: Record<string, { suffix: string; hint: string }> = {
 
 /**
  * The `data type` fact. A bare "unknown" reads as a broken tool, so when the
- * graph knows WHY the type is missing it says so on the line (#122). A type the
- * catalog gave is returned unchanged.
+ * graph knows WHY the type is missing it says so on the line (#122). A type that
+ * resolved is returned unchanged, with the source that answered for it (#149) --
+ * an older graph.json carries no source, and simply shows no subtext.
  */
 export function dataTypeLabel(node: GraphNode): DataTypeLabel {
-  if (node.data_type) return { text: node.data_type, hint: null }
+  if (node.data_type) {
+    const source = node.data_type_source
+    return { text: node.data_type, hint: null, source: (source && TYPE_SOURCE[source]) ?? null }
+  }
   const reason = node.properties?.unknown_type_reason
   const known = typeof reason === 'string' ? UNKNOWN_REASON[reason] : undefined
-  if (!known) return { text: 'unknown', hint: null }
-  return { text: `unknown — ${known.suffix}`, hint: known.hint }
+  if (!known) return { text: 'unknown', hint: null, source: null }
+  return { text: `unknown — ${known.suffix}`, hint: known.hint, source: null }
 }

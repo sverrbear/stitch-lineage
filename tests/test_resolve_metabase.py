@@ -87,7 +87,8 @@ def test_mb_field_node_payload(resolution):
     assert node.column == "order_total"
     assert node.data_type == "type/Float"
     assert node.description == "Order value in USD"
-    assert node.properties == {"visibility": "normal"}
+    # database_type is the warehouse's own spelling, carried for the type waterfall (#149)
+    assert node.properties == {"visibility": "normal", "database_type": "FLOAT"}
 
     fk = next(n for n in resolution.nodes if n.node_id == mb_field_node_id(101))
     assert fk.properties["semantic_type"] == "type/FK"
