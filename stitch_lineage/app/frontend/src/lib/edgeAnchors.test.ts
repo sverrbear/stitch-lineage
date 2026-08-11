@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { anchorOn, chooseAnchors, type AnchorEnd } from './edgeAnchors'
-import { pathHitsRects, polylineMidpoint, routeEdge, type RoutingRect } from './edgeRouting'
+import { pathHitsRects, routeEdge, type RoutingRect } from './edgeRouting'
 
 const CARD_W = 300
 const CARD_H = 200
@@ -209,23 +209,6 @@ describe('chooseAnchors — the elbowed path it produces', () => {
     const target = card('b', 0, 600)
     const wall = card('wall', 0, 320, CARD_W, 80)
     expect(pathHitsRects(drawn(end(source), end(target), [wall]), [wall])).toEqual([])
-  })
-
-  it('puts the ✓ on the line, measured along it rather than across a corner', () => {
-    const points = drawn(end(card('a', 0, 0)), end(card('b', 700, 400)))
-    const mid = polylineMidpoint(points)
-    // the midpoint lies on one of the segments, not in the empty space a corner spans
-    const onPath = points.slice(0, -1).some((a, i) => {
-      const b = points[i + 1]
-      const cross = (b.x - a.x) * (mid.y - a.y) - (b.y - a.y) * (mid.x - a.x)
-      const within =
-        mid.x >= Math.min(a.x, b.x) - 0.01 &&
-        mid.x <= Math.max(a.x, b.x) + 0.01 &&
-        mid.y >= Math.min(a.y, b.y) - 0.01 &&
-        mid.y <= Math.max(a.y, b.y) + 0.01
-      return Math.abs(cross) < 0.01 && within
-    })
-    expect(onPath).toBe(true)
   })
 })
 

@@ -1573,6 +1573,13 @@ kbd {
   stroke-dasharray: 6 4;
 }
 
+/* the validated swatch: the solid line above it, heavier — the pair IS the legend
+   entry, since weight says nothing on its own (#164) */
+.legend-line-strong {
+  stroke: var(--edge-strong);
+  stroke-width: 3.5;
+}
+
 /* React Flow theming */
 
 .graph-canvas .react-flow {
@@ -2860,15 +2867,20 @@ kbd {
   opacity: 0.75;
 }
 
-/* The only mark left on a relationship: ✓ for one a dbt `relationships` test proves.
-   Everything the line used to spell out — the column pair, `staged`, `suggested` —
-   is read off the cards and the dash pattern instead (#118). */
-.erd-edge-validated {
-  fill: var(--ok);
-  font-size: 11px;
-  font-weight: 700;
-  pointer-events: none;
-  user-select: none;
+/* Validated: the line itself, at weight (#164).
+
+   Nothing is drawn ON a relationship any more. The ✓ that used to sit at each
+   midpoint was a caption by another name, and at fit zoom over thirty relationships
+   it read as a field of ticks rather than as a property of any one line.
+
+   Weight is the axis that was free. Dash already means "not in the repo yet" (staged,
+   suggested), so it cannot also mean "unproven"; and colour is taken twice over —
+   `--ok` is an alias of `--accent`, which is exactly what a staged edge is drawn in,
+   so a validated line in "ok green" would have been the staged blue. A heavier stroke
+   of the same solid line says "this same relationship, confirmed", which is what it
+   is. The legend carries the reference pair, because weight only reads comparatively. */
+.erd-edge.validated .react-flow__edge-path {
+  stroke-width: 4.2;
 }
 
 /* scope selector */
