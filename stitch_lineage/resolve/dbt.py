@@ -9,11 +9,13 @@ from pydantic import BaseModel, Field
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 from sqlglot.lineage import lineage as _sqlglot_lineage
+from sqlglot.optimizer.annotate_types import annotate_types as _sqlglot_annotate_types
 from sqlglot.optimizer.qualify import qualify as _sqlglot_qualify
 from sqlglot.schema import MappingSchema
 
 from stitch_lineage.graph.schema import (
     Confidence,
+    DataTypeSource,
     Edge,
     EdgeType,
     Node,
@@ -36,10 +38,15 @@ class DbtResolution(BaseModel):
     the CLI copies them over.
 
     nodes/edges come out in resolver order -- io.graph_store canonicalizes on write.
+
+    inferred_types ({column node_id: type}) are *candidates*, not applied types: the
+    type waterfall (resolve.types) ranks them below the warehouse's own answer, so
+    they are handed over rather than written onto the nodes here (issue #149).
     """
 
     nodes: list[Node] = Field(default_factory=list)
     edges: list[Edge] = Field(default_factory=list)
+    inferred_types: dict[str, str] = Field(default_factory=dict)
     columns_traced: int = 0
     columns_total: int = 0
     columns_inferred: int = 0
@@ -58,6 +65,7 @@ def resolve_dbt(
     fk_meta_keys: tuple[str, str] | list[str] = _DEFAULT_FK_META_KEYS,
     cardinality_meta_key: str = _DEFAULT_CARDINALITY_META_KEY,
     on_progress: Callable[[int, int], None] | None = None,
+    infer_types: bool = False,
 ) -> DbtResolution:
     """Build the dbt side of the graph from parsed manifest.json and catalog.json.
 
@@ -70,6 +78,13 @@ def resolve_dbt(
     on_progress, when given, is called as on_progress(done, total) after each model's
     column lineage is traced (the sqlglot pass dominates build time); total is the
     model count, fixed for the whole run.
+
+    infer_types (opt-in, `stitch build --infer-types`) runs sqlglot's annotate_types
+    over each model's compiled SQL and returns the results in `inferred_types` for the
+    type waterfall to apply last (SPEC.md section 7.6). Off by default: the types come
+    back in sqlglot's canonical dialect spelling (a Snowflake NUMBER reads back as
+    DECIMAL(38, 0)), so switching it on trades a spelling that matches the catalog's
+    for an answer where there was none.
 
     Produces:
       * source/model Nodes (node_id = dbt unique_id) from manifest nodes/sources.
@@ -133,7 +148,9 @@ def resolve_dbt(
     # built once and then updated in place as model column sets resolve: sqlglot would
     # otherwise re-normalize every relation on every lineage call
     schema_mapping = MappingSchema(mapping, dialect=_DIALECT)
-    column_specs = _column_specs(models, sources, catalog, catalog_specs, schema_mapping)
+    column_specs, inferred_by_uid = _column_specs(
+        models, sources, catalog, catalog_specs, schema_mapping, infer_types
+    )
     entity_nodes = _entity_nodes(models, sources)
     column_nodes = _column_nodes(models, sources, column_specs, _catalogued_relations(catalog))
     references, seed_snapshot_deps = _references_edges(models, sources, manifest_nodes)
@@ -153,9 +170,18 @@ def resolve_dbt(
     inferred_targets = {edge.to for edge in feeds if edge.confidence == Confidence.INFERRED}
     traced = model_column_ids & fed
 
+    # candidates for columns the artifacts could not type -- the waterfall decides
+    inferred_types = {
+        column_node_id(uid, spec["name"]): inferred[lower]
+        for uid, inferred in inferred_by_uid.items()
+        for lower, spec in column_specs.get(uid, {}).items()
+        if not spec["data_type"] and lower in inferred
+    }
+
     return DbtResolution(
         nodes=entity_nodes + column_nodes,
         edges=references + feeds + relates,
+        inferred_types=inferred_types,
         columns_traced=len(traced),
         columns_total=len(model_column_ids),
         columns_inferred=len(model_column_ids & inferred_targets),
@@ -265,9 +291,11 @@ def _model_order(models: dict[str, Any]) -> list[str]:
 
 
 def _projected_columns(
-    compiled: str, schema_mapping: MappingSchema
-) -> tuple[list[str], dict[str, str]] | None:
-    """(output column names, {lowercased name: spelling as written in the SQL}), or None.
+    compiled: str, schema_mapping: MappingSchema, infer_types: bool = False
+) -> tuple[list[str], dict[str, str], dict[str, str]] | None:
+    """(output column names, {lowercased name: SQL spelling}, {lowercased name: type}), or None.
+
+    The third element is empty unless infer_types is on; see `_inferred_types`.
 
     None means "could not be pinned down" and the caller must fall back to the catalog
     set -- never to an empty one. sqlglot's qualify does the work stars need (expanding
@@ -289,13 +317,15 @@ def _projected_columns(
         if not isinstance(parsed, exp.Query):
             return None
         spelled = _sql_output_spellings(parsed)
-        names = _sqlglot_qualify(
+        qualified = _sqlglot_qualify(
             parsed,
             schema=schema_mapping,
             dialect=_DIALECT,
             validate_qualify_columns=False,
             identify=False,
-        ).named_selects
+        )
+        names = qualified.named_selects
+        inferred = _inferred_types(qualified, schema_mapping) if infer_types else {}
     except SqlglotError:
         return None
     if not names or not all(_is_usable_output_name(name) for name in names):
@@ -303,7 +333,41 @@ def _projected_columns(
     deduped: dict[str, str] = {}
     for name in names:
         deduped.setdefault(name.lower(), name)
-    return list(deduped.values()), spelled
+    return list(deduped.values()), spelled, inferred
+
+
+def _inferred_types(qualified: exp.Expression, schema_mapping: MappingSchema) -> dict[str, str]:
+    """{lowercased output name: inferred type} from sqlglot's annotate_types.
+
+    Runs on the already-qualified expression -- annotation needs columns resolved to
+    their relations to reach the schema map at all. Types sqlglot could not work out
+    come back as UNKNOWN or NULL (an unmapped UDF, a bare `null as x`); those are
+    dropped rather than recorded, because "we parsed it and learned nothing" is the
+    same state as never having asked, and the app should keep saying unknown.
+
+    The spelling is sqlglot's canonical one for the dialect, not the warehouse's --
+    which is why this source ranks last and is labelled `inferred` in the app.
+    """
+    try:
+        annotated = _sqlglot_annotate_types(qualified, schema=schema_mapping, dialect=_DIALECT)
+    except SqlglotError:
+        return {}
+    select = annotated if isinstance(annotated, exp.Select) else annotated.find(exp.Select)
+    if select is None:
+        return {}
+    types: dict[str, str] = {}
+    for projection in select.expressions:
+        name = projection.alias_or_name
+        data_type = projection.type
+        if not _is_real_column(name) or data_type is None:
+            continue
+        if data_type.this in (exp.DataType.Type.UNKNOWN, exp.DataType.Type.NULL):
+            continue
+        try:
+            types.setdefault(name.lower(), data_type.sql(dialect=_DIALECT))
+        except SqlglotError:
+            continue
+    return types
 
 
 def _sql_output_spellings(parsed: exp.Expression) -> dict[str, str]:
@@ -408,8 +472,12 @@ def _column_specs(
     catalog: dict[str, Any],
     catalog_specs: dict[str, dict[str, dict[str, Any]]],
     schema_mapping: MappingSchema,
-) -> dict[str, dict[str, dict[str, Any]]]:
+    infer_types: bool = False,
+) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, dict[str, str]]]:
     """Per entity: {lowercased column name: {name, warehouse_name, data_type, description}}.
+
+    Second element is the per-model inferred types ({uid: {lowercased name: type}}),
+    empty unless infer_types is on -- candidates for the waterfall, never applied here.
 
     A model's set comes from its compiled SQL (see resolve_dbt) with the catalog
     supplying types; sources, and models whose projection did not resolve, keep the
@@ -420,14 +488,17 @@ def _column_specs(
     """
     catalog_columns = _catalog_columns(catalog)
     specs = {uid: catalog_specs.get(uid, {}) for uid in sources}
+    inferred_by_uid: dict[str, dict[str, str]] = {}
     for uid in _model_order(models):
         model = models[uid]
         compiled = model.get("compiled_code") or model.get("compiled_sql") or ""
-        projection = _projected_columns(compiled, schema_mapping)
+        projection = _projected_columns(compiled, schema_mapping, infer_types)
         if projection is None:
             specs[uid] = catalog_specs.get(uid, {})
             continue
-        projected, spelled = projection
+        projected, spelled, inferred = projection
+        if inferred:
+            inferred_by_uid[uid] = inferred
         manifest_columns = {
             str(name).lower(): column for name, column in (model.get("columns") or {}).items()
         }
@@ -439,7 +510,7 @@ def _column_specs(
             _upstream_names(model, specs),
         )
         _update_relation(schema_mapping, model, specs[uid])
-    return specs
+    return specs, inferred_by_uid
 
 
 def _update_relation(
@@ -563,6 +634,7 @@ def _column_nodes(
                     table=_physical_table(entity),
                     column=spec["name"],
                     data_type=spec["data_type"],
+                    data_type_source=DataTypeSource.CATALOG if spec["data_type"] else None,
                     description=spec["description"],
                     properties=properties,
                 )
@@ -1086,12 +1158,23 @@ def _relates_to_edges(
             continue
         from_id = column_node_id(test["fk_uid"], test["fk_column"])
         to_id = column_node_id(test["to_uid"], test["to_column"])
+        # A relationships test states that the two columns join; it has no field for
+        # the ARITY, so that is read from the FK column's own meta (#134). Without
+        # this a one-to-one drawn in the app came back as a many-to-one after the
+        # next build, and the ERD drew the wrong relationship.
+        fk_meta = _merged_meta(
+            (models[test["fk_uid"]].get("columns") or {}).get(test["fk_column"]) or {}
+        )
         edges[(from_id, to_id)] = Edge(
             from_=from_id,
             to=to_id,
             edge_type=EdgeType.RELATES_TO,
             confidence=Confidence.VALIDATED,
-            evidence={"source": "relationships_test", "test": test["test_id"]},
+            evidence={
+                "source": "relationships_test",
+                "test": test["test_id"],
+                "relationship_type": fk_meta.get(cardinality_meta_key),
+            },
         )
 
     return list(edges.values()), dangling

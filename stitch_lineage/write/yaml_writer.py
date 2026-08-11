@@ -253,7 +253,23 @@ def _migrate_entry(
     config: RelationshipsConfig,
     path: Path,
 ) -> str:
-    """Write the declaration in the target form, then drop the meta keys it replaces."""
+    """Write the declaration in the configured form, then drop the keys it replaces.
+
+    The form is `write_to`, exactly as `plan_writes` uses it -- a migration must land
+    what a fresh apply would land, or the repo ends up with two spellings of the same
+    thing. `meta` never reaches here (`plan_migration` returns early: migrating to the
+    form you are already in is a no-op) and `contract_constraint` is refused with the
+    same message the apply path gives it.
+
+    Writing the test also writes `cardinality_meta_key` (#134); dropping the FK keys
+    afterwards leaves that one behind on purpose, since it is the only record of the
+    arity a `relationships` test cannot express.
+    """
+    if config.write_to == "contract_constraint":
+        raise YamlWriteError(
+            "relationships.write_to: contract_constraint is not implemented yet -- "
+            "migrate with 'relationships_test' instead"
+        )
     yaml = _yaml_for(text)
     document = _load(text, yaml, path)
     model_entry = _model_entry(document, entry.from_model)
@@ -262,11 +278,6 @@ def _migrate_entry(
             f"model '{entry.from_model}' has no entry in its schema file -- nothing to migrate"
         )
     column = _ensure_column(model_entry, entry.from_column)
-    if config.write_to == "contract_constraint":
-        raise YamlWriteError(
-            "relationships.write_to: contract_constraint is not implemented yet -- "
-            "migrate with 'relationships_test' instead"
-        )
     _write_relationships_test(column, document, entry, config)
     _drop_fk_meta(column, config)
     return _emit(text, document, yaml, path)
@@ -857,12 +868,35 @@ def _write_relationships_test(
     relationships["to"] = f"ref('{entry.to_model}')"
     relationships["field"] = entry.to_column
     if config.validated_test_severity:
+        # Explicit, and warn by default: a relationship stitch inferred and a human
+        # drew must never be the reason someone's pipeline goes red (#134). Setting
+        # validated_test_severity to "" opts out and writes a bare test.
         severity = CommentedMap()
         severity["severity"] = config.validated_test_severity
         relationships["config"] = severity
     test = CommentedMap()
     test["relationships"] = relationships
     tests.append(test)
+    _write_cardinality(column, entry, config)
+
+
+def _write_cardinality(
+    column: CommentedMap, entry: StagedRelationship, config: RelationshipsConfig
+) -> None:
+    """Give the arity a home next to the test that carries the FK fact (#134).
+
+    A `relationships` test says these two columns join. It cannot say whether the
+    join is many-to-one or one-to-one -- dbt has no field for that -- so drawing a
+    one-to-one and rebuilding used to hand back a many-to-one, and the ERD drew the
+    wrong thing. The cardinality therefore keeps the one meta key it already had,
+    and ONLY that key: none of the `metabase.fk_*` keys come with it, because the
+    test is now the declaration and duplicating it there is what #135 exists to
+    clean up.
+    """
+    if not entry.cardinality:
+        return
+    meta = _ensure_meta(column)
+    meta[config.cardinality_meta_key] = entry.cardinality
 
 
 def _write_meta(

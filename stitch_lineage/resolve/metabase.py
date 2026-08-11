@@ -551,6 +551,10 @@ def resolve_metabase(
                         ("semantic_type", "semantic_type"),
                         ("fk_target_field_id", "fk_target_field_id"),
                         ("visibility", "visibility_type"),
+                        # the warehouse's own type (NUMBER(38,0)), as opposed to the
+                        # base_type abstraction on data_type: what a dbt column bound
+                        # to this field inherits when no catalog built it (issue #149)
+                        ("database_type", "database_type"),
                     )
                     if field.get(value) is not None
                 }

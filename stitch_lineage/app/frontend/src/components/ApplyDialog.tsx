@@ -9,7 +9,7 @@
 // There is deliberately no force: the CLI owns that, because overriding a
 // dirty-file guard should cost a terminal.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import {
   StagingError,
   applyStaged,
@@ -20,6 +20,24 @@ import {
 } from '../lib/staging'
 import { outcomeSummary } from '../lib/workspace'
 import { DiffView } from './DiffView'
+
+/**
+ * What `relationships.write_to` means, in the words the reader would use (#134).
+ * The raw config value told them the setting's name, not what lands in their repo.
+ */
+const WRITE_FORM: Record<string, ReactNode> = {
+  relationships_test: (
+    <>
+      a dbt <code>relationships</code> test at <code>severity: warn</code>
+    </>
+  ),
+  meta: (
+    <>
+      <code>metabase.fk_*</code> meta keys
+    </>
+  ),
+  contract_constraint: <>a model contract foreign-key constraint</>,
+}
 
 function ProblemList({ title, problems }: { title: string; problems: readonly ApplyProblem[] }) {
   if (problems.length === 0) return null
@@ -122,8 +140,8 @@ export function ApplyDialog({
                   relationship{staged?.relationships === 1 ? '' : 's'},{' '}
                   {staged?.descriptions ?? 0} description edit
                   {staged?.descriptions === 1 ? '' : 's'}) →{' '}
-                  {files.length} file{files.length === 1 ? '' : 's'}. Written as{' '}
-                  <code>{preview.write_to}</code>.
+                  {files.length} file{files.length === 1 ? '' : 's'}. Relationships are
+                  written as {WRITE_FORM[preview.write_to] ?? <code>{preview.write_to}</code>}.
                 </p>
                 <div className="apply-scroll">
                   <DiffView files={files} />
