@@ -80,6 +80,7 @@ def apply_plan(
     *,
     force: bool = False,
     log: Log | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> MendOutcome:
     """Apply every writing entry in `plan`, in the order the plan lists them.
 
@@ -88,10 +89,15 @@ def apply_plan(
 
     `force` overrides the staleness guard. It exists for the operator who knows the drift
     is theirs; it is not something CI should pass.
+
+    on_progress, when given, is called as on_progress(done, total) after each card, the
+    same shape the resolvers use. It counts every entry in the plan rather than only the
+    writing ones, so the total matches the plan the operator was shown.
     """
     emit: Log = log or (lambda _line: None)
     outcome = MendOutcome(forced=force)
-    for card in plan.cards:
+    total = len(plan.cards)
+    for done, card in enumerate(plan.cards, start=1):
         if not card.writes:
             outcome.cards.append(
                 CardOutcome(
@@ -102,8 +108,10 @@ def apply_plan(
                     detail=card.reason,
                 )
             )
-            continue
-        outcome.cards.append(_apply_card(card, client, force=force, emit=emit))
+        else:
+            outcome.cards.append(_apply_card(card, client, force=force, emit=emit))
+        if on_progress is not None:
+            on_progress(done, total)
     return outcome
 
 
