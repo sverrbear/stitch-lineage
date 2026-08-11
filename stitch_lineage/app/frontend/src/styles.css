@@ -2636,9 +2636,36 @@ kbd {
   background: var(--bg-hover);
 }
 
-.erd-node-title:hover .erd-node-name,
-.erd-node-title:focus-visible .erd-node-name {
+/* The header narrows the canvas rather than leaving it (#163), so hovering it must no
+   longer read as "this opens something": the underline moved to the ↗ that still does. */
+
+/* the table the canvas is narrowed to — the one card that is not a candidate */
+.erd-node.focused {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent),
+    0 1px 3px rgba(10, 20, 35, 0.12);
+}
+
+/* the way off the canvas, now that the card's own click keeps you on it */
+.erd-node-open {
+  margin-left: auto;
+  padding: 0 2px;
+  color: var(--text-muted);
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.erd-node-open:hover,
+.erd-node-open:focus-visible {
+  color: var(--accent);
   text-decoration: underline;
+}
+
+/* the filter is stated in the toolbar, next to the way out of it */
+.erd-unfocus {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .erd-node-header {

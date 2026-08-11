@@ -11,12 +11,15 @@ import {
   erdCountsLabel,
   erdForScope,
   findScope,
+  focusErd,
+  relatedModelIds,
   initialScope,
   listScopes,
   relationshipScopeLabel,
   scopeModelIds,
   suggestionsInScope,
   visibleColumns,
+  type ErdData,
 } from './erd'
 import { buildIndex } from './graph'
 import { fixtureGraph } from './fixture'
@@ -488,5 +491,129 @@ describe('relationshipScopeLabel', () => {
 
   it('is null when the graph knows neither model', () => {
     expect(relationshipScopeLabel(index, rel('model.demo.gone', 'model.demo.also_gone'))).toBeNull()
+  })
+})
+
+// --- focusing one table's neighbourhood (#163) --------------------------------
+
+/** A canvas of bare tables: focusErd only ever looks at ids and endpoints. */
+function canvas(
+  models: string[],
+  edges: {
+    declared?: Array<[string, string]>
+    staged?: Array<[string, string]>
+    suggested?: Array<[string, string]>
+  } = {},
+): ErdData {
+  const pair = ([fromModelId, toModelId]: [string, string], i: number) => ({
+    id: `s${i}`,
+    fromModelId,
+    toModelId,
+    fromColumn: 'a',
+    toColumn: 'b',
+    cardinality: 'many-to-one',
+  })
+  return {
+    scope: {
+      kind: 'schema',
+      value: 'marts',
+      modelCount: models.length,
+      relationshipCount: 0,
+      internal: false,
+    },
+    models: models.map((id) => ({
+      node: { node_id: id, node_type: 'model' as const, name: id, properties: {} },
+      columns: [],
+      external: false,
+    })),
+    relationships: (edges.declared ?? []).map(([fromModelId, toModelId]) => ({
+      edge: { from: `${fromModelId}::a`, to: `${toModelId}::b`, edge_type: 'relates_to' },
+      fromModelId,
+      toModelId,
+      fromColumn: 'a',
+      toColumn: 'b',
+      validated: false,
+    })) as ErdData['relationships'],
+    staged: (edges.staged ?? []).map(pair),
+    suggested: (edges.suggested ?? []).map(pair),
+    suggestedHidden: 0,
+  }
+}
+
+const ids = (erd: ErdData) => erd.models.map((model) => model.node.node_id).sort()
+
+describe('relatedModelIds', () => {
+  it('is the table plus everything an edge joins it to, in either direction', () => {
+    const erd = canvas(['a', 'b', 'c', 'd'], { declared: [['a', 'b'], ['c', 'a']] })
+    expect([...relatedModelIds(erd, 'a')].sort()).toEqual(['a', 'b', 'c'])
+  })
+
+  it('counts staged and suggested edges as relations too', () => {
+    // a staged relationship is one the reader just drew: hiding its far end would
+    // hide the thing they were looking at
+    const erd = canvas(['a', 'b', 'c'], { staged: [['a', 'b']], suggested: [['c', 'a']] })
+    expect([...relatedModelIds(erd, 'a')].sort()).toEqual(['a', 'b', 'c'])
+  })
+
+  it('is just the table itself when nothing joins it', () => {
+    expect([...relatedModelIds(canvas(['a', 'b']), 'a')]).toEqual(['a'])
+  })
+})
+
+describe('focusErd', () => {
+  it('keeps the table and its direct relations, and drops the rest', () => {
+    const erd = canvas(['a', 'b', 'c', 'far'], { declared: [['a', 'b'], ['a', 'c']] })
+    expect(ids(focusErd(erd, 'a'))).toEqual(['a', 'b', 'c'])
+  })
+
+  it('keeps a relationship between two neighbours', () => {
+    // a neighbourhood that hides its own internal joins is a star, not a model
+    const erd = canvas(['a', 'b', 'c'], {
+      declared: [['a', 'b'], ['a', 'c'], ['b', 'c']],
+    })
+    const focused = focusErd(erd, 'a')
+    expect(ids(focused)).toEqual(['a', 'b', 'c'])
+    expect(focused.relationships).toHaveLength(3)
+  })
+
+  it('never leaves an edge with an endpoint that is not drawn', () => {
+    const erd = canvas(['a', 'b', 'c', 'd'], {
+      declared: [['a', 'b'], ['c', 'd']],
+      staged: [['b', 'd']],
+      suggested: [['a', 'c']],
+    })
+    const focused = focusErd(erd, 'a')
+    const drawn = new Set(ids(focused))
+    for (const edge of [...focused.relationships, ...focused.staged, ...focused.suggested]) {
+      expect(drawn.has(edge.fromModelId)).toBe(true)
+      expect(drawn.has(edge.toModelId)).toBe(true)
+    }
+    // b and c are neighbours; d is only reachable through them, so it stays out —
+    // and the two edges that reach for it go with it
+    expect(ids(focused)).toEqual(['a', 'b', 'c'])
+    expect(focused.staged).toHaveLength(0)
+    expect(focused.relationships.map((r) => [r.fromModelId, r.toModelId])).toEqual([['a', 'b']])
+  })
+
+  it('drops the relationships of a table it drops', () => {
+    const erd = canvas(['a', 'b', 'x', 'y'], { declared: [['a', 'b'], ['x', 'y']] })
+    expect(focusErd(erd, 'a').relationships).toHaveLength(1)
+  })
+
+  it('is the whole canvas again with nothing focused', () => {
+    const erd = canvas(['a', 'b', 'c'], { declared: [['a', 'b']] })
+    expect(focusErd(erd, null)).toBe(erd)
+  })
+
+  it('leaves the canvas alone when the focused table is not on it', () => {
+    // the scope changed under the focus; collapsing to an empty diagram would read
+    // as a bug rather than as a filter
+    const erd = canvas(['a', 'b'], { declared: [['a', 'b']] })
+    expect(focusErd(erd, 'gone')).toBe(erd)
+  })
+
+  it('keeps the scope it was given, so the header still says where you are', () => {
+    const erd = canvas(['a', 'b', 'c'], { declared: [['a', 'b']] })
+    expect(focusErd(erd, 'a').scope).toEqual(erd.scope)
   })
 })
