@@ -35,8 +35,8 @@
 // `layoutMetrics` is the independent scorer: what a change claims is what the suite
 // asserts.
 
+import { hubLayout } from './hubLayout'
 import { separateBoxes, type SeparationBox } from './layoutSeparation'
-import { stressLayout } from './layoutStress'
 
 export interface ErdLayoutNode {
   id: string
@@ -78,8 +78,12 @@ export interface ErdLayoutOptions {
 
 const DEFAULTS = {
   cardWidth: 300,
-  gap: 52,
-  gutter: 28,
+  // Whitespace is a feature of the arrangement, not slack left over from it (#129):
+  // the hand-tuned reference reads as well as it does partly because neighbouring
+  // cards are a comfortable distance apart and the corridors between clusters stay
+  // open for the straight edges (#130) to run down.
+  gap: 68,
+  gutter: 34,
   componentGap: 120,
   iterations: 240,
   clusterSpread: 1.15,
@@ -196,6 +200,7 @@ function placeComponent(
   component: Component,
   size: Map<string, Size>,
   options: {
+    gap: number
     gutter: number
     iterations: number
     clusterSpread: number
@@ -211,7 +216,7 @@ function placeComponent(
     return { id, w: measured.w, h: measured.h }
   })
 
-  const centres = stressLayout(nodes, component.edges, communities, options)
+  const centres = hubLayout(nodes, component.edges, communities, options)
   const boxes: SeparationBox[] = nodes.map((node) => {
     const at = centres.get(node.id) ?? { x: 0, y: 0 }
     // No mass here, deliberately. Degree-weighted mass belongs in the sweeps

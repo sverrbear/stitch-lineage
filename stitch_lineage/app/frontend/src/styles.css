@@ -872,6 +872,18 @@ kbd {
   overflow-wrap: anywhere;
 }
 
+/* Provenance under a resolved data type (#149). It sits BELOW the type rather than
+   beside it: the type is the answer, the source is the footnote that qualifies how
+   much to trust it, and a reader scanning types should not have to read past the
+   footnote to find the next one. Muted and small, like every other qualifier in the
+   app; the full explanation is on the title tooltip. */
+.type-source {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
 /* A list of nodes reads as rows, not as a wall of pills: rows have an order and
    a scannable left edge, and the hairline between them is the only structure
    they need (the language of 8a's relationship list). */
@@ -2327,6 +2339,23 @@ kbd {
 
 .flow-node.root .flow-node-name {
   font-weight: 600;
+}
+
+/* The name is a link and the rest of the card is not (#140). At rest it reads as
+   the identifier it always was — a canvas of underlined blue names would be a wall
+   of chrome — and the affordance appears on hover, which is when the reader needs
+   to know the two halves do different things. The pointer stays on the name alone:
+   the card body re-traces, which is not navigation. */
+.flow-node-link {
+  color: inherit;
+  cursor: pointer;
+}
+
+.flow-node-link:hover,
+.flow-node-link:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .flow-node-sub {

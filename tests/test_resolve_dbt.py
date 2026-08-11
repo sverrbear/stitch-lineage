@@ -5,6 +5,7 @@ import pytest
 
 from stitch_lineage.graph.schema import (
     Confidence,
+    DataTypeSource,
     EdgeType,
     Graph,
     NodeType,
@@ -456,7 +457,13 @@ def test_relationships_test_without_meta_emits_validated_edge():
     assert edge.from_ == column_node_id("model.demo.fct_a", "user_id")
     assert edge.to == column_node_id("model.demo.dim_b", "user_id")
     assert edge.confidence == Confidence.VALIDATED
-    assert edge.evidence == {"source": "relationships_test", "test": "test.demo.rel"}
+    # no cardinality meta on the column, so the arity is simply unknown -- the edge
+    # still exists and is still validated (#134)
+    assert edge.evidence == {
+        "source": "relationships_test",
+        "test": "test.demo.rel",
+        "relationship_type": None,
+    }
 
 
 def test_contract_constraint_expression_form():
@@ -1134,3 +1141,137 @@ def test_column_missing_from_a_built_relation_says_so_instead():
     assert _unknown_reason(resolution, "model.demo.built", "brand_new") == "column_not_in_catalog"
     # a column the catalog typed makes no claim at all
     assert _unknown_reason(resolution, "model.demo.built", "id") is None
+
+
+# --- the type waterfall's first step, and the catalog join it rests on (issue #149) ---
+
+
+@pytest.mark.parametrize(
+    ("label", "compiled", "catalog_columns"),
+    [
+        # the Snowflake shape: unquoted identifiers folded to upper case on the way in,
+        # every dbt model and node id lower case. A join that dropped these would report
+        # 'unknown' for types the catalog is holding -- silently, for the whole project.
+        ("lowercase sql", "select payment_id, amount_usd from analytics.raw.raw_payments", None),
+        ("uppercase sql", "select PAYMENT_ID, AMOUNT_USD from analytics.raw.raw_payments", None),
+        ("no compiled sql", "", None),
+    ],
+)
+def test_uppercase_catalog_identifiers_land_on_lowercased_column_nodes(
+    label, compiled, catalog_columns
+):
+    manifest = _stg_manifest(
+        compiled, {"payment_id": _column("payment_id"), "amount_usd": _column("amount_usd")}
+    )
+    catalog = _built_catalog(
+        catalog_columns or [("PAYMENT_ID", "NUMBER(38,0)"), ("AMOUNT_USD", "FLOAT")]
+    )
+    result = resolve_dbt(manifest, catalog)
+    types = {
+        node.node_id: (node.data_type, node.data_type_source)
+        for node in result.nodes
+        if node.node_type is NodeType.COLUMN
+    }
+    assert types[column_node_id(STG_PAYMENTS, "payment_id")] == (
+        "NUMBER(38,0)",
+        DataTypeSource.CATALOG,
+    )
+    assert types[column_node_id(STG_PAYMENTS, "amount_usd")] == ("FLOAT", DataTypeSource.CATALOG)
+
+
+def test_catalog_key_cased_differently_from_the_column_name_still_joins():
+    """dbt keys catalog columns by the warehouse spelling, but the inner `name` is the
+    authority -- a build where the two disagree in case must not drop the type."""
+    catalog = _built_catalog([("PAYMENT_ID", "NUMBER(38,0)")])
+    columns = catalog["nodes"][STG_PAYMENTS]["columns"]
+    columns["payment_id"] = columns.pop("PAYMENT_ID")
+    result = resolve_dbt(
+        _stg_manifest("select payment_id from analytics.raw.raw_payments", {}), catalog
+    )
+    node = _node(result, column_node_id(STG_PAYMENTS, "payment_id"))
+    assert (node.data_type, node.data_type_source) == ("NUMBER(38,0)", DataTypeSource.CATALOG)
+
+
+def test_a_column_with_no_type_carries_no_source():
+    result = resolve_dbt(_stg_manifest("select payment_id from analytics.raw.raw_payments", {}), {})
+    node = _node(result, column_node_id(STG_PAYMENTS, "payment_id"))
+    assert node.data_type is None and node.data_type_source is None
+
+
+def test_type_inference_is_off_by_default():
+    manifest = _stg_manifest("select amount * 2 as doubled from analytics.raw.raw_payments", {})
+    assert resolve_dbt(manifest, {}).inferred_types == {}
+
+
+def test_inferred_types_are_candidates_not_applied_types():
+    """resolve_dbt hands inference results over rather than writing them onto the nodes:
+    the waterfall ranks a parse guess below the warehouse's own answer, and it can only
+    do that if the guess has not already been applied here."""
+    catalog = _built_catalog(
+        [("AMOUNT", "FLOAT")], uid=STG_USERS, schema="staging", name="stg_users"
+    )
+    manifest = _stg_manifest(
+        "select amount * 2 as doubled from analytics.staging.stg_users",
+        {},
+        extra_nodes={
+            STG_USERS: _model("stg_users", schema="staging", compiled="select 1 as amount")
+        },
+    )
+    result = resolve_dbt(manifest, catalog, infer_types=True)
+    node = _node(result, column_node_id(STG_PAYMENTS, "doubled"))
+    assert node.data_type is None
+    assert result.inferred_types[column_node_id(STG_PAYMENTS, "doubled")] == "DOUBLE"
+
+
+def test_inference_records_nothing_for_expressions_sqlglot_cannot_type():
+    """An unmapped UDF annotates to UNKNOWN: 'we parsed it and learned nothing' is the
+    same state as never asking, so it must not be recorded as a type."""
+    manifest = _stg_manifest(
+        "select some_unmapped_udf(x) as weird, null as nothing from analytics.raw.raw_payments",
+        {},
+    )
+    result = resolve_dbt(manifest, {}, infer_types=True)
+    assert result.inferred_types == {}
+
+
+def test_a_relationships_test_carries_the_arity_written_beside_it():
+    """#134's round trip: the test states the join, the meta key states the arity.
+
+    dbt has no field for cardinality on a relationships test, so `stitch apply`
+    writes it to the column's meta. If the resolver did not read it back, drawing a
+    one-to-one and rebuilding would hand back a many-to-one.
+    """
+    for cardinality in ("one-to-one", "many-to-one", "one-to-many"):
+        manifest = {
+            "metadata": {},
+            "nodes": {
+                "model.demo.fct_a": _model(
+                    "fct_a",
+                    columns={
+                        "user_id": {
+                            **_column("user_id"),
+                            "meta": {"relationship_type": cardinality},
+                        }
+                    },
+                ),
+                "model.demo.dim_b": _model(
+                    "dim_b", schema="dims", columns={"user_id": _column("user_id")}
+                ),
+                "test.demo.rel": {
+                    "unique_id": "test.demo.rel",
+                    "resource_type": "test",
+                    "name": "rel",
+                    "attached_node": "model.demo.fct_a",
+                    "column_name": "user_id",
+                    "test_metadata": {
+                        "name": "relationships",
+                        "kwargs": {"to": "ref('dim_b')", "field": "user_id"},
+                    },
+                    "depends_on": {"nodes": ["model.demo.dim_b", "model.demo.fct_a"]},
+                },
+            },
+            "sources": {},
+        }
+        (edge,) = _edges(resolve_dbt(manifest, {}), EdgeType.RELATES_TO)
+        assert edge.confidence == Confidence.VALIDATED
+        assert edge.evidence["relationship_type"] == cardinality
