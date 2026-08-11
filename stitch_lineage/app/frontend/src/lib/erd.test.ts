@@ -3,7 +3,6 @@ import {
   AUTO_EXPAND_MAX_MODELS,
   MAX_DRAWN_SUGGESTIONS,
   autoExpandedModels,
-  cardinalityMarkers,
   resolveStaged,
   defaultScope,
   erdClickHref,
@@ -423,32 +422,3 @@ describe('auto-expanding a small scope (#62)', () => {
   })
 })
 
-describe('cardinality endpoint markers (#65)', () => {
-  it('reads a declared FK as many-to-one', () => {
-    expect(cardinalityMarkers()).toEqual({ start: 'erd-card-many', end: 'erd-card-one' })
-    expect(cardinalityMarkers('many-to-one')).toEqual(cardinalityMarkers(null))
-  })
-
-  it('names a marker rather than referencing one', () => {
-    // React Flow builds the `url('#…')` itself; handing it a finished reference
-    // nested one inside the other and no glyph was ever drawn (#100)
-    for (const marker of Object.values(cardinalityMarkers('one-to-many'))) {
-      expect(marker).not.toMatch(/url\(/)
-    }
-  })
-
-  it('flips for one-to-many and doubles up for one-to-one', () => {
-    expect(cardinalityMarkers('one-to-many')).toEqual({
-      start: 'erd-card-one',
-      end: 'erd-card-many',
-    })
-    expect(cardinalityMarkers('one-to-one')).toEqual({
-      start: 'erd-card-one',
-      end: 'erd-card-one',
-    })
-  })
-
-  it('falls back rather than drawing nothing for an unknown value', () => {
-    expect(cardinalityMarkers('who-knows')).toEqual(cardinalityMarkers('many-to-one'))
-  })
-})

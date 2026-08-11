@@ -30,14 +30,13 @@ import {
 import { ApplyDialog } from '../components/ApplyDialog'
 import { SystemBadge } from '../components/badges'
 import { GraphLegend } from '../components/bits'
-import { ErdMarkers, ErdRoutedEdge } from '../components/ErdEdge'
+import { ErdRoutedEdge } from '../components/ErdEdge'
 import { StageRelationshipModal, type StageTarget } from '../components/StageRelationshipModal'
 import { StagedWorkspace } from '../components/StagedWorkspace'
 import { useStitch } from '../data'
 import { CLICK_SLOP_PX, isClickNotDrag, type Point } from '../lib/canvas'
 import {
   autoExpandedModels,
-  cardinalityMarkers,
   erdClickHref,
   erdColumnNodeId,
   erdForScope,
@@ -229,12 +228,6 @@ const nodeTypes = { erdModel: ErdModelNode }
 // every relationship is routed around the cards rather than drawn through them (#79)
 const edgeTypes = { erdRouted: ErdRoutedEdge }
 const EDGE_TYPE = 'erdRouted'
-
-/** `markerStart`/`markerEnd` for an edge, from its cardinality (see ErdMarkers). */
-function cardinalityMarkerProps(cardinality?: string | null) {
-  const { start, end } = cardinalityMarkers(cardinality)
-  return { markerStart: start, markerEnd: end }
-}
 
 function scopeKey(scope: ErdScope): string {
   return `${scope.kind}:${scope.value}`
@@ -649,9 +642,6 @@ export function ErdPage({
           erdColumnNodeId(rel.toModelId, rel.toColumn),
         ],
       },
-      // the graph never records a cardinality for a declared FK, so it reads as
-      // the many-to-one it almost always is
-      ...cardinalityMarkerProps(),
     }))
 
     // Suggestions are proposals: thinner, fainter and further from solid than a
@@ -675,7 +665,6 @@ export function ErdPage({
             erdColumnNodeId(rel.toModelId, rel.toColumn),
           ],
         },
-        ...cardinalityMarkerProps(rel.cardinality),
       })
     }
 
@@ -699,7 +688,6 @@ export function ErdPage({
             erdColumnNodeId(rel.toModelId, rel.toColumn),
           ],
         },
-        ...cardinalityMarkerProps(rel.cardinality),
       })
     }
     return edges
@@ -881,7 +869,6 @@ export function ErdPage({
             })
           }}
         >
-          <ErdMarkers />
           <Background gap={24} />
           <Controls showInteractive={false} />
           <MiniMap pannable zoomable />
