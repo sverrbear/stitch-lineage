@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import plain, uncoloured
 from fastapi.testclient import TestClient
 from ruamel.yaml import YAML
 from typer.testing import CliRunner
@@ -125,8 +126,8 @@ def _run(*args, **kwargs):
 def test_an_empty_store_exits_zero_and_points_at_serve(repo):
     result = _run()
     assert result.exit_code == 0
-    assert "nothing staged" in result.output
-    assert "stitch serve" in result.output
+    assert "nothing staged" in plain(result.output)
+    assert "stitch serve" in plain(result.output)
 
 
 def test_apply_is_listed_in_help():
@@ -136,16 +137,16 @@ def test_apply_is_listed_in_help():
 # --- dry run -----------------------------------------------------------------------------
 
 
-def test_dry_run_shows_the_diff_and_writes_nothing(repo, store):
+def test_dry_run_shows_the_diff_and_writes_nothing(repo, store, wide_console):
     _stage(store, _entry())
     before = (repo / MARTS).read_text()
 
     result = _run("--dry-run")
     assert result.exit_code == 0
-    assert f"a/{MARTS}" in result.output
-    assert "+          - relationships:" in result.output
-    assert "+              to: ref('dim_customers')" in result.output
-    assert "--dry-run: nothing written" in result.output
+    assert f"a/{MARTS}" in plain(result.output)
+    assert "+          - relationships:" in uncoloured(result.output)
+    assert "+              to: ref('dim_customers')" in uncoloured(result.output)
+    assert "--dry-run: nothing written" in plain(result.output)
     assert (repo / MARTS).read_text() == before
 
 
@@ -170,7 +171,7 @@ def test_declining_the_prompt_writes_nothing(repo, store):
 
     result = _run(input="n\n")
     assert result.exit_code == 1
-    assert "aborted" in result.output
+    assert "aborted" in plain(result.output)
     assert (repo / MARTS).read_text() == before
     assert len(read_staged(store)) == 1
 
@@ -186,7 +187,7 @@ def test_yes_skips_the_prompt(repo, store):
     _stage(store, _entry())
     result = _run("--yes")
     assert result.exit_code == 0
-    assert "apply to" not in result.output
+    assert "apply to" not in plain(result.output)
 
 
 # --- applying -----------------------------------------------------------------------------
@@ -202,7 +203,7 @@ def test_apply_writes_the_relationship_and_clears_the_store(repo, store):
     assert "              to: ref('dim_customers')" in written
     assert "              field: customer_id" in written
     assert read_staged(store) == []
-    assert "applied 1 relationship" in result.output
+    assert "applied 1 relationship" in plain(result.output)
 
 
 def test_apply_is_insert_only_against_the_committed_file(repo, store):
@@ -224,7 +225,7 @@ def test_apply_reports_every_file_it_wrote(repo, store):
     result = _run("--yes")
     assert result.exit_code == 0
     assert MARTS in result.output.replace("\n", "")
-    assert "applied 2 relationships" in result.output
+    assert "applied 2 relationships" in plain(result.output)
     assert read_staged(store) == []
 
 
@@ -251,8 +252,8 @@ def test_a_dirty_target_file_is_refused(repo, store):
 
     result = _run("--yes")
     assert result.exit_code == 1
-    assert "refusing" in result.output
-    assert "--force" in result.output
+    assert "refusing" in plain(result.output)
+    assert "--force" in plain(result.output)
     assert target.read_text() == before
     assert len(read_staged(store)) == 1
 
@@ -305,8 +306,8 @@ def test_an_unappliable_entry_is_reported_and_stays_staged(repo, store):
 
     result = _run("--yes")
     assert result.exit_code == 1
-    assert "cannot apply" in result.output
-    assert "has no schema YAML file" in result.output
+    assert "cannot apply" in plain(result.output)
+    assert "has no schema YAML file" in plain(result.output)
     assert [entry.id for entry in read_staged(store)] == [orphan.id]
 
 
@@ -327,8 +328,8 @@ def test_a_missing_manifest_gives_the_standard_artifact_error(repo, store):
 
     result = _run("--yes")
     assert result.exit_code == 1
-    assert "manifest.json" in result.output
-    assert "dbt docs generate" in result.output
+    assert "manifest.json" in plain(result.output)
+    assert "dbt docs generate" in plain(result.output)
 
 
 def test_a_corrupt_store_names_the_fix(repo, store):
@@ -336,7 +337,7 @@ def test_a_corrupt_store_names_the_fix(repo, store):
     store.write_text("relationships: [unclosed\n")
     result = _run("--yes")
     assert result.exit_code == 1
-    assert "delete the file" in result.output
+    assert "delete the file" in plain(result.output)
 
 
 def test_contract_constraint_fails_with_the_alternatives(repo, store):
@@ -344,8 +345,8 @@ def test_contract_constraint_fails_with_the_alternatives(repo, store):
     (repo / "stitch.yml").write_text(CONFIG.replace("relationships_test", "contract_constraint"))
     result = _run("--yes")
     assert result.exit_code == 1
-    assert "not implemented" in result.output
-    assert "relationships_test" in result.output
+    assert "not implemented" in plain(result.output)
+    assert "relationships_test" in plain(result.output)
 
 
 # --- the meta form through the CLI ---------------------------------------------------------------
@@ -366,8 +367,8 @@ def test_write_to_meta_writes_the_interop_keys(repo, store):
 def test_a_relationships_test_warns_that_cardinality_is_dropped(repo, store):
     _stage(store, _entry(cardinality="one-to-one"))
     result = _run("--dry-run")
-    assert "cannot carry cardinality" in result.output
-    assert "write_to: meta" in result.output
+    assert "cannot carry cardinality" in plain(result.output)
+    assert "write_to: meta" in plain(result.output)
 
 
 def test_many_to_one_is_not_warned_about(repo, store):
@@ -428,7 +429,7 @@ def test_apply_patches_the_relationship_it_wrote_into_the_graph(repo, store):
 
     result = _run("--yes")
     assert result.exit_code == 0
-    assert CLOSING_LINE in result.output
+    assert CLOSING_LINE in plain(result.output)
 
     edges = _relates_to(graph_path)
     assert len(edges) == 1
@@ -508,8 +509,8 @@ def test_an_already_declared_relationship_still_reaches_a_stale_graph(repo, stor
     _stage(store, _entry())
     result = _run("--yes")
     assert result.exit_code == 0
-    assert "cleared 1 already-declared entry" in result.output
-    assert "graph updated, refresh the app" in result.output
+    assert "cleared 1 already-declared entry" in plain(result.output)
+    assert "graph updated, refresh the app" in plain(result.output)
     assert len(_relates_to(graph_path)) == 1
 
 
@@ -555,8 +556,8 @@ def test_no_graph_update_leaves_the_graph_alone(repo, store):
 
     result = _run("--yes", "--no-graph-update")
     assert result.exit_code == 0
-    assert "applied 1 relationship" in result.output
-    assert "graph updated" not in result.output
+    assert "applied 1 relationship" in plain(result.output)
+    assert "graph updated" not in plain(result.output)
     assert graph_path.read_bytes() == before
 
 
@@ -564,9 +565,9 @@ def test_a_missing_graph_is_a_note_not_a_failure(repo, store):
     _stage(store, _entry())
     result = _run("--yes")
     assert result.exit_code == 0
-    assert "no graph at" in result.output
-    assert "run 'stitch build'" in result.output
-    assert "graph updated" not in result.output
+    assert "no graph at" in plain(result.output)
+    assert "run 'stitch build'" in plain(result.output)
+    assert "graph updated" not in plain(result.output)
     assert "- relationships:" in (repo / MARTS).read_text()
 
 
@@ -578,7 +579,7 @@ def test_an_unparseable_graph_is_a_note_not_a_failure(repo, store):
 
     result = _run("--yes")
     assert result.exit_code == 0
-    assert "does not parse" in result.output
+    assert "does not parse" in plain(result.output)
     assert "- relationships:" in (repo / MARTS).read_text()
 
 
@@ -588,9 +589,9 @@ def test_a_relationship_whose_columns_are_not_in_the_graph_is_reported(repo, sto
 
     result = _run("--yes")
     assert result.exit_code == 0
-    assert "not added to the graph" in result.output
-    assert "fct_orders.customer_id -> dim_customers.customer_id" in result.output
-    assert "graph updated" not in result.output
+    assert "not added to the graph" in plain(result.output)
+    assert "fct_orders.customer_id -> dim_customers.customer_id" in plain(result.output)
+    assert "graph updated" not in plain(result.output)
     assert _relates_to(graph_path) == []
 
 
@@ -684,7 +685,7 @@ def test_a_staged_description_is_written_and_cleared(repo):
     assert result.exit_code == 0
     assert _yaml_value(repo, MARTS, "fct_orders", "customer_id") == "Who placed it, FK to customers"
     assert read_descriptions(descriptions_path(repo / ".stitch")) == []
-    assert "applied 1 description" in result.output
+    assert "applied 1 description" in plain(result.output)
 
 
 def test_a_model_description_is_written(repo):
@@ -698,9 +699,9 @@ def test_relationships_and_descriptions_apply_in_one_run(repo, store):
     _stage_descriptions(repo, _description())
     result = _run("--yes")
     assert result.exit_code == 0
-    assert "1 staged relationship" in result.output
-    assert "1 staged description" in result.output
-    assert "applied 1 relationship and 1 description" in result.output
+    assert "1 staged relationship" in plain(result.output)
+    assert "1 staged description" in plain(result.output)
+    assert "applied 1 relationship and 1 description" in plain(result.output)
     written = (repo / MARTS).read_text()
     assert "- relationships:" in written
     assert "Who placed it, FK to customers" in written
@@ -708,14 +709,14 @@ def test_relationships_and_descriptions_apply_in_one_run(repo, store):
     assert read_descriptions(descriptions_path(repo / ".stitch")) == []
 
 
-def test_a_dry_run_shows_the_description_diff_and_writes_nothing(repo):
+def test_a_dry_run_shows_the_description_diff_and_writes_nothing(repo, wide_console):
     before = (repo / MARTS).read_text()
     _stage_descriptions(repo, _description())
     result = _run("--dry-run")
     assert result.exit_code == 0
     # the replaced line, in the quoting style the file already used
-    assert "+        description: 'Who placed it, FK to customers'" in result.output
-    assert "-        description: 'Who placed the order'" in result.output
+    assert "+        description: 'Who placed it, FK to customers'" in uncoloured(result.output)
+    assert "-        description: 'Who placed the order'" in uncoloured(result.output)
     assert (repo / MARTS).read_text() == before
     assert len(read_descriptions(descriptions_path(repo / ".stitch"))) == 1
 
@@ -723,8 +724,8 @@ def test_a_dry_run_shows_the_description_diff_and_writes_nothing(repo):
 def test_an_empty_run_mentions_both_ways_to_stage(repo):
     result = _run()
     assert result.exit_code == 0
-    assert "nothing staged" in result.output
-    assert "edit a description" in result.output
+    assert "nothing staged" in plain(result.output)
+    assert "edit a description" in plain(result.output)
 
 
 def test_the_graph_patch_updates_node_descriptions(repo):
@@ -733,7 +734,7 @@ def test_the_graph_patch_updates_node_descriptions(repo):
 
     result = _run("--yes")
     assert result.exit_code == 0
-    assert "graph updated, refresh the app" in result.output
+    assert "graph updated, refresh the app" in plain(result.output)
     nodes = {node.node_id: node for node in read_graph(graph_path).nodes}
     assert nodes[ORDERS_FK].description == "Who placed it, FK to customers"
     assert nodes["model.demo.dim_customers"].description == "Who placed it, FK to customers"
@@ -745,8 +746,8 @@ def test_a_description_whose_target_is_not_in_the_graph_is_reported(repo):
 
     result = _run("--yes")
     assert result.exit_code == 0
-    assert "not added to the graph" in result.output
-    assert "fct_orders.customer_id description" in result.output
+    assert "not added to the graph" in plain(result.output)
+    assert "fct_orders.customer_id description" in plain(result.output)
     assert read_graph(graph_path).nodes  # graph still intact
     assert _yaml_value(repo, MARTS, "fct_orders", "customer_id") == "Who placed it, FK to customers"
 
@@ -766,8 +767,8 @@ def test_an_unappliable_description_stays_staged(repo):
 
     result = _run("--yes")
     assert result.exit_code == 1
-    assert "cannot apply" in result.output
-    assert "has no schema YAML file" in result.output
+    assert "cannot apply" in plain(result.output)
+    assert "has no schema YAML file" in plain(result.output)
     assert [entry.id for entry in read_descriptions(descriptions_path(repo / ".stitch"))] == [
         orphan.id
     ]
@@ -780,7 +781,7 @@ def test_a_dirty_file_refuses_the_description_too(repo):
 
     result = _run("--yes")
     assert result.exit_code == 1
-    assert "refusing" in result.output
+    assert "refusing" in plain(result.output)
     assert len(read_descriptions(descriptions_path(repo / ".stitch"))) == 1
 
 
@@ -790,4 +791,4 @@ def test_a_corrupt_description_store_names_the_fix(repo):
     path.write_text("descriptions: [unclosed\n")
     result = _run("--yes")
     assert result.exit_code == 1
-    assert "delete the file" in result.output
+    assert "delete the file" in plain(result.output)

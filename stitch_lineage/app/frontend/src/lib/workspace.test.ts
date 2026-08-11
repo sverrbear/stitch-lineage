@@ -2,12 +2,16 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { setStripModelPrefixes } from './present'
 import type { StagedDescription, StagedRelationship } from './staging'
 import {
+  applyButtonLabel,
+  applyStatus,
   descriptionLabel,
   descriptionPreview,
   diffLines,
   diffStat,
+  isWorking,
   outcomeSummary,
   workspaceView,
+  type ApplyPhase,
 } from './workspace'
 
 function relationship(partial: Partial<StagedRelationship> = {}): StagedRelationship {
@@ -160,5 +164,67 @@ describe('outcomeSummary', () => {
     expect(outcomeSummary({ written: [], refused: [], applied: 0, still_staged: 0 })).toBe(
       'Nothing to write.',
     )
+  })
+})
+
+// --- the apply dialog's phases (#160) ---------------------------------------
+
+const PHASES: ApplyPhase[] = ['planning', 'review', 'applying', 'refreshing', 'done']
+
+describe('isWorking', () => {
+  it('holds the dialog exactly while something is running', () => {
+    expect(PHASES.filter(isWorking)).toEqual(['planning', 'applying', 'refreshing'])
+  })
+
+  it('lets go in the two phases that wait on the reader', () => {
+    expect(isWorking('review')).toBe(false)
+    expect(isWorking('done')).toBe(false)
+  })
+})
+
+describe('applyStatus', () => {
+  it('says what is running, and counts the files while writing them', () => {
+    expect(applyStatus('planning', 0)).toBe('Planning the writes…')
+    expect(applyStatus('applying', 3)).toBe('Writing 3 files in your dbt repo…')
+    expect(applyStatus('applying', 1)).toBe('Writing 1 file in your dbt repo…')
+  })
+
+  it('says the graph, not the repo, once the writes have landed', () => {
+    // the files are already written by this phase: a reader who reads "writing" here
+    // and closes the laptop would be wrong about what they interrupted
+    const status = applyStatus('refreshing', 3)
+    expect(status).toBe('Re-reading the graph…')
+    expect(status?.toLowerCase()).not.toContain('writing')
+  })
+
+  it('is silent when the dialog is waiting on the reader', () => {
+    expect(applyStatus('review', 3)).toBeNull()
+    expect(applyStatus('done', 3)).toBeNull()
+  })
+
+  it('never leaves a working phase without words', () => {
+    for (const phase of PHASES.filter(isWorking)) {
+      expect(applyStatus(phase, 2)).toBeTruthy()
+    }
+  })
+})
+
+describe('applyButtonLabel', () => {
+  it('claims an apply only once one is running', () => {
+    // the regression: one `busy` flag covered planning too, so the button read
+    // "Applying…" while the dialog was still asking what it would write
+    expect(applyButtonLabel('review', 3)).toBe('Apply 3 files')
+    expect(applyButtonLabel('applying', 3)).toBe('Applying…')
+  })
+
+  it('names no file count until the plan comes back', () => {
+    // "Apply 0 files" while planning states a zero nobody has established yet
+    expect(applyButtonLabel('planning', 0)).toBe('Apply')
+  })
+
+  it('counts files the way the rest of the screen does', () => {
+    expect(applyButtonLabel('review', 1)).toBe('Apply 1 file')
+    // a real zero, once the plan says so: nothing to write, and the button says it
+    expect(applyButtonLabel('review', 0)).toBe('Apply 0 files')
   })
 })

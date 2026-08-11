@@ -128,3 +128,47 @@ export function outcomeSummary(outcome: {
   }
   return `Wrote ${changes} to ${files}. ${outcome.still_staged} still staged.`
 }
+
+/**
+ * Where the apply dialog is (#160).
+ *
+ * Five, not a `busy` boolean, because the reader is owed different words in each:
+ * `planning` and `applying` both held the same flag, so the Apply button announced
+ * "Applying…" before anything had been applied, and `refreshing` was invisible
+ * altogether — the writes had returned but the caller was still re-reading the whole
+ * graph behind a disabled Close.
+ */
+export type ApplyPhase = 'planning' | 'review' | 'applying' | 'refreshing' | 'done'
+
+/** Phases with work in flight: nothing may be clicked and the dialog may not close. */
+export function isWorking(phase: ApplyPhase): boolean {
+  return phase === 'planning' || phase === 'applying' || phase === 'refreshing'
+}
+
+/**
+ * What is running right now, in the reader's words. Null in the phases that are
+ * waiting on the reader rather than on the machine.
+ *
+ * `refreshing` says the graph rather than the repo on purpose: by then the files are
+ * written, and a reader who reads "writing" and closes the laptop would be wrong
+ * about what they interrupted.
+ */
+export function applyStatus(phase: ApplyPhase, files: number): string | null {
+  if (phase === 'planning') return 'Planning the writes…'
+  if (phase === 'applying') {
+    return `Writing ${files} file${files === 1 ? '' : 's'} in your dbt repo…`
+  }
+  if (phase === 'refreshing') return 'Re-reading the graph…'
+  return null
+}
+
+/**
+ * The Apply button's label. Never claims an apply that has not started, and never a
+ * file count before the plan comes back -- "Apply 0 files" while planning states a
+ * zero nobody has established yet, which is the same overclaim in smaller print.
+ */
+export function applyButtonLabel(phase: ApplyPhase, files: number): string {
+  if (phase === 'applying') return 'Applying…'
+  if (phase === 'planning') return 'Apply'
+  return `Apply ${files} file${files === 1 ? '' : 's'}`
+}

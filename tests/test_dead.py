@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from conftest import plain
 from typer.testing import CliRunner
 
 from stitch_lineage.cli import app
@@ -344,9 +345,9 @@ def offline_project(tmp_path, monkeypatch):
 def test_doctor_dead_works_without_metabase_env(offline_project):
     result = runner.invoke(app, ["doctor", "--dead"])
     assert result.exit_code == 0, result.output
-    assert "unconsumed columns" in result.output
-    assert "model.demo.mart_unused" in result.output
-    assert "#500 Old cohort chart" in result.output
+    assert "unconsumed columns" in plain(result.output)
+    assert "model.demo.mart_unused" in plain(result.output)
+    assert "#500 Old cohort chart" in plain(result.output)
 
 
 def test_doctor_dead_json(offline_project):
@@ -363,7 +364,7 @@ def test_doctor_dead_json(offline_project):
 def test_doctor_json_without_dead_is_rejected(offline_project):
     result = runner.invoke(app, ["doctor", "--json"])
     assert result.exit_code == 1
-    assert "--json is only supported with --dead" in result.output
+    assert "--json is only supported with --dead" in plain(result.output)
 
 
 def test_doctor_dead_without_a_graph_fails(tmp_path, monkeypatch):
@@ -371,4 +372,4 @@ def test_doctor_dead_without_a_graph_fails(tmp_path, monkeypatch):
     (tmp_path / "stitch.yml").write_text(CONFIG)
     result = runner.invoke(app, ["doctor", "--dead"])
     assert result.exit_code == 1
-    assert "run 'stitch build' first" in result.output
+    assert "run 'stitch build' first" in plain(result.output)
