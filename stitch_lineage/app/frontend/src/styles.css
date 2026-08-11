@@ -1,37 +1,64 @@
 /* Hand-rolled styles on CSS variables. Light + dark via [data-theme] on <html>
-   (set pre-paint in index.html, toggled in src/theme.ts). */
+   (set pre-paint in index.html, toggled in src/theme.ts).
+
+   The palette is the approved design language (#108): three text tiers on a flat
+   canvas, hairline rules instead of borders, ONE accent for the current selection
+   and the way forward, and amber for risk — untraced, suggested, stale, staged.
+   Nothing else gets colour, so colour always means something. The dark values are
+   the 7a/8a mocks verbatim; light derives from the principles doc's paper/ink/
+   indigo/amber palette. */
 
 :root,
 :root[data-theme='light'] {
-  --bg: #f7f8fa;
+  --bg: #fbfbfa;
   --bg-elev: #ffffff;
-  --bg-hover: #eef1f5;
-  --text: #1c2530;
-  --text-muted: #66707d;
-  --border: #d9dee5;
-  --accent: #4459c8;
+  --bg-hover: #f2f2f0;
+  --text: #14161a;
+  /* the middle tier: a label next to a number, a name that is not the subject */
+  --text-2: #4a4e56;
+  --text-muted: #6b6f76;
+  --border: #ececed;
+  /* a hairline that has to survive over --bg-elev rather than over paper */
+  --border-strong: #dcdcde;
+  --accent: #3730c4;
+  --accent-soft: rgba(55, 48, 196, 0.1);
+  --amber: #8a3d12;
+  --amber-soft: #fbeadb;
   --snowflake: #29b5e8;
   --metabase: #509ee3;
-  --edge: #9aa4b1;
-  --edge-strong: #4c5a6b;
-  --edge-weak: #b8845c;
-  --ok: #2e9e63;
-  --shadow: 0 8px 30px rgba(20, 30, 50, 0.12);
+  --edge: #c8c8ca;
+  --edge-strong: #4a4e56;
+  --shadow: 0 10px 30px rgba(20, 22, 26, 0.1);
 }
 
 :root[data-theme='dark'] {
-  --bg: #12161c;
-  --bg-elev: #1a2027;
-  --bg-hover: #232b35;
-  --text: #e3e8ee;
-  --text-muted: #8b96a3;
-  --border: #303a46;
-  --accent: #7d8ff0;
-  --edge: #5d6976;
-  --edge-strong: #a4b3c2;
-  --edge-weak: #c08a55;
-  --ok: #46c98a;
-  --shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  --bg: #0c0c0e;
+  --bg-elev: #16161a;
+  --bg-hover: #1b1b20;
+  --text: #f5f5f7;
+  --text-2: #c7c7cc;
+  --text-muted: #8e8e93;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --accent: #0a84ff;
+  --accent-soft: rgba(10, 132, 255, 0.16);
+  --amber: #ff9f0a;
+  --amber-soft: rgba(255, 159, 10, 0.14);
+  --edge: rgba(255, 255, 255, 0.2);
+  --edge-strong: #c7c7cc;
+  --shadow: 0 20px 44px rgba(0, 0, 0, 0.5);
+}
+
+/* Legacy token names, kept so every existing rule speaks the new language without
+   a rename sweep: what used to be "ok green" is the accent (a validated join is
+   the way forward), and what used to be "weak edge brown" is the amber (a guess
+   is a risk). */
+:root {
+  --ok: var(--accent);
+  --edge-weak: var(--amber);
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  --radius: 12px;
+  --radius-sm: 6px;
 }
 
 * {
@@ -47,16 +74,21 @@ body {
 body {
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
-    sans-serif;
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Helvetica Neue', 'Segoe UI', Roboto,
+    Helvetica, Arial, sans-serif;
+  /* every count in this app sits in a column of other counts */
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.005em;
 }
 
+/* An identifier is evidence someone will paste into a PR: mono, selectable, and
+   never dressed up as a chip. */
 code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--mono);
   font-size: 0.92em;
-  background: var(--bg-hover);
-  padding: 0 4px;
-  border-radius: 4px;
+  color: var(--text-2);
+  background: none;
+  padding: 0;
 }
 
 a {
@@ -69,16 +101,22 @@ a:hover {
 }
 
 kbd {
-  border: 1px solid var(--border);
-  border-bottom-width: 2px;
+  font-family: var(--mono);
   border-radius: 4px;
-  padding: 0 5px;
+  padding: 0 4px;
   font-size: 12px;
-  background: var(--bg-elev);
+  color: var(--text-muted);
+  background: var(--bg-hover);
 }
 
 .muted {
   color: var(--text-muted);
+}
+
+/* the identifier tier: model, column, card and dashboard names as the warehouse
+   and Metabase spell them (principles 02 + 05) */
+.mono {
+  font-family: var(--mono);
 }
 
 /* Fixed-viewport app shell: a DEFINITE height all the way down is what lets
@@ -104,10 +142,12 @@ kbd {
 .app-header {
   display: flex;
   align-items: center;
-  gap: 20px;
-  padding: 10px 20px;
+  gap: 30px;
+  padding: 0 28px;
+  height: 56px;
+  flex: none;
   border-bottom: 1px solid var(--border);
-  background: var(--bg-elev);
+  background: var(--bg);
   position: sticky;
   top: 0;
   z-index: 20;
@@ -117,8 +157,9 @@ kbd {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-weight: 700;
-  font-size: 16px;
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: -0.01em;
   color: var(--text);
 }
 
@@ -128,12 +169,14 @@ kbd {
 
 .app-nav {
   display: flex;
-  gap: 14px;
+  gap: 24px;
+  font-size: 13.5px;
+  letter-spacing: -0.01em;
 }
 
 .app-nav a {
   color: var(--text-muted);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .app-nav a:hover {
@@ -141,46 +184,79 @@ kbd {
   text-decoration: none;
 }
 
+/* where you are, in the one colour that means something */
+.app-nav a.current {
+  color: var(--text);
+}
+
 .app-header-right {
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 18px;
+  font-size: 12.5px;
 }
 
+/* "Built today, 16:07" — a stale graph is a wrong answer, so the build is on
+   every page and says so in amber once it is old (principle 05) */
 .app-meta {
   color: var(--text-muted);
+  font-family: var(--mono);
   font-size: 12px;
+  white-space: nowrap;
+}
+
+.app-meta.stale {
+  color: var(--amber);
+}
+
+/* The header's own affordances carry no chrome at all — in 7a the top bar is a
+   line of text and the hairline under it. Elsewhere a button still looks like one. */
+.header-action {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.header-action:hover {
+  color: var(--text);
 }
 
 .ghost-button {
   background: none;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
   color: var(--text-muted);
   padding: 3px 9px;
   cursor: pointer;
-  font-size: 13px;
+  font: inherit;
+  font-size: 12.5px;
 }
 
 .ghost-button:hover {
-  background: var(--bg-hover);
-  color: var(--text);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
+/* a button that is not the header's: it has an edge, because it does something */
 .button {
   display: inline-block;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
   padding: 5px 12px;
-  background: var(--bg-elev);
+  background: none;
   color: var(--text);
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
 }
 
 .button:hover {
-  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--accent);
   text-decoration: none;
 }
 
@@ -210,189 +286,188 @@ kbd {
   z-index: 30;
 }
 
-/* ---- home ---- */
+/* ---- home (7a) ----
+
+   One column, 620px, vertically centred: the question, the field that answers it,
+   three real identifiers to start from, the two canvases, and what this build does
+   NOT know. Nothing else — a lineage tool is opened in the middle of a problem, so
+   the home page is a way in, not a dashboard. */
 
 .home {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 34px;
-  padding: 6vh 20px 60px;
+  justify-content: center;
+  padding: 40px 20px 80px;
+}
+
+.home-column {
+  width: min(620px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 72px;
 }
 
 .home-hero {
-  width: min(680px, 100%);
-  text-align: center;
-}
-
-.home-section {
-  width: min(1000px, 100%);
-}
-
-.home-section-title {
-  font-size: 13px;
-  font-weight: 650;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  color: var(--text-muted);
-  margin: 0 0 12px;
-}
-
-/* ---- coverage tiles ---- */
-
-.tile-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 12px;
-}
-
-.tile {
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 14px 16px;
-}
-
-.tile-value {
-  font-size: 26px;
-  font-weight: 650;
-  letter-spacing: -0.5px;
-}
-
-.tile-total {
-  font-size: 15px;
-  font-weight: 400;
-  color: var(--text-muted);
-}
-
-.tile-label {
-  color: var(--text-muted);
-  font-size: 12px;
-  margin-top: 2px;
-}
-
-.tile-bar {
-  height: 4px;
-  border-radius: 2px;
-  background: var(--bg-hover);
-  margin: 10px 0 8px;
-  overflow: hidden;
-}
-
-.tile-bar-fill {
-  height: 100%;
-  background: var(--accent);
-}
-
-.tile-link {
-  font-size: 12px;
-  display: inline-block;
-}
-
-/* ---- entry cards + starting points ---- */
-
-.entry-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 12px;
-}
-
-.entry-card {
-  display: block;
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 14px 16px;
-  color: inherit;
-  text-decoration: none;
-}
-
-.entry-card:hover {
-  border-color: var(--accent);
-  background: var(--bg-hover);
-}
-
-.entry-card-title {
-  display: block;
-  font-weight: 650;
-  margin-bottom: 4px;
-}
-
-.entry-card-text {
-  display: block;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.start-lists {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 12px 28px;
-  margin-top: 18px;
-}
-
-.start-items {
-  list-style: none;
-  margin: 0;
-  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-}
-
-.start-items li {
-  display: flex;
+  gap: 16px;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
-}
-
-.home-generated {
-  font-size: 12px;
-  margin-top: 4px;
-}
-
-.stale-hint {
-  color: var(--edge-weak);
-}
-
-.coverage-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.coverage-orphan {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
 }
 
 .home-title {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+/* the examples: real names out of this graph, fully qualified, in mono — they are
+   what the reader is about to type (principles 02 + 05) */
+.home-examples {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 14px;
-  font-size: 34px;
-  margin: 0 0 6px;
-  letter-spacing: -0.5px;
-}
-
-.home-subtitle {
-  color: var(--text-muted);
-  margin: 0 0 26px;
-}
-
-.home-stats {
-  margin-top: 22px;
-  color: var(--text-muted);
+  flex-wrap: wrap;
+  gap: 9px;
   font-size: 13px;
+  color: var(--text-muted);
+}
+
+.home-example {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.home-example:hover {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+/* the two canvases, as rows rather than cards: a link is a link */
+.home-links {
+  display: flex;
+  flex-direction: column;
+}
+
+.home-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 4px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 15px;
+  letter-spacing: -0.01em;
+}
+
+.home-link:last-child {
+  border-bottom: 0;
+}
+
+.home-link:hover {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.home-link-chevron {
+  color: var(--text-muted);
+  font-size: 15px;
+}
+
+.home-link:hover .home-link-chevron {
+  color: var(--accent);
+}
+
+/* ---- coverage: what this build does not know, next to the way in ---- */
+
+.coverage-block {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.coverage-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 4px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.coverage-bar {
+  height: 4px;
+  background: var(--bg-hover);
+  border-radius: 100px;
+  overflow: hidden;
+}
+
+:root[data-theme='light'] .coverage-bar {
+  background: var(--border);
+}
+
+.coverage-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 100px;
+}
+
+.coverage-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Every row is the gap it measures AND the link to the fix: "2,551 / 3,293" is
+   only actionable next to the 742 it is missing (principle 03). */
+.coverage-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 11px 4px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.coverage-rows > .coverage-row:last-child {
+  border-bottom: 0;
+}
+
+.coverage-row-label {
+  color: var(--text-2);
+}
+
+.coverage-row:hover {
+  text-decoration: none;
+}
+
+.coverage-row:hover .coverage-row-label {
+  color: var(--accent);
+}
+
+.coverage-row-right {
+  margin-left: auto;
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+}
+
+.coverage-row-gap {
+  font-size: 12.5px;
+  color: var(--amber);
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+.coverage-row-value {
+  font-family: var(--mono);
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .home-hint {
@@ -402,6 +477,32 @@ kbd {
 
 .home .search-results {
   text-align: left;
+}
+
+/* ---- the list behind a coverage row ---- */
+
+.coverage-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.coverage-list > li {
+  border-bottom: 1px solid var(--border);
+}
+
+.coverage-list > li:last-child {
+  border-bottom: 0;
+}
+
+.coverage-orphan {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 2px;
+  font-size: 13px;
 }
 
 /* ---- search ---- */
