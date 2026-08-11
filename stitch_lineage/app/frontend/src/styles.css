@@ -461,8 +461,22 @@ kbd {
   border-bottom: 0;
 }
 
+.coverage-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
 .coverage-row-label {
   color: var(--text-2);
+}
+
+/* The qualifier on the ratio — the inferred share, the excluded models. Quiet,
+   but on the row itself: a caveat one click away is a caveat nobody reads. */
+.coverage-row-note {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .coverage-row:hover {

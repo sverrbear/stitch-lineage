@@ -133,6 +133,10 @@ class Coverage(BaseModel):
 
     models_bound: int = 0
     models_total: int = 0
+    # models kept out of the bind denominator by metabase.exclude_packages /
+    # exclude_models -- package plumbing nobody expects to find in Metabase, so
+    # counting it as "unbound" only makes the tool look worse than it is
+    models_excluded: int = 0
     mbql_cards_resolved: int = 0
     mbql_cards_total: int = 0
     native_cards_resolved: int = 0

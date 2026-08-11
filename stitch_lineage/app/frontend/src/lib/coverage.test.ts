@@ -64,6 +64,28 @@ describe('coverageRows', () => {
     expect(empty).toHaveLength(3)
     expect(empty.every((r) => r.value === 0 && r.list === null)).toBe(true)
   })
+
+  // #119: a ratio with an unstated caveat oversells the build.
+  it('states the inferred share of what it calls traced', () => {
+    const inferred = coverageRows({ ...withCoverage.coverage, columns_inferred: 3 })
+    expect(inferred.find((r) => r.key === 'columns')!.note).toBe('3 of those inferred (60%)') // 3/5
+  })
+
+  it('says nothing about inference when nothing was inferred', () => {
+    expect(row('columns').note).toBeNull()
+    expect(row('columns').noteHint).toBeNull()
+  })
+
+  it('never divides by a traced count of zero', () => {
+    const none = coverageRows({ columns_inferred: 2, columns_traced: 0, columns_total: 8 })
+    expect(none.find((r) => r.key === 'columns')!.note).toBe('2 of those inferred')
+  })
+
+  it('admits the models config took out of the denominator', () => {
+    const excluded = coverageRows({ ...withCoverage.coverage, models_excluded: 30 })
+    expect(excluded.find((r) => r.key === 'models')!.note).toBe('30 excluded by config')
+    expect(row('models').note).toBeNull()
+  })
 })
 
 describe('coveragePercent', () => {

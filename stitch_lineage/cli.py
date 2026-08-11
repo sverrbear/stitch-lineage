@@ -313,11 +313,16 @@ def _print_coverage(
         console.print(f"{label:<20} {value}", soft_wrap=True)
 
     if metabase_side:
-        unmatched = (
-            f"   ({len(coverage.unbound_models)} unmatched -> stitch doctor --unbound)"
-            if coverage.unbound_models
-            else ""
-        )
+        qualifiers = []
+        if coverage.unbound_models:
+            qualifiers.append(
+                f"{len(coverage.unbound_models)} unmatched -> stitch doctor --unbound"
+            )
+        if coverage.models_excluded:
+            # the denominator is a claim about what we expected to find, so say
+            # out loud when config narrowed it (metabase.exclude_packages/models)
+            qualifiers.append(f"{coverage.models_excluded} excluded by config")
+        unmatched = f"   ({', '.join(qualifiers)})" if qualifiers else ""
         row("models bound", f"{coverage.models_bound}/{coverage.models_total}{unmatched}")
         row("MBQL cards", f"{coverage.mbql_cards_resolved}/{coverage.mbql_cards_total}")
         native_note = "   parsed" if coverage.native_cards_total else ""
@@ -328,7 +333,14 @@ def _print_coverage(
         row("dashboards", f"{coverage.dashboards}/{coverage.dashboards_total}")
     notes = []
     if coverage.columns_inferred:
-        notes.append(f"{coverage.columns_inferred} inferred via star-expansion")
+        # the share, not just the count: 1,329 inferred reads as a footnote until you
+        # know it is more than half of everything traced (#119)
+        share = (
+            f", {round(coverage.columns_inferred / coverage.columns_traced * 100)}% of traced"
+            if coverage.columns_traced
+            else ""
+        )
+        notes.append(f"{coverage.columns_inferred} inferred via star-expansion{share}")
     if coverage.untraced_columns:
         notes.append(f"{len(coverage.untraced_columns)} unresolved -> stitch doctor --untraced")
     suffix = f"   ({', '.join(notes)})" if notes else ""
@@ -478,7 +490,13 @@ def _run_build(
                 )
             else:
                 bind_task = progress.add_task("binding", total=1)
-                bind_res = bind(nodes, mb_field_nodes, database_map)
+                bind_res = bind(
+                    nodes,
+                    mb_field_nodes,
+                    database_map,
+                    exclude_packages=cfg.metabase.exclude_packages,
+                    exclude_models=cfg.metabase.exclude_models,
+                )
                 progress.update(bind_task, completed=1)
                 nodes.extend(mb_nodes)
                 edges.extend(e for e in baseline.edges if e.edge_type in _MB_EDGE_TYPES)
@@ -489,6 +507,7 @@ def _run_build(
                 coverage_fields.update(
                     models_bound=bind_res.models_bound,
                     models_total=bind_res.models_total,
+                    models_excluded=bind_res.models_excluded,
                     unbound_models=bind_res.unbound_models,
                     unverified_field_count=bind_res.unverified_field_count,
                     mbql_cards_resolved=baseline.coverage.mbql_cards_resolved,
@@ -523,6 +542,8 @@ def _run_build(
                 nodes,
                 [n for n in mb_res.nodes if n.node_type is NodeType.MB_FIELD],
                 database_map,
+                exclude_packages=cfg.metabase.exclude_packages,
+                exclude_models=cfg.metabase.exclude_models,
             )
             progress.update(bind_task, completed=1)
             nodes.extend(mb_res.nodes)
@@ -534,6 +555,7 @@ def _run_build(
             coverage_fields.update(
                 models_bound=bind_res.models_bound,
                 models_total=bind_res.models_total,
+                models_excluded=bind_res.models_excluded,
                 unbound_models=bind_res.unbound_models,
                 unverified_field_count=bind_res.unverified_field_count,
                 mbql_cards_resolved=mb_res.mbql_cards_resolved,

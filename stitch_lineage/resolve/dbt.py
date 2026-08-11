@@ -186,6 +186,9 @@ def _entity_nodes(models: dict[str, Any], sources: dict[str, Any]) -> list[Node]
             "tags": model.get("tags") or [],
             "materialization": (model.get("config") or {}).get("materialized"),
             "path": model.get("original_file_path") or model.get("path"),
+            # the dbt package that owns this model -- what metabase.exclude_packages
+            # matches on, read from the manifest rather than split out of the unique_id
+            "package": model.get("package_name"),
         }
         if _is_ephemeral(model):
             properties["is_ephemeral"] = True
