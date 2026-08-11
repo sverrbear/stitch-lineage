@@ -16,8 +16,11 @@ fields, cards and dashboards that read it. It reads your dbt artifacts and the M
 writes one plain local file, `.stitch/graph.json`, which the CLI queries and the browser app draws.
 
 stitch is **local-first**: no server, no warehouse backend, no hosted anything, and nothing it
-generates needs to be committed. It connects **read-only** to Metabase, and the only thing it ever
-writes into your repo is a relationship or description you explicitly asked it to apply.
+generates needs to be committed. It reads Metabase, and the only thing it ever writes into your repo
+is a relationship or description you explicitly asked it to apply. One command writes *out* —
+[`stitch mend`](#repairing-what-broke-stitch-mend) repairs the cards a schema change broke, and every
+write it makes is snapshotted, re-executed and reverted if the card does not run. Nothing else in the
+tool touches Metabase with anything but a GET.
 
 Requires **Python 3.11+**, a dbt project whose artifacts you can generate, and **Metabase 49 or
 newer** (the first release with API keys).
@@ -36,14 +39,15 @@ work is tracked as [GitHub issues](https://github.com/sverrbear/stitch-lineage/i
 
 1. [Getting Started](#getting-started)
 2. [What breaks if I change this column?](#what-breaks-if-i-change-this-column)
-3. [The app](#the-app)
-4. [Configuration](#configuration)
-5. [Coverage](#coverage)
-6. [Roadmap](#roadmap)
-7. [Built on](#built-on)
-8. [FAQ](#faq)
-9. [Contributing](#contributing)
-10. [License](#license)
+3. [Repairing what broke: `stitch mend`](#repairing-what-broke-stitch-mend)
+4. [The app](#the-app)
+5. [Configuration](#configuration)
+6. [Coverage](#coverage)
+7. [Roadmap](#roadmap)
+8. [Built on](#built-on)
+9. [FAQ](#faq)
+10. [Contributing](#contributing)
+11. [License](#license)
 
 ## Getting Started
 
@@ -91,18 +95,20 @@ Every other command reads that one graph file:
 | ------- | ----------- |
 | `stitch build` | Resolve dbt + Metabase into `graph.json`. `--no-metabase` does the dbt side only; `--check` exits 1 on drift against a committed graph. |
 | `stitch impact` | What the last build changed, and what it hits. `--column <model.column>` for a point query, `--base <ref>` to diff a git ref. |
+| `stitch mend` | Repair the Metabase cards a column change broke. `--plan` classifies and writes `.stitch/mend_plan.json`; `--apply` executes it. The only command that writes to Metabase. |
 | `stitch serve` | The local lineage + ERD app on `127.0.0.1:8787` (`--port`, `--host`, `--no-open`). |
 | `stitch search <term>` | Find models, columns, Metabase fields, cards and dashboards. |
 | `stitch suggest` | Relationships worth declaring, strongest evidence first. |
 | `stitch apply` | Write staged relationships and descriptions into model YAML (`--dry-run` shows the diff). |
-| `stitch doctor` | Config, artifacts, graph and Metabase connectivity. `--unbound`, `--untraced`, `--unresolved-cards`, `--dead`, `--list-databases`. |
+| `stitch doctor` | Config, artifacts, graph and Metabase connectivity. `--unbound`, `--untraced`, `--unresolved-cards`, `--dead`, `--list-databases`, `--write-access`. |
 | `stitch history` | The graph baselines past builds stored locally, keyed by commit sha. |
 | `stitch export` | `--format jsonl` for agents and warehouses, `--format site` for a static build of the app. |
 | `stitch --version` | Print the installed version. |
 
 Everything except `build` and `doctor`'s connectivity checks works without the Metabase environment
-variables set. `--json` is available on `impact --column`, `search`, `suggest`, `history` and
-`doctor --dead`. Add `.stitch/` to `.gitignore`; the graph is a local artifact.
+variables set (`mend` is the exception: it needs them to read the cards it plans against). `--json` is
+available on `impact --column`, `search`, `suggest`, `history` and `doctor --dead`, and
+`impact --format json` emits the machine-readable diff. Add `.stitch/` to `.gitignore`; the graph is a local artifact.
 
 ## What breaks if I change this column?
 
@@ -159,6 +165,65 @@ In CI, `stitch impact --format github-comment` posts the same blast radius as a 
 `--format slack` as a deploy alert (workflow templates in [`action/`](action/)), and
 `--fail-on-impact` exits 1 when a column was removed or type-changed. That path does need a baseline
 `graph.json` committed on the base branch, which is why it is not the default story.
+`--format json` emits the same diff as data, which is what `stitch mend` runs on.
+
+## Repairing what broke: `stitch mend`
+
+Knowing that a deprecation broke 29 cards is only half a tool. `stitch mend` writes the repair.
+
+```
+stitch mend --plan --rename fct_orders.amount=fct_orders.amount_usd
+```
+
+It reads the impact diff and gives every affected card exactly one action:
+
+| Action | When | Write |
+|---|---|---|
+| **repoint** | you declared the rename, and the new column resolves to a live Metabase field | rewrite the field reference across every query stage and the dashboard filter wiring |
+| **strip** | the dead column only appears in clauses the card is not *about* — a filter, one breakout of several, an order-by | delete that clause |
+| **archive** | the dead column *is* the card — its only aggregation, its sole dimension | `archived: true`, never a delete |
+| **notify** | personal collections, native SQL, actions you dialed off — anything mend will not guess at | nothing; listed for a human |
+
+```
+⚠ stitch mend: 6 cards affected -- 2 strip, 1 archive, 1 repoint, 2 notify
+
+STRIP (2) -- a clause is deleted -- the card runs, under the same title, showing different
+numbers. Re-execution cannot catch that; read these.
+  #402 Orders, promo cohort  (Order operations, Order ops, dev)
+      removed filter -> fct_orders.promo_code
+      dashboard 'Order operations': 1 filter mapping dropped
+
+ARCHIVE (1) -- the card's substance is gone -- archived, never deleted
+  #403 Promo uptake  (Order ops, analyst)
+      fct_orders.promo_code is essential to this card (aggregation)
+
+REPOINT (1) -- a declared rename, followed to the new field
+  #401 Revenue by month  (Order operations, Order ops, dev)
+      repointed aggregation: fct_orders.amount -> fct_orders.amount_usd
+```
+
+The plan is a file (`.stitch/mend_plan.json`), it renders as `text`, `slack` or `github-comment`, and
+it is deterministic — the same graphs and the same renames produce the same bytes. **The plan is the
+dry run.** Nothing has been written yet.
+
+```
+stitch mend --apply           # THIS writes to Metabase
+```
+
+Per card: re-read it and skip it if a human edited it since the plan (their edit outranks ours),
+snapshot the revision, write, **re-execute the card**, and revert through Metabase's revision history
+if it does not run. Every diff it writes is printed. Any card that ends `failed` exits non-zero.
+
+Nothing is inferred: a repoint happens only where you declared `old=new`. A rename mend cannot follow
+— because Metabase has not synced the new column yet, say — becomes a `notify`, never a strip, since
+"I cannot find the new column" and "the column is gone" call for opposite repairs.
+
+Autonomy is per action, in `stitch.yml`. `strip` is the one worth a decision: a card with a dead
+filter removed still runs, and shows different numbers under the same title. Remove it from
+`mend.auto` and those cards get listed instead of edited. `stitch doctor --write-access` checks that
+the API key can write, and writes nothing itself. The post-deploy workflow — sync, build, impact,
+plan, Slack notice, apply, summary, in one job — is
+[`action/stitch-mend.yml`](action/stitch-mend.yml), which documents a human-gated variant alongside.
 
 ## The app
 
@@ -284,6 +349,16 @@ Presentation defaults, shared by `stitch serve` and `export --format site`.
 | `erd_default_scope` | no | none | ERD scope to open on: `schema:<name>` or `tag:<name>`. Anything else is a config error. |
 | `strip_model_prefixes` | no | `[]` | Routing prefixes stripped from a model's *display* name, e.g. `["viz_"]`. Purely cosmetic — ids, search keys and everything written back keep the real dbt name. |
 
+### `mend`
+
+What [`stitch mend`](#repairing-what-broke-stitch-mend) is allowed to do without asking.
+
+| Key | Required | Default | Description |
+| --- | -------- | ------- | ----------- |
+| `slack_webhook` | no | none | Where the plan notice and the apply summary are posted. Must be an env reference (`${STITCH_SLACK_WEBHOOK_URL}`) — a literal URL in `stitch.yml` is an error, like a literal API key. |
+| `auto` | no | `[repoint, strip, archive]` | Actions applied without a human gate. Remove one and it downgrades to `notify`: the card is listed and written to by nobody. `notify` itself is not a valid entry — it is the absence of a write, not an autonomy level. |
+| `notify_only_collections` | no | `["*Personal*"]` | Globs on collection name or full path (personal collections match `*Personal*` whatever they are named). Cards here are never written to. |
+
 ## Coverage
 
 Every build prints what it could and could not resolve, so a thin graph is a documented limitation
@@ -319,6 +394,7 @@ reverse ETL, a notebook or another BI tool. Candidates to review, never a delete
 | **1** | `serve`: search + detail panels, lineage view, catalog, read-only ERD; `export --format site` | **shipped** |
 | **2** | Editable ERD canvas: staged relationships and descriptions, `stitch apply` with diff preview, suggestions, `stitch init` | **shipped** — except saved views and node positions (#31), composite and conceptual relationship shapes (#55) |
 | 3 | Native SQL cards via sqlglot and MBQL 5 stages (**shipped**, ahead of phase order); rename heuristics, `--verify-lineage`, Metabase version matrix | ongoing |
+| 4 | `stitch mend`: impact-driven card remediation — plan, Slack notice, reversible auto-apply; `doctor --write-access` | ongoing |
 
 The issue tracker, not this table, is the operational truth.
 

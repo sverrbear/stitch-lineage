@@ -1,0 +1,206 @@
+# stitch mend -- post-deploy card remediation workflow TEMPLATE for YOUR dbt repo
+# (SPEC.md section 14, issue #143).
+#
+# This file is shipped as a template, not run in the stitch repo itself.
+# To use it: copy to .github/workflows/stitch-mend.yml in your dbt project, fill in the
+# adapter + warehouse + Metabase credentials, and add a STITCH_SLACK_WEBHOOK_URL secret.
+#
+# THIS WORKFLOW WRITES TO METABASE. Read `Autonomy` below before enabling it.
+#
+# ONE job, in order:
+#   1. Metabase `sync_schema` -- so the warehouse's new columns exist as field ids. This is
+#      the ordering constraint that makes mend post-deploy work rather than PR-time work:
+#      repointing needs the NEW field id, which does not exist until Metabase has synced.
+#   2. `stitch build` -- a full refresh of both sides, into .stitch/graph.json
+#   3. `stitch impact --format json` -- the gate. Empty `columns` means nothing downstream
+#      changed and the whole remediation is skipped.
+#   4. `stitch mend --plan` -- classify every affected card (repoint / strip / archive /
+#      notify) into a deterministic plan, and post it to Slack as a NOTICE, not a request.
+#   5. `stitch mend --apply` -- execute it while the plan is byte-fresh, then post the
+#      summary. Any card that ends `failed` fails the job.
+#
+# Why no approval gate: a plan rots while it waits. Every hour of waiting, more cards drift
+# and silently degrade to `stale`, so a slow approval is a partial repair. The safety comes
+# from the apply loop, not from a button -- staleness guard, revision snapshot, post-write
+# re-execution, auto-revert on failure, notify-only collections, and a summary that names
+# every card. A human-gated variant is at the bottom of this file.
+#
+# Autonomy is configured per action in stitch.yml, NOT here:
+#
+#   mend:
+#     slack_webhook: ${STITCH_SLACK_WEBHOOK_URL}
+#     auto: [repoint, strip, archive]   # remove an action -> it downgrades to notify
+#     notify_only_collections: ["*Personal*"]
+#
+# `strip` is the one worth a decision: a card with a dead filter removed still runs, and
+# shows different numbers under the same title, which re-execution cannot catch. Removing
+# `strip` from `auto` lists those cards in the notice for a human instead of editing them.
+#
+# Before the first run: `stitch doctor --write-access` checks that the API key can write and
+# that revision history (the revert target) is readable. It writes nothing.
+#
+# Prerequisites:
+#   - stitch.yml committed at the repo root, with a `mend` section
+#   - the rename map is DECLARED, never inferred: pass --rename old=new for every column
+#     this deploy renamed (see the `RENAMES` env var below)
+
+name: stitch mend
+
+on:
+  # Fire after your prod dbt run, not on the push itself: mend needs the warehouse to have
+  # been rebuilt already. `workflow_run` (below) or a `repository_dispatch` from your
+  # orchestrator are both better triggers than `push` if your deploy is not the push.
+  workflow_dispatch:
+    inputs:
+      renames:
+        description: "Declared renames, space-separated: old=new old=new"
+        required: false
+        default: ""
+  # workflow_run:
+  #   workflows: ["dbt prod run"]
+  #   types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  mend:
+    runs-on: ubuntu-latest
+    env:
+      STITCH_METABASE_URL: ${{ secrets.STITCH_METABASE_URL }}
+      STITCH_METABASE_API_KEY: ${{ secrets.STITCH_METABASE_API_KEY }}
+      STITCH_SLACK_WEBHOOK_URL: ${{ secrets.STITCH_SLACK_WEBHOOK_URL }}
+      # Every column this deploy renamed, space-separated old=new pairs. Nothing is
+      # inferred: an undeclared rename is treated as a removal, which is the conservative
+      # reading and is what the notice will say.
+      RENAMES: ${{ github.event.inputs.renames }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # full history so the previous baseline graph is resolvable
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Replace dbt-snowflake with your adapter.
+      - name: Install
+        run: pip install stitch-lineage dbt-snowflake
+
+      # 1. Sync Metabase's schema metadata so renamed/added columns have field ids.
+      #    stitch does not drive this -- it is one Metabase API call, and which database to
+      #    sync is your deployment's business, not the tool's. METABASE_DATABASE_ID is the
+      #    numeric id of the warehouse in Metabase (`stitch doctor --list-databases` names
+      #    them; the id is in the Metabase admin URL).
+      - name: Metabase sync_schema
+        run: |
+          curl -sS -X POST \
+            -H "x-api-key: ${STITCH_METABASE_API_KEY}" \
+            "${STITCH_METABASE_URL}/api/database/${METABASE_DATABASE_ID}/sync_schema"
+          # give the sync a moment to land before reading metadata back
+          sleep 30
+        env:
+          METABASE_DATABASE_ID: ${{ secrets.METABASE_DATABASE_ID }}
+
+      - name: Generate dbt artifacts
+        run: dbt deps && dbt docs generate
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+
+      # 2. Full build: both sides, so the candidate graph carries the NEW field ids.
+      - name: Build graph
+        run: stitch build
+
+      # 3. The gate. No downstream column change -> no remediation, and the job ends green.
+      - name: Impact
+        id: impact
+        run: |
+          stitch impact --format json > impact.json
+          if [ "$(jq '.columns | length' impact.json)" = "0" ]; then
+            echo "nothing downstream changed" >> "$GITHUB_STEP_SUMMARY"
+            echo "affected=false" >> "$GITHUB_OUTPUT"
+          else
+            jq -r '.columns[] | "\(.label) \(.change): \(.cards | length) card(s)"' impact.json \
+              >> "$GITHUB_STEP_SUMMARY"
+            echo "affected=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 4. Plan + Slack notice. --slack posts through mend.slack_webhook. --use-cache reuses
+      #    the payload step 2 just fetched instead of fetching the estate twice; the revision
+      #    snapshot then happens at apply time, which the staleness guard makes equivalent (a
+      #    card whose updated_at moved is skipped, so plan-time and apply-time revisions are
+      #    the same revision wherever a write actually happens).
+      - name: Plan the repair and post the notice
+        if: steps.impact.outputs.affected == 'true'
+        run: |
+          # shellcheck disable=SC2086 -- word splitting is how repeated flags are built
+          RENAME_FLAGS=""
+          for pair in $RENAMES; do
+            RENAME_FLAGS="$RENAME_FLAGS --rename $pair"
+          done
+          stitch mend --plan $RENAME_FLAGS --use-cache --slack --format text \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # 5. Apply while the plan is fresh, then post the summary. Every diff written lands in
+      #    this step's log; any `failed` card fails the job.
+      - name: Apply the plan and post the summary
+        if: steps.impact.outputs.affected == 'true'
+        run: stitch mend --apply --slack | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the plan for the record
+        if: always() && steps.impact.outputs.affected == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mend-plan
+          path: .stitch/mend_plan.json
+
+# ======================================================================================
+# VARIANT (not the default): a human gate, via GitHub environment protection
+# ======================================================================================
+#
+# For teams that want a person to approve before anything is written. The tool is the same;
+# the difference is two jobs and an artifact handoff, with GitHub supplying the approval
+# identity and the audit trail. Cost: the plan ages while it waits, and every card edited in
+# the meantime is skipped as `stale` on apply -- so approve promptly, or re-run.
+#
+# Create an environment (Settings -> Environments) named `mend` with required reviewers,
+# then replace the two steps above with:
+#
+#   jobs:
+#     plan:
+#       runs-on: ubuntu-latest
+#       steps:
+#         # ... sync, build, impact as above ...
+#         - name: Plan
+#           run: stitch mend --plan $RENAME_FLAGS --use-cache --slack
+#         - uses: actions/upload-artifact@v4
+#           with:
+#             name: mend-plan
+#             path: .stitch/mend_plan.json
+#
+#     apply:
+#       needs: plan
+#       runs-on: ubuntu-latest
+#       environment: mend          # <- required reviewers gate THIS job
+#       steps:
+#         - uses: actions/checkout@v4
+#         - uses: actions/setup-python@v5
+#           with:
+#             python-version: "3.11"
+#         - run: pip install stitch-lineage
+#         - uses: actions/download-artifact@v4
+#           with:
+#             name: mend-plan
+#             path: .stitch/
+#         # the SAME plan the reviewer read -- no re-planning between approval and apply
+#         - run: stitch mend --apply .stitch/mend_plan.json --slack
+#
+# No runner is held while the approval is pending: `environment` gates job start, so the
+# waiting costs nothing but time.
+#
+# Slack-side approval buttons (Workflow Builder webhook -> workflow_dispatch, or a
+# Socket-Mode waiter) are a documented non-default for the same reason: they need a hosted
+# callback endpoint, which SPEC.md section 12.2 rules out.

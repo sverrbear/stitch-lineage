@@ -30,6 +30,7 @@ from stitch_lineage.export.jsonl import export_jsonl
 from stitch_lineage.export.static_site import export_site
 from stitch_lineage.graph.dead import dead_report, format_dead_report
 from stitch_lineage.graph.impact import (
+    ColumnDiff,
     ColumnLookup,
     column_blast_radius,
     format_blast_radius,
@@ -37,6 +38,7 @@ from stitch_lineage.graph.impact import (
     format_github_comment,
     format_slack_comment,
     impact_from_graphs,
+    impact_json,
     resolve_column_ref,
 )
 from stitch_lineage.graph.schema import (
@@ -70,7 +72,9 @@ from stitch_lineage.io.history_store import (
     store_snapshot,
 )
 from stitch_lineage.io.layout_store import LAYOUT_FILENAME, LayoutStoreError, read_dismissed
-from stitch_lineage.io.metabase_client import MetabaseAPIError, MetabaseClient
+from stitch_lineage.io.mend_store import MendStoreError, plan_path, read_plan, write_plan
+from stitch_lineage.io.metabase_client import MetabaseAPIError, MetabaseClient, load_cached
+from stitch_lineage.io.slack_webhook import SlackWebhookError, post_message, split_message
 from stitch_lineage.io.staged_store import (
     DESCRIPTIONS_FILENAME,
     STAGED_FILENAME,
@@ -78,6 +82,12 @@ from stitch_lineage.io.staged_store import (
     StagedStoreError,
     read_staged,
 )
+from stitch_lineage.mend.apply import apply_plan
+from stitch_lineage.mend.models import MendAction
+from stitch_lineage.mend.plan import affected_card_ids
+from stitch_lineage.mend.plan import build_plan as build_mend_plan
+from stitch_lineage.mend.render import format_plan, format_summary_slack, format_summary_text
+from stitch_lineage.payloads import MetabasePayload
 from stitch_lineage.resolve.bind import bind
 from stitch_lineage.resolve.dbt import resolve_dbt
 from stitch_lineage.resolve.metabase import resolve_metabase
@@ -884,7 +894,11 @@ def impact(
     ] = False,
     output_format: Annotated[
         str,
-        typer.Option("--format", help="Output format: text, github-comment or slack."),
+        typer.Option(
+            "--format",
+            help="Output format: text, github-comment, slack, or json (machine-readable "
+            "diff -- empty 'columns' means nothing downstream changed).",
+        ),
     ] = "text",
     fail_on_impact: Annotated[
         bool,
@@ -911,8 +925,10 @@ def impact(
     before the edit. That path needs no baseline, no git and no Metabase credentials.
     """
     config = _resolve_config(config)
-    if output_format not in ("text", "github-comment", "slack"):
-        _fail(f"unsupported --format '{output_format}' (expected: text, github-comment, slack)")
+    if output_format not in ("text", "github-comment", "slack", "json"):
+        _fail(
+            f"unsupported --format '{output_format}' (expected: text, github-comment, slack, json)"
+        )
     graph_path = _graph_path(config)
     if column is not None:
         if output_format != "text":
@@ -924,16 +940,280 @@ def impact(
         _impact_column(_read_graph_or_fail(graph_path), graph_path, column, json_output)
         return
     if json_output:
-        _fail("--json requires --column; the diff path uses --format github-comment or slack")
+        _fail("--json requires --column; the diff path uses --format json")
     candidate = _read_graph_or_fail(graph_path)
     baseline = _impact_baseline(base, base_file, graph_path)
     diff, report = impact_from_graphs(baseline, candidate)
-    if output_format == "slack":
+    if output_format == "json":
+        payload = impact_json(diff, report, baseline).model_dump(mode="json")
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+    elif output_format == "slack":
         typer.echo(format_slack_comment(diff, report, baseline))
     else:
         comment = format_github_comment(diff, report, baseline)
         typer.echo(comment if output_format == "github-comment" else _plain_text(comment))
     if fail_on_impact and (diff.removed or diff.type_changed):
+        raise typer.Exit(code=1)
+
+
+_MEND_FORMATS = ("text", "slack", "github-comment")
+
+
+def _parse_renames(pairs: list[str]) -> dict[str, str]:
+    """--rename old=new, repeatable. Declared only: mend never infers a rename."""
+    renames: dict[str, str] = {}
+    for pair in pairs:
+        old, sep, new = pair.partition("=")
+        old, new = old.strip(), new.strip()
+        if not sep or not old or not new:
+            _fail(
+                "--rename expects old=new (e.g. fct_orders.amount=fct_orders.amount_usd), "
+                f"got '{pair}'"
+            )
+        if old in renames:
+            _fail(f"--rename names '{old}' twice")
+        renames[old] = new
+    return renames
+
+
+def _mend_autonomy(cfg: StitchConfig) -> tuple[list[MendAction], list[str]]:
+    """The autonomy dial as the planner wants it. Validation already happened in config.py."""
+    actions = [MendAction(action) for action in cfg.mend.auto]
+    return actions, list(cfg.mend.notify_only_collections)
+
+
+def _mend_payload(
+    cfg: StitchConfig, out_dir: Path, client: MetabaseClient | None
+) -> MetabasePayload:
+    """The Metabase payload a plan needs: cached from the last build, or fetched fresh.
+
+    A plan needs what no graph carries -- each card's live `dataset_query`, its `updated_at`,
+    its collection and its dashcards -- so this is the one part of planning that talks to
+    Metabase. `--use-cache` (client None) reuses the payload `stitch build` already wrote,
+    which is both the offline path and the honest one in CI, where the build ran minutes ago.
+    """
+    cache_dir = out_dir / "cache"
+    if client is None:
+        payload = load_cached(cache_dir)
+        if payload is None:
+            _fail(
+                f"no cached Metabase payload under {cache_dir} -- run 'stitch build' first, "
+                "or drop --use-cache to fetch"
+            )
+        err_console.print(f"payload: cached Metabase fetch from {cache_dir}")
+        return payload
+    try:
+        return client.fetch_all([db.metabase_name for db in cfg.metabase.databases])
+    except MetabaseAPIError as exc:
+        _fail(str(exc))
+
+
+def _post_slack(cfg: StitchConfig, text: str, *, what: str) -> None:
+    """Post to the configured webhook, or say why nothing was posted.
+
+    A missing webhook is not an error: the plan and the summary both print to stdout, and a
+    team that has not wired up Slack should still be able to run mend.
+    """
+    if not cfg.mend.slack_webhook:
+        err_console.print(f"slack: no mend.slack_webhook configured -- {what} not posted")
+        return
+    try:
+        cfg.mend.require_env()
+    except StitchConfigError as exc:
+        _fail(f"{exc} -- mend needs it to post the {what} to Slack")
+    try:
+        for chunk in split_message(text):
+            post_message(cfg.mend.slack_webhook, chunk)
+    except SlackWebhookError as exc:
+        _fail(str(exc))
+    err_console.print(f"slack: {what} posted")
+
+
+@app.command()
+def mend(
+    plan_file: Annotated[
+        Path | None,
+        typer.Argument(
+            help="Plan file to apply with --apply (default: .stitch/mend_plan.json).",
+        ),
+    ] = None,
+    make_plan: Annotated[
+        bool,
+        typer.Option("--plan", help="Build a remediation plan from the impact diff."),
+    ] = False,
+    do_apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Apply a plan. THIS WRITES to Metabase."),
+    ] = False,
+    rename: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--rename",
+            help="Declared rename old=new (repeatable), e.g. "
+            "fct_orders.amount=fct_orders.amount_usd. Never inferred.",
+        ),
+    ] = None,
+    base: Annotated[
+        str | None,
+        typer.Option("--base", help="Git ref to diff against, as 'stitch impact --base'."),
+    ] = None,
+    base_file: Annotated[
+        Path | None,
+        typer.Option("--base-file", help="Path to a graph.json to use as the baseline."),
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Where to write the plan (default: .stitch/mend_plan.json)."),
+    ] = None,
+    output_format: Annotated[
+        str,
+        typer.Option("--format", help="Plan rendering: text, slack or github-comment."),
+    ] = "text",
+    use_cache: Annotated[
+        bool,
+        typer.Option(
+            "--use-cache",
+            help="Plan from the Metabase payload cached by the last 'stitch build' instead "
+            "of fetching.",
+        ),
+    ] = False,
+    slack: Annotated[
+        bool,
+        typer.Option("--slack/--no-slack", help="Post the notice/summary to mend.slack_webhook."),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Apply even to cards edited since the plan was built."),
+    ] = False,
+    config: ConfigOpt = None,
+) -> None:
+    """Repair the Metabase cards a schema change broke: plan, then apply.
+
+    `stitch mend --plan` diffs the current graph against a baseline (the same baselines
+    `stitch impact` accepts), classifies every affected card into exactly one action --
+    repoint a declared rename, strip a dead non-essential clause, archive a card whose
+    substance is gone, notify a human -- and writes a deterministic plan to
+    .stitch/mend_plan.json. Nothing is written to Metabase.
+
+    `stitch mend --apply PLAN` executes it: per card, re-read and skip if a human edited it
+    since (--force overrides), snapshot the revision, PUT the rewrite, re-execute the card,
+    and revert through the revisions API if it does not run. Every diff it writes is printed.
+    Any card that ends `failed` exits non-zero.
+
+    The plan IS the dry run -- there is no --dry-run flag because there is nothing it would
+    add. Autonomy is per action, in stitch.yml: an action outside `mend.auto` downgrades to
+    notify, and cards in `mend.notify_only_collections` are never written to.
+    """
+    if make_plan == do_apply:
+        _fail("pass exactly one of --plan or --apply")
+    if plan_file is not None and not do_apply:
+        _fail("a plan file argument only makes sense with --apply")
+    config = _resolve_config(config)
+    cfg = _load_config_or_fail(config)
+    out_dir = _output_dir(config, cfg)
+    if make_plan:
+        _mend_plan(
+            cfg=cfg,
+            config=config,
+            out_dir=out_dir,
+            renames=_parse_renames(rename or []),
+            base=base,
+            base_file=base_file,
+            out=out or plan_path(out_dir),
+            output_format=output_format,
+            use_cache=use_cache,
+            slack=slack,
+        )
+        return
+    _mend_apply(
+        cfg=cfg,
+        path=plan_file if plan_file is not None else plan_path(out_dir),
+        force=force,
+        slack=slack,
+    )
+
+
+def _mend_plan(
+    *,
+    cfg: StitchConfig,
+    config: Path,
+    out_dir: Path,
+    renames: dict[str, str],
+    base: str | None,
+    base_file: Path | None,
+    out: Path,
+    output_format: str,
+    use_cache: bool,
+    slack: bool,
+) -> None:
+    if output_format not in _MEND_FORMATS:
+        _fail(f"unsupported --format '{output_format}' (expected: {', '.join(_MEND_FORMATS)})")
+    graph_path = _graph_path(config)
+    candidate = _read_graph_or_fail(graph_path)
+    baseline = _impact_baseline(base, base_file, graph_path)
+    diff, _report = impact_from_graphs(baseline, candidate)
+    client = None if use_cache else _metabase_client(cfg, cache_dir=out_dir / "cache")
+    payload = _mend_payload(cfg, out_dir, client)
+    auto, notify_only = _mend_autonomy(cfg)
+    plan = build_mend_plan(
+        baseline,
+        candidate,
+        diff,
+        payload,
+        renames=renames,
+        auto=auto,
+        notify_only_collections=notify_only,
+        revisions=_card_revisions(client, baseline, diff),
+    )
+    written = write_plan(plan, out)
+    count = len(plan.cards)
+    err_console.print(f"plan: {count} card{'' if count == 1 else 's'} -> {written}")
+    typer.echo(format_plan(plan, output_format))
+    if slack:
+        _post_slack(cfg, format_plan(plan, "slack"), what="plan notice")
+
+
+def _card_revisions(
+    client: MetabaseClient | None, baseline: Graph, diff: ColumnDiff
+) -> dict[int, int | None]:
+    """Latest revision id per affected card -- the state a failed apply reverts to.
+
+    Fetched only for the cards the diff actually reaches (a handful, not the estate), and
+    only when mend already has a client: `--use-cache` plans without touching Metabase at
+    all, and the apply loop then reads the revision id itself.
+
+    The two are equivalent wherever a write actually happens, because the staleness guard
+    refuses any card whose `updated_at` moved between plan and apply -- so the revision at
+    plan time and the revision at apply time are the same revision. Capturing it here is the
+    belt to the apply loop's braces, not a second opinion.
+    """
+    if client is None:
+        return {}
+    revisions: dict[int, int | None] = {}
+    for card_id in affected_card_ids(baseline, diff):
+        try:
+            revisions[card_id] = client.latest_card_revision(card_id)
+        except MetabaseAPIError as exc:
+            err_console.print(f"revisions: card {card_id} unreadable ({exc}) -- will use the plan")
+            revisions[card_id] = None
+    return revisions
+
+
+def _mend_apply(*, cfg: StitchConfig, path: Path, force: bool, slack: bool) -> None:
+    try:
+        plan = read_plan(path)
+    except MendStoreError as exc:
+        _fail(str(exc))
+    if not plan.writing:
+        err_console.print(f"apply: {path} has nothing to write")
+    if force:
+        err_console.print("apply: --force -- the staleness guard is off for this run")
+    outcome = apply_plan(plan, _metabase_client(cfg), force=force, log=typer.echo)
+    typer.echo("")
+    typer.echo(format_summary_text(outcome))
+    if slack:
+        _post_slack(cfg, format_summary_slack(outcome), what="summary")
+    if outcome.failures:
         raise typer.Exit(code=1)
 
 
@@ -1112,6 +1392,13 @@ def doctor(
         bool,
         typer.Option("--list-databases", help="List databases visible to the Metabase API key."),
     ] = False,
+    write_access: Annotated[
+        bool,
+        typer.Option(
+            "--write-access",
+            help="Probe whether the API key could run 'stitch mend --apply'. Writes nothing.",
+        ),
+    ] = False,
     unbound: Annotated[
         bool, typer.Option("--unbound", help="List dbt models with no bound Metabase table.")
     ] = False,
@@ -1151,6 +1438,10 @@ def doctor(
             _fail(str(exc))
         for database in databases:
             console.print(str(database.get("name", "?")))
+        return
+
+    if write_access:
+        _print_write_access(cfg)
         return
 
     if unbound or untraced or unresolved_cards or dead:
@@ -1219,6 +1510,79 @@ def _print_list(label: str, items: list[str]) -> None:
     console.print(f"{label} ({len(items)}):")
     for item in items:
         console.print(f"  {item}", soft_wrap=True)
+
+
+def _print_write_access(cfg: StitchConfig) -> None:
+    """`doctor --write-access`: could `stitch mend --apply` do its job with this key?
+
+    Read-only by construction. Metabase has no dry-run write, so the probe reads the three
+    things an apply depends on -- who the key is, which cards report `can_write`, and whether
+    revision history is readable (the revert target) -- and then echoes the autonomy dial, so
+    "mend would write nothing here" is visible before anyone wonders why nothing happened.
+    """
+    client = _metabase_client(cfg)
+    failed = False
+    try:
+        user = client.current_user()
+    except MetabaseAPIError as exc:
+        _fail(f"Metabase: {exc}")
+    who = user.get("common_name") or user.get("email") or user.get("id") or "?"
+    admin = " (admin)" if user.get("is_superuser") else ""
+    console.print(f"ok    API key authenticates as {who}{admin}")
+
+    try:
+        cards = [card for card in client.list_cards() if isinstance(card, dict)]
+    except MetabaseAPIError as exc:
+        _fail(f"Metabase: could not list cards: {exc}")
+    writable = [card for card in cards if card.get("can_write") is True]
+    refused = [card for card in cards if card.get("can_write") is False]
+    unknown = len(cards) - len(writable) - len(refused)
+    if writable:
+        console.print(f"ok    {len(writable)}/{len(cards)} cards report can_write")
+    if refused:
+        console.print(
+            f"warn  {len(refused)} card(s) are read-only for this key "
+            "-- mend records those as skipped rather than failing the run"
+        )
+    if unknown:
+        console.print(
+            f"skip  {unknown} card(s) do not report can_write -- this Metabase version does "
+            "not say, so mend finds out per card at apply time"
+        )
+    if not writable and not unknown:
+        failed = True
+        console.print("fail  no card is writable with this key -- mend --apply would write nothing")
+
+    probe = next(
+        (card["id"] for card in [*writable, *cards] if isinstance(card.get("id"), int)), None
+    )
+    if probe is None:
+        console.print("skip  no card to probe revision history with")
+    elif client.card_revisions(probe):
+        console.print("ok    revision history readable -- a failed write reverts through it")
+    else:
+        console.print(
+            "warn  revision history not readable -- a failed write reverts by restoring the "
+            "query captured in the plan instead"
+        )
+
+    auto = ", ".join(cfg.mend.auto) or "<empty: every action downgrades to notify>"
+    notify_only = ", ".join(cfg.mend.notify_only_collections) or "<none>"
+    console.print(f"info  mend.auto: {auto}")
+    console.print(f"info  mend.notify_only_collections: {notify_only}")
+    if not cfg.mend.slack_webhook:
+        console.print(
+            "info  mend.slack_webhook not set -- the notice and summary print locally only"
+        )
+    elif cfg.mend.missing_env:
+        failed = True
+        names = ", ".join(dict.fromkeys(cfg.mend.missing_env))
+        console.print(f"fail  mend.slack_webhook references {names}, which is not set")
+    else:
+        console.print("ok    mend.slack_webhook configured")
+
+    if failed:
+        raise typer.Exit(code=1)
 
 
 def _print_dead(graph: Graph, json_output: bool) -> None:
