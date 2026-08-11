@@ -1067,3 +1067,70 @@ def test_on_progress_fires_per_model_with_fixed_total():
     assert dones[-1] == model_count, "progress must reach total"
     # the callback is observational only: the resolution is unchanged
     assert with_progress == resolve_dbt(manifest, catalog)
+
+
+# --- why a data type is unknown (#122) ---------------------------------------
+
+
+def _unknown_reason(resolution, uid, column):
+    node = next(n for n in resolution.nodes if n.node_id == f"{uid}::{column}")
+    return node.properties.get("unknown_type_reason")
+
+
+def test_column_of_an_uncatalogued_relation_says_the_relation_is_missing():
+    """A dev target that never built the model -- not a broken tool."""
+    manifest = {
+        "nodes": {
+            "model.demo.only_in_manifest": {
+                "resource_type": "model",
+                "name": "only_in_manifest",
+                "package_name": "demo",
+                "database": "DB",
+                "schema": "MARTS",
+                "alias": "only_in_manifest",
+                "columns": {"id": {"name": "id"}},
+                "depends_on": {"nodes": []},
+            }
+        },
+        "sources": {},
+    }
+    resolution = resolve_dbt(manifest, {"nodes": {}, "sources": {}})
+    assert (
+        _unknown_reason(resolution, "model.demo.only_in_manifest", "id")
+        == "relation_not_in_catalog"
+    )
+
+
+def test_column_missing_from_a_built_relation_says_so_instead():
+    """The model IS built; this column is in the SQL but not deployed yet."""
+    manifest = {
+        "nodes": {
+            "model.demo.built": {
+                "resource_type": "model",
+                "name": "built",
+                "package_name": "demo",
+                "database": "DB",
+                "schema": "MARTS",
+                "alias": "built",
+                "columns": {"id": {"name": "id"}, "brand_new": {"name": "brand_new"}},
+                # the column exists in the SQL, which is what makes it undeployed
+                # rather than lost -- the catalog simply has not caught up
+                "compiled_code": "select 1 as id, 2 as brand_new",
+                "depends_on": {"nodes": []},
+            }
+        },
+        "sources": {},
+    }
+    catalog = {
+        "nodes": {
+            "model.demo.built": {
+                "metadata": {"schema": "MARTS", "name": "built"},
+                "columns": {"id": {"name": "id", "type": "NUMBER"}},
+            }
+        },
+        "sources": {},
+    }
+    resolution = resolve_dbt(manifest, catalog)
+    assert _unknown_reason(resolution, "model.demo.built", "brand_new") == "column_not_in_catalog"
+    # a column the catalog typed makes no claim at all
+    assert _unknown_reason(resolution, "model.demo.built", "id") is None

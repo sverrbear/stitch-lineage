@@ -243,3 +243,36 @@ export function modelDetail(index: GraphIndex, nodeId: string): ModelDetail | nu
     relationships: relationshipsTouching(index, columnIds),
   }
 }
+
+// ---------------------------------------------------------------------------
+// Why a column has no data type
+
+export interface DataTypeLabel {
+  text: string
+  /** The explanation, when "unknown" needs one. */
+  hint: string | null
+}
+
+const UNKNOWN_REASON: Record<string, { suffix: string; hint: string }> = {
+  relation_not_in_catalog: {
+    suffix: 'not in catalog',
+    hint: 'This build’s dbt catalog has no entry for the model at all — usually a dev target that never built it. Run `dbt docs generate` against a target that has it.',
+  },
+  column_not_in_catalog: {
+    suffix: 'not in catalog yet',
+    hint: 'The model is in the catalog but this column is not: it exists in the SQL and has not been deployed yet. It is undeployed, not lost — which is what lets a pre-deploy graph diff see it.',
+  },
+}
+
+/**
+ * The `data type` fact. A bare "unknown" reads as a broken tool, so when the
+ * graph knows WHY the type is missing it says so on the line (#122). A type the
+ * catalog gave is returned unchanged.
+ */
+export function dataTypeLabel(node: GraphNode): DataTypeLabel {
+  if (node.data_type) return { text: node.data_type, hint: null }
+  const reason = node.properties?.unknown_type_reason
+  const known = typeof reason === 'string' ? UNKNOWN_REASON[reason] : undefined
+  if (!known) return { text: 'unknown', hint: null }
+  return { text: `unknown — ${known.suffix}`, hint: known.hint }
+}
