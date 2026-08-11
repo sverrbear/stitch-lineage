@@ -227,16 +227,32 @@ export interface HomeExample {
  * what the reader came to type.
  */
 export function homeExamples(index: GraphIndex, limit = 3): HomeExample[] {
-  const columnFanout = new Map<string, number>()
+  // A column binds to ONE Metabase field, so counting its edges ranks nothing —
+  // every column ties at 1. What separates them is what the field feeds, so the
+  // score is the cards a column reaches, which is also the consequence of
+  // changing it (principle 01).
+  const cardsPerField = new Map<string, number>()
   const dashboardCards = new Map<string, number>()
   for (const edge of index.graph.edges) {
     const from = index.nodesById.get(edge.from)
     const to = index.nodesById.get(edge.to)
     if (!from || !to) continue
-    if (from.node_type === 'column' && (to.node_type === 'mb_field' || to.node_type === 'mb_card')) {
-      columnFanout.set(edge.from, (columnFanout.get(edge.from) ?? 0) + 1)
+    if (from.node_type === 'mb_field' && to.node_type === 'mb_card') {
+      cardsPerField.set(edge.from, (cardsPerField.get(edge.from) ?? 0) + 1)
     } else if (from.node_type === 'mb_card' && to.node_type === 'mb_dashboard') {
       dashboardCards.set(edge.to, (dashboardCards.get(edge.to) ?? 0) + 1)
+    }
+  }
+
+  const columnCards = new Map<string, number>()
+  for (const edge of index.graph.edges) {
+    const from = index.nodesById.get(edge.from)
+    const to = index.nodesById.get(edge.to)
+    if (!from || !to || from.node_type !== 'column') continue
+    if (to.node_type === 'mb_field') {
+      columnCards.set(edge.from, (columnCards.get(edge.from) ?? 0) + (cardsPerField.get(edge.to) ?? 0))
+    } else if (to.node_type === 'mb_card') {
+      columnCards.set(edge.from, (columnCards.get(edge.from) ?? 0) + 1)
     }
   }
 
@@ -250,7 +266,7 @@ export function homeExamples(index: GraphIndex, limit = 3): HomeExample[] {
       .slice(0, take)
 
   const columnSlots = Math.max(1, limit - 1)
-  const picked = [...busiest(columnFanout, columnSlots), ...busiest(dashboardCards, limit)]
+  const picked = [...busiest(columnCards, columnSlots), ...busiest(dashboardCards, limit)]
   // A graph with no BI edges yet still deserves somewhere to start.
   if (picked.length < limit) {
     for (const node of index.nodes) {

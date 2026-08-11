@@ -52,7 +52,7 @@
   --edge-strong: #c7c7cc;
   --field: rgba(255, 255, 255, 0.07);
   --field-border: rgba(255, 255, 255, 0.09);
-  --scrim: rgba(0, 0, 0, 0.6);
+  --scrim: rgba(0, 0, 0, 0.74);
   --shadow: 0 20px 44px rgba(0, 0, 0, 0.5);
 }
 
@@ -1296,6 +1296,11 @@ kbd {
 .graph-toolbar-impact {
   font-family: var(--mono);
   color: var(--text-2);
+}
+
+/* a floor rather than a count: the same amber every other admitted gap wears */
+.graph-toolbar-impact.partial {
+  color: var(--amber);
 }
 
 .graph-toolbar-hint {

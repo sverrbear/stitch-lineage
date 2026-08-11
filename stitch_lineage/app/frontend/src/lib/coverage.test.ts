@@ -121,6 +121,13 @@ describe('homeExamples', () => {
     ])
   })
 
+  it('ranks a column by the cards it reaches, not by its one binds_to edge', () => {
+    // net_revenue binds to a field two cards read; user_id binds to a field with
+    // none. Counting edges would tie them at 1 and order them alphabetically.
+    const [first] = homeExamples(index, 2)
+    expect(first.label).toBe('fct_revenue.net_revenue')
+  })
+
   it('still finds somewhere to start when nothing reaches Metabase', () => {
     const bare = buildIndex({ ...fixtureGraph(), edges: [] })
     const examples = homeExamples(bare)

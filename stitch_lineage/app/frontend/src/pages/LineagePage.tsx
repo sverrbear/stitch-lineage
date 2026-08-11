@@ -170,10 +170,22 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
             {root.node_type !== 'column' && rootContext ? ` · ${rootContext}` : ''}
           </span>
         </span>
-        {/* the answer, before the graph that supports it */}
-        <span className="graph-toolbar-impact">
-          {impact.cards.toLocaleString()} card{impact.cards === 1 ? '' : 's'} ·{' '}
-          {impact.dashboards.toLocaleString()} dashboard{impact.dashboards === 1 ? '' : 's'}
+        {/* The answer, before the graph that supports it — but a truncated walk
+            stops before it has seen everything, and "0 dashboards" off a capped
+            BFS is a confidently wrong answer. Past the cap the counts are floors
+            and say so, in the colour this app uses for "may be incomplete". */}
+        <span
+          className={`graph-toolbar-impact${truncated ? ' partial' : ''}`}
+          title={
+            truncated
+              ? 'This walk hit its node cap, so these are lower bounds — the real counts are higher.'
+              : undefined
+          }
+        >
+          {impact.cards.toLocaleString()}
+          {truncated ? '+' : ''} card{impact.cards === 1 && !truncated ? '' : 's'} ·{' '}
+          {impact.dashboards.toLocaleString()}
+          {truncated ? '+' : ''} dashboard{impact.dashboards === 1 && !truncated ? '' : 's'}
         </span>
         <div className="grain-toggle" role="group" aria-label="Lineage grain">
           {(['column', 'table'] as const).map((option) => (
