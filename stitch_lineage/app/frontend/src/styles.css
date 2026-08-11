@@ -2306,6 +2306,54 @@ kbd {
   font-size: 12px;
 }
 
+/* ---- work in progress (#160) ----
+
+   A turning ring, sized to the text it sits beside so it works inside a button and
+   in a status line alike. It is decoration: the words next to it are what report the
+   state, which is why it carries no text and no aria role of its own. */
+
+.spinner {
+  display: inline-block;
+  flex: none;
+  width: 0.85em;
+  height: 0.85em;
+  border: 2px solid color-mix(in srgb, currentcolor 25%, transparent);
+  border-top-color: currentcolor;
+  border-radius: 50%;
+  animation: spinner-turn 0.7s linear infinite;
+}
+
+@keyframes spinner-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Stopped, not hidden: a ring still reads as "held", and the label beside it says
+   what for — the same trade .erd-reset.stale makes for its pulse. */
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}
+
+/* A button whose label is a spinner plus words. Scoped to the working state rather
+   than applied to every .button, which is inline-block everywhere else on purpose. */
+.button.is-working {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+/* what is running, in the reader's words, with the ring beside it */
+.apply-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 0;
+  font-size: 12.5px;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;

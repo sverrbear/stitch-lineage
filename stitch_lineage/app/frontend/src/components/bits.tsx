@@ -15,6 +15,17 @@ import {
 import { nodeHref } from '../router'
 import { SystemBadge, MetabaseMark, SnowflakeMark } from './badges'
 
+/**
+ * Work is happening (#160). Decoration only: it carries no text, so every use must
+ * put the words next to it — a spinner alone says "wait" without saying what for.
+ *
+ * Under prefers-reduced-motion it stops turning and stays a ring, because the label
+ * beside it is what actually reports the state (same trade the .erd-reset pulse makes).
+ */
+export function Spinner({ label }: { label?: string }) {
+  return <span className="spinner" role="presentation" aria-hidden="true" title={label} />
+}
+
 export function ConfidenceTag({ confidence }: { confidence: Confidence }) {
   return (
     <span className={`conf-tag conf-${confidence}`} title={CONFIDENCE_HELP[confidence]}>
