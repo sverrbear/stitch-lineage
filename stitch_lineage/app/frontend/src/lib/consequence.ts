@@ -15,9 +15,9 @@
 //   * the counts are EXACT. A capped walk would have to say "299+ cards" and mark
 //     it amber (the #114 convention for a truncated count stated as fact); there is
 //     no cap here, so there is nothing to qualify.
-//   * the cost is one linear pass, not one per hit per keystroke. On the reference
-//     Smitten graph (6,305 nodes / 10,698 edges) that is a few milliseconds at
-//     load, and every keystroke afterwards is a map lookup.
+//   * the cost is one linear pass, not one per hit per keystroke. Measured on the
+//     reference graph (6,249 nodes / 10,599 edges): 30ms once at load, after which
+//     every keystroke is a map lookup per visible row.
 //
 // A bitset is what makes the exactness affordable: distinct counts need set union,
 // and ~950 cards + ~60 dashboards fit in 32 words per node — under a megabyte for
