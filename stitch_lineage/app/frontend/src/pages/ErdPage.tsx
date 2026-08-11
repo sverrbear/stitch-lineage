@@ -1,9 +1,9 @@
 // Read-only ERD (spec §9): models as table nodes with expandable column
-// lists, relates_to edges between column handles (solid; ✓ badge when
-// validated) that carry no caption of their own — hovering or clicking one
-// lights the two column rows it joins, in their cards (#118). A scope selector
-// (schema / dbt tag) keeps it from ever rendering a 200-node hairball — one
-// scope at a time.
+// lists, relates_to edges between column handles (solid, heavier when validated)
+// that carry no caption and no glyph of their own — hovering or clicking one
+// lights the two column rows it joins, in their cards (#118/#164). A scope
+// selector (schema / dbt tag) keeps it from ever rendering a 200-node
+// hairball — one scope at a time.
 
 import {
   applyNodeChanges,
@@ -772,9 +772,9 @@ export function ErdPage({
       target: rel.toModelId,
       targetHandle: rel.toColumn,
       type: EDGE_TYPE,
-      className: `erd-edge${state(`rel-${i}`)}`,
+      // validated-ness is the stroke's job now, not a glyph's (#164)
+      className: `erd-edge${rel.validated ? ' validated' : ''}${state(`rel-${i}`)}`,
       data: {
-        validated: rel.validated,
         columns: [
           erdColumnNodeId(rel.fromModelId, rel.fromColumn),
           erdColumnNodeId(rel.toModelId, rel.toColumn),

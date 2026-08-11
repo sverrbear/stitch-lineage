@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   pathHitsRects,
   polylineLength,
-  polylineMidpoint,
   roundedPath,
   routeEdge,
   segmentHitsBox,
@@ -356,14 +355,6 @@ describe('roundedPath', () => {
 describe('polyline helpers', () => {
   it('measures length along the corners', () => {
     expect(polylineLength([{ x: 0, y: 0 }, { x: 30, y: 0 }, { x: 30, y: 40 }])).toBe(70)
-  })
-
-  it('finds the half-way point for a label', () => {
-    expect(polylineMidpoint([{ x: 0, y: 0 }, { x: 100, y: 0 }])).toEqual({ x: 50, y: 0 })
-    expect(polylineMidpoint([{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 40 }])).toEqual({
-      x: 40,
-      y: 0,
-    })
   })
 
   it('drops duplicate and collinear points', () => {
