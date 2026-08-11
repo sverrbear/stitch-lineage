@@ -669,6 +669,17 @@ kbd {
   max-width: 40%;
 }
 
+/* Archived is a caveat on the answer, so it wears the same amber as every other
+   "this may not be what you think it is" (#122). */
+.search-hit-archived {
+  font-size: 11px;
+  color: var(--amber);
+  background: var(--amber-soft);
+  border-radius: 4px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+
 /* ---- palette ---- */
 
 .palette-backdrop {
