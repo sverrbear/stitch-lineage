@@ -824,6 +824,17 @@ kbd {
   max-width: 40%;
 }
 
+/* What depends on the hit (#115). A count, so it is mono and tabular like every
+   other count in the app, and a tier stronger than the context beside it: this is
+   what the choice gets made on, not a locator. Deliberately not coloured — colour
+   is the selection and risk, and consequence is neither. */
+.search-hit-consequence {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
 /* Archived is a caveat on the answer, so it wears the same amber as every other
    "this may not be what you think it is" (#122). */
 .search-hit-archived {
