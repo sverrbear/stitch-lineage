@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildIndex } from './graph'
 import { fixtureGraph } from './fixture'
-import { layoutLineage, lineageFor } from './lineage'
+import { FAN_PX, edgeFans, layoutLineage, lineageFor } from './lineage'
 
 const index = buildIndex(fixtureGraph())
 
@@ -119,5 +119,79 @@ describe('layoutLineage wrapping', () => {
   it('leaves a layer that fits in one column exactly where it was', () => {
     const positions = layoutLineage(wide, { columnWidth: 100, rowHeight: 10, maxRows: 50 })
     expect([...new Set([...positions.values()].map((p) => p.x))]).toEqual([0, 100])
+  })
+})
+
+// --- keeping converging edges apart (#176) -----------------------------------
+
+const fanEdge = (source: string, target: string) => ({ source, target })
+
+describe('edgeFans', () => {
+  it('leaves an edge with no company exactly where it attaches', () => {
+    // the common case must not move: a lone edge keeps the handle's own point
+    expect(edgeFans([fanEdge('a', 'b')]).size).toBe(0)
+  })
+
+  it('spreads two edges arriving at one card, centred on the handle', () => {
+    // the reported defect: two relationships into one column row drawn as one line
+    const fans = edgeFans([fanEdge('a', 'z'), fanEdge('b', 'z')])
+    expect(fans.get(0)?.target).toBe(-FAN_PX / 2)
+    expect(fans.get(1)?.target).toBe(FAN_PX / 2)
+    // and their sources are untouched, being on different cards
+    expect(fans.get(0)?.source).toBe(0)
+    expect(fans.get(1)?.source).toBe(0)
+  })
+
+  it('spreads a fan LEAVING one card the same way', () => {
+    const fans = edgeFans([fanEdge('h', 'x'), fanEdge('h', 'y'), fanEdge('h', 'z')])
+    expect([fans.get(0)?.source, fans.get(1)?.source, fans.get(2)?.source]).toEqual([
+      -FAN_PX,
+      0,
+      FAN_PX,
+    ])
+  })
+
+  it('fans both ends of an edge that is crowded at both', () => {
+    const fans = edgeFans([fanEdge('h', 'z'), fanEdge('h', 'y'), fanEdge('b', 'z')])
+    const first = fans.get(0)
+    expect(first?.source).toBe(-FAN_PX / 2)
+    expect(first?.target).toBe(-FAN_PX / 2)
+  })
+
+  it('keeps the spread symmetric, so the bundle stays centred on the row', () => {
+    for (const count of [2, 3, 4, 5]) {
+      const fans = edgeFans(Array.from({ length: count }, (_, i) => fanEdge('h', `t${i}`)))
+      const offsets = Array.from({ length: count }, (_, i) => fans.get(i)?.source ?? 0)
+      expect(offsets.reduce((a, b) => a + b, 0)).toBeCloseTo(0)
+      expect(Math.max(...offsets)).toBeCloseTo(-Math.min(...offsets))
+    }
+  })
+
+  it('does not fan a hub with hundreds of edges into a smear', () => {
+    // 295 edges leave one handle in the real graph; spreading them would be wider
+    // than the cards they join, and that view needs a layout fix, not a nudge
+    const many = Array.from({ length: 295 }, (_, i) => fanEdge('hub', `card${i}`))
+    const fans = edgeFans(many)
+    expect(fans.get(0)?.source ?? 0).toBe(0)
+    expect(fans.get(294)?.source ?? 0).toBe(0)
+  })
+
+  it('separates every pair it fans by at least a stroke width', () => {
+    const fans = edgeFans([fanEdge('a', 'z'), fanEdge('b', 'z'), fanEdge('c', 'z')])
+    const ys = [0, 1, 2].map((i) => fans.get(i)?.target ?? 0).sort((a, b) => a - b)
+    for (let i = 1; i < ys.length; i++) expect(ys[i] - ys[i - 1]).toBeGreaterThanOrEqual(4)
+  })
+
+  it('is deterministic for the same edge list', () => {
+    const edges = [fanEdge('a', 'z'), fanEdge('b', 'z'), fanEdge('a', 'y')]
+    expect([...edgeFans(edges).entries()]).toEqual([...edgeFans(edges).entries()])
+  })
+
+  it('treats different handles on one card as different attachment points', () => {
+    const fans = edgeFans([
+      { source: 'a', target: 'z', targetHandle: 'left' },
+      { source: 'b', target: 'z', targetHandle: 'other' },
+    ])
+    expect(fans.size).toBe(0)
   })
 })
