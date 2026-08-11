@@ -1,9 +1,20 @@
 import { useStitch } from '../data'
+import { buildStamp } from '../lib/coverage'
+import { useRoute } from '../router'
 import { useTheme } from '../theme'
+
+/** Which nav entry owns the page you are on — the detail routes belong to Home. */
+function currentNav(page: string): 'home' | 'erd' {
+  return page === 'erd' ? 'erd' : 'home'
+}
 
 export function Header({ onOpenPalette }: { onOpenPalette: () => void }) {
   const { meta, origin } = useStitch()
   const [theme, toggleTheme] = useTheme()
+  const route = useRoute()
+  const current = currentNav(route.page)
+  // A stale graph is a wrong answer, so the build is on every page (principle 05).
+  const built = buildStamp(meta.generated_at, new Date())
 
   return (
     <header className="app-header">
@@ -13,26 +24,44 @@ export function Header({ onOpenPalette }: { onOpenPalette: () => void }) {
       <a className="app-brand" href="#/">
         stitch
       </a>
-      {/* the ERD is the canvas — the global pipeline map is gone (#83) */}
+      {/* Existing routes only — the nav never offers a page that isn't there. */}
       <nav className="app-nav">
-        <a href="#/">Home</a>
-        <a href="#/erd">ERD</a>
+        <a className={current === 'home' ? 'current' : undefined} href="#/">
+          Home
+        </a>
+        <a className={current === 'erd' ? 'current' : undefined} href="#/erd">
+          ERD
+        </a>
       </nav>
       <div className="app-header-right">
-        <button type="button" className="ghost-button" onClick={onOpenPalette} title="Search (Cmd/Ctrl+K)">
+        <button
+          type="button"
+          className="header-action"
+          onClick={onOpenPalette}
+          title="Search (Cmd/Ctrl+K)"
+        >
           ⌘K
         </button>
         <button
           type="button"
-          className="ghost-button"
+          className="header-action"
           onClick={toggleTheme}
           title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
         >
           {theme === 'dark' ? '☀' : '☾'}
         </button>
-        <span className="app-meta" title={`data source: ${origin}`}>
-          {meta.generated_at ? `graph @ ${meta.generated_at.slice(0, 16).replace('T', ' ')}` : ''}
-        </span>
+        {built && (
+          <span
+            className={`app-meta${built.stale ? ' stale' : ''}`}
+            title={
+              built.stale
+                ? `${meta.generated_at} · data source: ${origin} — run \`stitch build\` to refresh`
+                : `${meta.generated_at} · data source: ${origin}`
+            }
+          >
+            {built.text}
+          </span>
+        )}
       </div>
     </header>
   )

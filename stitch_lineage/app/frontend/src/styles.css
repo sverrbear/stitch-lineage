@@ -1,37 +1,71 @@
 /* Hand-rolled styles on CSS variables. Light + dark via [data-theme] on <html>
-   (set pre-paint in index.html, toggled in src/theme.ts). */
+   (set pre-paint in index.html, toggled in src/theme.ts).
+
+   The palette is the approved design language (#108): three text tiers on a flat
+   canvas, hairline rules instead of borders, ONE accent for the current selection
+   and the way forward, and amber for risk — untraced, suggested, stale, staged.
+   Nothing else gets colour, so colour always means something. The dark values are
+   the 7a/8a mocks verbatim; light derives from the principles doc's paper/ink/
+   indigo/amber palette. */
 
 :root,
 :root[data-theme='light'] {
-  --bg: #f7f8fa;
+  --bg: #fbfbfa;
   --bg-elev: #ffffff;
-  --bg-hover: #eef1f5;
-  --text: #1c2530;
-  --text-muted: #66707d;
-  --border: #d9dee5;
-  --accent: #4459c8;
+  --bg-hover: #f2f2f0;
+  --text: #14161a;
+  /* the middle tier: a label next to a number, a name that is not the subject */
+  --text-2: #4a4e56;
+  --text-muted: #6b6f76;
+  --border: #ececed;
+  /* a hairline that has to survive over --bg-elev rather than over paper */
+  --border-strong: #dcdcde;
+  --accent: #3730c4;
+  --accent-soft: rgba(55, 48, 196, 0.1);
+  --amber: #8a3d12;
+  --amber-soft: #fbeadb;
   --snowflake: #29b5e8;
   --metabase: #509ee3;
-  --edge: #9aa4b1;
-  --edge-strong: #4c5a6b;
-  --edge-weak: #b8845c;
-  --ok: #2e9e63;
-  --shadow: 0 8px 30px rgba(20, 30, 50, 0.12);
+  --edge: #c8c8ca;
+  --edge-strong: #4a4e56;
+  /* the search field: the one surface allowed a shadow, and only when focused */
+  --field: #ffffff;
+  --field-border: #dcdcde;
+  --scrim: rgba(20, 22, 26, 0.34);
+  --shadow: 0 10px 30px rgba(20, 22, 26, 0.1);
 }
 
 :root[data-theme='dark'] {
-  --bg: #12161c;
-  --bg-elev: #1a2027;
-  --bg-hover: #232b35;
-  --text: #e3e8ee;
-  --text-muted: #8b96a3;
-  --border: #303a46;
-  --accent: #7d8ff0;
-  --edge: #5d6976;
-  --edge-strong: #a4b3c2;
-  --edge-weak: #c08a55;
-  --ok: #46c98a;
-  --shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  --bg: #0c0c0e;
+  --bg-elev: #16161a;
+  --bg-hover: #1b1b20;
+  --text: #f5f5f7;
+  --text-2: #c7c7cc;
+  --text-muted: #8e8e93;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --accent: #0a84ff;
+  --accent-soft: rgba(10, 132, 255, 0.16);
+  --amber: #ff9f0a;
+  --amber-soft: rgba(255, 159, 10, 0.14);
+  --edge: rgba(255, 255, 255, 0.2);
+  --edge-strong: #c7c7cc;
+  --field: rgba(255, 255, 255, 0.07);
+  --field-border: rgba(255, 255, 255, 0.09);
+  --scrim: rgba(0, 0, 0, 0.74);
+  --shadow: 0 20px 44px rgba(0, 0, 0, 0.5);
+}
+
+/* Legacy token names, kept so every existing rule speaks the new language without
+   a rename sweep: what used to be "ok green" is the accent (a validated join is
+   the way forward), and what used to be "weak edge brown" is the amber (a guess
+   is a risk). */
+:root {
+  --ok: var(--accent);
+  --edge-weak: var(--amber);
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  --radius: 12px;
+  --radius-sm: 6px;
 }
 
 * {
@@ -47,16 +81,21 @@ body {
 body {
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
-    sans-serif;
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Helvetica Neue', 'Segoe UI', Roboto,
+    Helvetica, Arial, sans-serif;
+  /* every count in this app sits in a column of other counts */
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.005em;
 }
 
+/* An identifier is evidence someone will paste into a PR: mono, selectable, and
+   never dressed up as a chip. */
 code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--mono);
   font-size: 0.92em;
-  background: var(--bg-hover);
-  padding: 0 4px;
-  border-radius: 4px;
+  color: var(--text-2);
+  background: none;
+  padding: 0;
 }
 
 a {
@@ -69,16 +108,22 @@ a:hover {
 }
 
 kbd {
-  border: 1px solid var(--border);
-  border-bottom-width: 2px;
+  font-family: var(--mono);
   border-radius: 4px;
-  padding: 0 5px;
+  padding: 0 4px;
   font-size: 12px;
-  background: var(--bg-elev);
+  color: var(--text-muted);
+  background: var(--bg-hover);
 }
 
 .muted {
   color: var(--text-muted);
+}
+
+/* the identifier tier: model, column, card and dashboard names as the warehouse
+   and Metabase spell them (principles 02 + 05) */
+.mono {
+  font-family: var(--mono);
 }
 
 /* Fixed-viewport app shell: a DEFINITE height all the way down is what lets
@@ -104,10 +149,12 @@ kbd {
 .app-header {
   display: flex;
   align-items: center;
-  gap: 20px;
-  padding: 10px 20px;
+  gap: 30px;
+  padding: 0 28px;
+  height: 56px;
+  flex: none;
   border-bottom: 1px solid var(--border);
-  background: var(--bg-elev);
+  background: var(--bg);
   position: sticky;
   top: 0;
   z-index: 20;
@@ -117,8 +164,9 @@ kbd {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-weight: 700;
-  font-size: 16px;
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: -0.01em;
   color: var(--text);
 }
 
@@ -128,12 +176,14 @@ kbd {
 
 .app-nav {
   display: flex;
-  gap: 14px;
+  gap: 24px;
+  font-size: 13.5px;
+  letter-spacing: -0.01em;
 }
 
 .app-nav a {
   color: var(--text-muted);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .app-nav a:hover {
@@ -141,46 +191,79 @@ kbd {
   text-decoration: none;
 }
 
+/* where you are, in the one colour that means something */
+.app-nav a.current {
+  color: var(--text);
+}
+
 .app-header-right {
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 18px;
+  font-size: 12.5px;
 }
 
+/* "Built today, 16:07" — a stale graph is a wrong answer, so the build is on
+   every page and says so in amber once it is old (principle 05) */
 .app-meta {
   color: var(--text-muted);
+  font-family: var(--mono);
   font-size: 12px;
+  white-space: nowrap;
+}
+
+.app-meta.stale {
+  color: var(--amber);
+}
+
+/* The header's own affordances carry no chrome at all — in 7a the top bar is a
+   line of text and the hairline under it. Elsewhere a button still looks like one. */
+.header-action {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.header-action:hover {
+  color: var(--text);
 }
 
 .ghost-button {
   background: none;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
   color: var(--text-muted);
   padding: 3px 9px;
   cursor: pointer;
-  font-size: 13px;
+  font: inherit;
+  font-size: 12.5px;
 }
 
 .ghost-button:hover {
-  background: var(--bg-hover);
-  color: var(--text);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
+/* a button that is not the header's: it has an edge, because it does something */
 .button {
   display: inline-block;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
   padding: 5px 12px;
-  background: var(--bg-elev);
+  background: none;
   color: var(--text);
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
 }
 
 .button:hover {
-  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--accent);
   text-decoration: none;
 }
 
@@ -197,202 +280,217 @@ kbd {
   text-align: center;
 }
 
+/* a fixture graph is not the warehouse: the same amber every other "this answer
+   may be wrong" wears */
 .dev-banner {
   position: fixed;
   bottom: 12px;
   right: 12px;
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 10px;
+  background: var(--amber-soft);
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 5px 11px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--amber);
   z-index: 30;
 }
 
-/* ---- home ---- */
+/* ---- home (7a) ----
+
+   One column, 620px, vertically centred: the question, the field that answers it,
+   three real identifiers to start from, the two canvases, and what this build does
+   NOT know. Nothing else — a lineage tool is opened in the middle of a problem, so
+   the home page is a way in, not a dashboard. */
 
 .home {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 34px;
-  padding: 6vh 20px 60px;
+  justify-content: center;
+  padding: 40px 20px 80px;
+}
+
+.home-column {
+  width: min(620px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 72px;
 }
 
 .home-hero {
-  width: min(680px, 100%);
-  text-align: center;
-}
-
-.home-section {
-  width: min(1000px, 100%);
-}
-
-.home-section-title {
-  font-size: 13px;
-  font-weight: 650;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  color: var(--text-muted);
-  margin: 0 0 12px;
-}
-
-/* ---- coverage tiles ---- */
-
-.tile-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 12px;
-}
-
-.tile {
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 14px 16px;
-}
-
-.tile-value {
-  font-size: 26px;
-  font-weight: 650;
-  letter-spacing: -0.5px;
-}
-
-.tile-total {
-  font-size: 15px;
-  font-weight: 400;
-  color: var(--text-muted);
-}
-
-.tile-label {
-  color: var(--text-muted);
-  font-size: 12px;
-  margin-top: 2px;
-}
-
-.tile-bar {
-  height: 4px;
-  border-radius: 2px;
-  background: var(--bg-hover);
-  margin: 10px 0 8px;
-  overflow: hidden;
-}
-
-.tile-bar-fill {
-  height: 100%;
-  background: var(--accent);
-}
-
-.tile-link {
-  font-size: 12px;
-  display: inline-block;
-}
-
-/* ---- entry cards + starting points ---- */
-
-.entry-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 12px;
-}
-
-.entry-card {
-  display: block;
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 14px 16px;
-  color: inherit;
-  text-decoration: none;
-}
-
-.entry-card:hover {
-  border-color: var(--accent);
-  background: var(--bg-hover);
-}
-
-.entry-card-title {
-  display: block;
-  font-weight: 650;
-  margin-bottom: 4px;
-}
-
-.entry-card-text {
-  display: block;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.start-lists {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 12px 28px;
-  margin-top: 18px;
-}
-
-.start-items {
-  list-style: none;
-  margin: 0;
-  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-}
-
-.start-items li {
-  display: flex;
+  gap: 16px;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
-}
-
-.home-generated {
-  font-size: 12px;
-  margin-top: 4px;
-}
-
-.stale-hint {
-  color: var(--edge-weak);
-}
-
-.coverage-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.coverage-orphan {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
 }
 
 .home-title {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+/* the examples: real names out of this graph, fully qualified, in mono — they are
+   what the reader is about to type (principles 02 + 05) */
+.home-examples {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 14px;
-  font-size: 34px;
-  margin: 0 0 6px;
-  letter-spacing: -0.5px;
-}
-
-.home-subtitle {
-  color: var(--text-muted);
-  margin: 0 0 26px;
-}
-
-.home-stats {
-  margin-top: 22px;
-  color: var(--text-muted);
+  flex-wrap: wrap;
+  gap: 9px;
   font-size: 13px;
+  color: var(--text-muted);
+}
+
+.home-example-slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.home-example-sep {
+  color: var(--text-muted);
+}
+
+.home-example {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.home-example:hover {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+/* the two canvases, as rows rather than cards: a link is a link */
+.home-links {
+  display: flex;
+  flex-direction: column;
+}
+
+.home-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 4px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 15px;
+  letter-spacing: -0.01em;
+}
+
+.home-link:last-child {
+  border-bottom: 0;
+}
+
+.home-link:hover {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.home-link-chevron {
+  color: var(--text-muted);
+  font-size: 15px;
+}
+
+.home-link:hover .home-link-chevron {
+  color: var(--accent);
+}
+
+/* ---- coverage: what this build does not know, next to the way in ---- */
+
+.coverage-block {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.coverage-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 4px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.coverage-percent {
+  font-family: var(--mono);
+}
+
+.coverage-bar {
+  height: 4px;
+  background: var(--bg-hover);
+  border-radius: 100px;
+  overflow: hidden;
+}
+
+:root[data-theme='light'] .coverage-bar {
+  background: var(--border);
+}
+
+.coverage-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 100px;
+}
+
+.coverage-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Every row is the gap it measures AND the link to the fix: "2,551 / 3,293" is
+   only actionable next to the 742 it is missing (principle 03). */
+.coverage-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 11px 4px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.coverage-rows > .coverage-row:last-child {
+  border-bottom: 0;
+}
+
+.coverage-row-label {
+  color: var(--text-2);
+}
+
+.coverage-row:hover {
+  text-decoration: none;
+}
+
+.coverage-row:hover .coverage-row-label {
+  color: var(--accent);
+}
+
+.coverage-row-right {
+  margin-left: auto;
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+}
+
+.coverage-row-gap {
+  font-size: 12.5px;
+  color: var(--amber);
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+.coverage-row-value {
+  font-family: var(--mono);
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .home-hint {
@@ -404,7 +502,42 @@ kbd {
   text-align: left;
 }
 
-/* ---- search ---- */
+/* ---- the list behind a coverage row ---- */
+
+.coverage-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.coverage-list > li {
+  padding: 9px 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.coverage-list > li:last-child {
+  border-bottom: 0;
+}
+
+.coverage-orphan {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.coverage-orphan code {
+  font-size: 13px;
+  color: var(--text);
+}
+
+/* ---- search ----
+
+   Search IS the navigation (principle 04), so the field is the one control in
+   the app allowed to be large, and the only surface allowed a shadow — and only
+   while it is focused. What you type is an identifier, so the field is mono. */
 
 .search-panel {
   position: relative;
@@ -413,89 +546,110 @@ kbd {
 
 .search-input {
   width: 100%;
-  font-size: 16px;
-  padding: 12px 16px;
+  font-family: var(--mono);
+  font-size: 14px;
+  letter-spacing: -0.01em;
+  padding: 10px 14px;
   border-radius: 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   background: var(--bg-elev);
   color: var(--text);
   outline: none;
 }
 
+/* the 7a hero: 54px tall, the question answered directly beneath the title */
+.search-panel.hero .search-input {
+  height: 54px;
+  padding: 0 22px;
+  font-size: 15.5px;
+  border-radius: 14px;
+  background: var(--field);
+  border-color: var(--field-border);
+}
+
+.search-input::placeholder {
+  color: var(--text-muted);
+}
+
 .search-input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.search-panel.hero .search-input:focus {
+  box-shadow: var(--shadow);
+}
+
+.search-input::-webkit-search-cancel-button {
+  filter: grayscale(1);
+  opacity: 0.5;
 }
 
 .search-results {
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + 8px);
   left: 0;
   right: 0;
   max-height: 420px;
   overflow-y: auto;
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius);
   box-shadow: var(--shadow);
   z-index: 25;
   padding: 6px;
 }
 
 .search-empty {
-  padding: 10px 12px;
+  padding: 12px;
   margin: 0;
+  font-size: 13px;
 }
 
 .search-group-label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-size: 12px;
   color: var(--text-muted);
-  padding: 8px 10px 3px;
+  padding: 10px 10px 4px;
 }
 
 .search-hit {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   width: 100%;
   text-align: left;
-  padding: 7px 10px;
+  padding: 8px 10px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: none;
   color: var(--text);
   cursor: pointer;
   font: inherit;
 }
 
+/* the current selection, in the one colour that means something */
 .search-hit.active {
-  background: var(--bg-hover);
+  background: var(--accent-soft);
 }
 
+/* the hit is an identifier someone is about to paste somewhere */
 .search-hit-name {
-  font-weight: 550;
+  font-family: var(--mono);
+  font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .search-hit-type,
-.search-hit-field {
-  font-size: 11px;
+.search-hit-field,
+.search-hit-context {
+  font-size: 12px;
   color: var(--text-muted);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0 5px;
   white-space: nowrap;
 }
 
 .search-hit-context {
-  color: var(--text-muted);
-  font-size: 12px;
   margin-left: auto;
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 40%;
@@ -506,7 +660,7 @@ kbd {
 .palette-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(10, 14, 20, 0.45);
+  background: var(--scrim);
   z-index: 40;
   display: flex;
   justify-content: center;
@@ -518,6 +672,15 @@ kbd {
   width: min(640px, 92vw);
 }
 
+.palette .search-input {
+  height: 48px;
+  padding: 0 18px;
+  font-size: 15px;
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow);
+}
+
 .palette .search-results {
   position: static;
   margin-top: 8px;
@@ -525,9 +688,9 @@ kbd {
 }
 
 .palette-hint {
-  margin-top: 8px;
+  margin-top: 10px;
   text-align: center;
-  color: #cfd6df;
+  color: var(--text-muted);
   font-size: 12px;
 }
 
@@ -536,85 +699,118 @@ kbd {
 .detail-page {
   width: min(920px, 100%);
   margin: 0 auto;
-  padding: 24px 20px 60px;
+  padding: 34px 24px 80px;
 }
 
+/* A panel is a page, not a card: on a flat canvas the hairlines inside it do all
+   the dividing, so the box around it is one more edge that means nothing. */
 .panel {
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 22px 26px;
+  background: none;
+  border: 0;
+  padding: 0;
 }
 
 .panel-title {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: baseline;
+  gap: 11px;
+  flex-wrap: wrap;
 }
 
+/* The identifier IS the title: mono, fully qualified, selectable (principles
+   02 + 07). Its model reads as context, the column itself as the subject. */
 .panel-title h2 {
   margin: 0;
-  font-size: 22px;
+  font-family: var(--mono);
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  overflow-wrap: anywhere;
+}
+
+.panel-name-owner {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* the count leads and the label follows it (principle 01) */
+.panel-count {
+  font-family: var(--mono);
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.panel-title .panel-count + h2 {
+  font-family: inherit;
+  font-weight: 400;
+  color: var(--text-2);
 }
 
 .panel-type {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 1px 7px;
 }
 
 .archived-tag {
-  font-size: 12px;
-  color: #b8433f;
-  border: 1px solid currentColor;
-  border-radius: 4px;
-  padding: 1px 7px;
+  font-size: 12.5px;
+  color: var(--amber);
 }
 
 .panel-subtitle {
   color: var(--text-muted);
-  margin: 6px 0 0;
+  margin: 7px 0 0;
+  font-size: 13px;
 }
 
 .panel-description {
-  margin: 10px 0 0;
+  margin: 12px 0 0;
+  color: var(--text-2);
   white-space: pre-wrap;
+  max-width: 68ch;
 }
 
 .panel-placeholder {
   margin: 8px 0 0;
-  font-size: 12px;
+  font-size: 12.5px;
+}
+
+.panel-empty {
+  margin: 20px 0 0;
 }
 
 .panel-actions {
   display: flex;
   gap: 10px;
-  margin-top: 14px;
+  margin-top: 18px;
 }
 
 .panel-section {
-  margin-top: 26px;
+  margin-top: 34px;
   border-top: 1px solid var(--border);
-  padding-top: 14px;
+  padding-top: 18px;
 }
 
 .panel-section h3 {
-  margin: 0 0 10px;
-  font-size: 15px;
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text-muted);
+  letter-spacing: -0.005em;
 }
 
-/* Why a reverse view is empty (#25): a stated reason, never a silent "none". */
+/* Why a reverse view is empty (#25): a stated reason, never a silent "none".
+   An unknown is a risk, so it is the one thing on the page wearing amber. */
 .chain-gap {
-  margin: 0 0 10px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--edge-weak);
-  border-radius: 8px;
-  background: var(--bg-elev);
-  color: var(--text-muted);
+  margin: 0 0 12px;
+  padding: 11px 14px;
+  border: 0;
+  border-left: 2px solid var(--amber);
+  border-radius: 0;
+  background: var(--amber-soft);
+  color: var(--text-2);
   font-size: 13px;
+  max-width: 72ch;
 }
 
 .chain-gap code {
@@ -622,32 +818,41 @@ kbd {
 }
 
 .subhead {
-  margin: 12px 0 6px;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
+  margin: 16px 0 7px;
+  font-size: 12.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
   color: var(--text-muted);
 }
 
 .fact-list {
   display: grid;
-  grid-template-columns: 120px 1fr;
-  gap: 4px 14px;
-  margin: 16px 0 0;
+  grid-template-columns: 160px 1fr;
+  gap: 0 18px;
+  margin: 20px 0 0;
+  font-size: 13.5px;
 }
 
 .fact-list dt {
   color: var(--text-muted);
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
 }
 
 .fact-list dd {
   margin: 0;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
 }
 
+/* A list of nodes reads as rows, not as a wall of pills: rows have an order and
+   a scannable left edge, and the hairline between them is the only structure
+   they need (the language of 8a's relationship list). */
 .chip-list {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-direction: column;
 }
 
 /* The model page's mini star-schema (#81). Every measurement here is mirrored by
@@ -658,7 +863,7 @@ kbd {
   height: 300px;
   margin: 4px 0 8px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius);
   background: var(--bg);
   overflow: hidden;
 }
@@ -666,7 +871,7 @@ kbd {
 .star-node {
   width: 208px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--bg-elev);
   font-size: 12px;
   cursor: pointer;
@@ -674,18 +879,17 @@ kbd {
 
 .star-node.hub {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
   cursor: default;
 }
 
 .star-node-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   height: 40px;
-  padding: 0 10px;
-  background: var(--bg-hover);
-  border-radius: 7px 7px 0 0;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  border-radius: 11px 11px 0 0;
 }
 
 .star-node:not(.hub) .star-node-head:hover .star-node-name {
@@ -693,16 +897,22 @@ kbd {
 }
 
 .star-node-name {
-  font-weight: 650;
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: 12.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.star-node.hub .star-node-name {
+  font-weight: 600;
+}
+
 .star-node-kind {
   margin-left: auto;
   flex: none;
-  font-size: 10px;
+  font-size: 11.5px;
   color: var(--text-muted);
 }
 
@@ -718,7 +928,7 @@ kbd {
   align-items: center;
   height: 19px;
   padding: 0 14px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--mono);
   font-size: 11px;
 }
 
@@ -760,23 +970,27 @@ kbd {
 .group-rows {
   display: flex;
   flex-direction: column;
-  gap: 6px;
 }
 
 .group-panel {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-elev);
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: none;
+}
+
+.group-panel:last-child {
+  border-bottom: 0;
 }
 
 .group-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
+  gap: 9px;
+  padding: 10px 2px;
   cursor: pointer;
-  font-size: 13px;
-  font-weight: 650;
+  font-size: 13.5px;
+  font-weight: 400;
 }
 
 .group-head::-webkit-details-marker {
@@ -795,12 +1009,7 @@ kbd {
 }
 
 .group-head:hover {
-  background: var(--bg-hover);
-  border-radius: 7px;
-}
-
-.group-panel[open] > .group-head:hover {
-  border-radius: 7px 7px 0 0;
+  color: var(--accent);
 }
 
 .group-name {
@@ -811,26 +1020,27 @@ kbd {
 
 /* the dbt layer is a label, not a name: it reads as one */
 .dep-group-name {
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-2);
 }
 
 .group-hint {
-  font-size: 11px;
+  font-size: 12.5px;
   font-weight: 400;
   white-space: nowrap;
 }
 
 .group-count {
   margin-left: auto;
+  font-family: var(--mono);
   font-weight: 400;
-  font-size: 12px;
+  font-size: 12.5px;
   white-space: nowrap;
 }
 
 .group-link {
-  font-size: 11px;
+  font-size: 12.5px;
   font-weight: 400;
 }
 
@@ -846,24 +1056,27 @@ kbd {
 
 .dep-row {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 2px 0;
+  align-items: baseline;
+  gap: 9px;
+  padding: 4px 0;
   font-size: 13px;
 }
 
 .dep-row-name {
-  color: var(--text);
+  font-family: var(--mono);
+  color: var(--text-2);
   text-decoration: none;
 }
 
 .dep-row-name:hover {
-  text-decoration: underline;
+  color: var(--accent);
+  text-decoration: none;
 }
 
 .dep-row-hops {
   margin-left: auto;
-  font-size: 11px;
+  font-family: var(--mono);
+  font-size: 12px;
 }
 
 .bi-cards {
@@ -877,24 +1090,25 @@ kbd {
 
 .bi-card {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: baseline;
+  gap: 9px;
   font-size: 13px;
 }
 
 .bi-card-name {
-  color: var(--text);
+  color: var(--text-2);
   text-decoration: none;
 }
 
 .bi-card-name:hover {
-  text-decoration: underline;
+  color: var(--accent);
+  text-decoration: none;
 }
 
 .bi-card-link {
   margin-left: auto;
   color: var(--metabase);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
 }
 
@@ -905,23 +1119,24 @@ kbd {
 
 .node-chip {
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 3px 8px;
+  align-items: baseline;
+  gap: 9px;
   color: var(--text);
-  background: var(--bg);
   max-width: 100%;
 }
 
 .node-chip:hover {
-  background: var(--bg-hover);
   text-decoration: none;
 }
 
+.node-chip:hover .node-chip-name {
+  color: var(--accent);
+}
+
+/* the name of a thing in the warehouse or in Metabase, spelled its way */
 .node-chip-name {
-  font-weight: 500;
+  font-family: var(--mono);
+  font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -929,64 +1144,86 @@ kbd {
 
 .node-chip-type,
 .node-chip-context {
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--text-muted);
 }
 
+.node-chip-context {
+  margin-left: auto;
+  padding-left: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip-list > .node-chip {
+  display: flex;
+  padding: 9px 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.chip-list > .node-chip:last-child {
+  border-bottom: 0;
+}
+
+/* How the link was established. The normal case is silent; only a guess is
+   worth a colour, because a guess is a risk (principle 06). */
 .conf-tag {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  border-radius: 4px;
-  padding: 0 5px;
-  border: 1px solid var(--edge-weak);
-  color: var(--edge-weak);
+  font-size: 12px;
+  color: var(--amber);
+  white-space: nowrap;
 }
 
 .conf-tag.conf-exact,
-.conf-tag.conf-validated {
-  border-color: var(--ok);
-  color: var(--ok);
+.conf-tag.conf-validated,
+.conf-tag.conf-declared {
+  color: var(--text-muted);
 }
 
 .validated-badge {
-  color: var(--ok);
-  font-weight: 700;
+  color: var(--text-muted);
 }
 
 .tag-row {
   display: flex;
-  gap: 6px;
-  margin-top: 12px;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 16px;
 }
 
 .tag {
-  font-size: 11px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 1px 9px;
+  font-family: var(--mono);
+  font-size: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 100px;
+  padding: 1px 10px;
   color: var(--text-muted);
 }
 
 .rel-list {
   margin: 0;
-  padding-left: 4px;
+  padding: 0;
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
 }
 
 .rel-list li {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: baseline;
+  gap: 9px;
   flex-wrap: wrap;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.rel-list li:last-child {
+  border-bottom: 0;
 }
 
 .rel-own {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-family: var(--mono);
+  font-size: 13px;
 }
 
 .rel-arrow {
@@ -996,22 +1233,28 @@ kbd {
 .columns-table {
   width: 100%;
   border-collapse: collapse;
+  font-size: 13.5px;
 }
 
 .columns-table th {
   text-align: left;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
+  font-size: 12.5px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
   color: var(--text-muted);
-  padding: 4px 10px 6px 0;
+  padding: 0 14px 8px 0;
   border-bottom: 1px solid var(--border);
 }
 
 .columns-table td {
-  padding: 5px 10px 5px 0;
+  padding: 9px 14px 9px 0;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
+}
+
+.columns-table tr:last-child td {
+  border-bottom: 0;
 }
 
 /* ---- graph pages (lineage + ERD) ---- */
@@ -1027,22 +1270,42 @@ kbd {
 .graph-toolbar {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 10px 20px;
+  gap: 20px;
+  padding: 0 28px;
+  min-height: 52px;
   border-bottom: 1px solid var(--border);
-  background: var(--bg-elev);
+  background: var(--bg);
   flex-wrap: wrap;
+  font-size: 13px;
 }
 
 .graph-toolbar-title {
   display: inline-flex;
-  align-items: center;
-  gap: 7px;
+  align-items: baseline;
+  gap: 9px;
+}
+
+/* the subject of the page, spelled the way the warehouse spells it */
+.graph-toolbar-name {
+  font-family: var(--mono);
+  font-size: 14px;
+  letter-spacing: -0.01em;
+}
+
+/* the answer to "what breaks if I change this?", ahead of the graph below */
+.graph-toolbar-impact {
+  font-family: var(--mono);
+  color: var(--text-2);
+}
+
+/* a floor rather than a count: the same amber every other admitted gap wears */
+.graph-toolbar-impact.partial {
+  color: var(--amber);
 }
 
 .graph-toolbar-hint {
   margin-left: auto;
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 /* Reset view: idle it is one more ghost button; it pulses only when a
@@ -1082,11 +1345,11 @@ kbd {
   display: flex;
   gap: 22px;
   align-items: center;
-  padding: 8px 20px;
+  padding: 10px 28px;
   border-top: 1px solid var(--border);
-  background: var(--bg-elev);
+  background: var(--bg);
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 12.5px;
   flex-wrap: wrap;
 }
 
@@ -1566,8 +1829,10 @@ kbd {
 
 /* ---- description editing (#70) ---- */
 
+/* a staged edit is not what the repo says yet, and "not yet true" is the amber
+   tier, the same one suggested relationships and untraced columns wear */
 .desc-shown.staged .desc-text {
-  border-left: 2px dashed var(--accent);
+  border-left: 2px dashed var(--amber);
   padding-left: 10px;
 }
 
@@ -1837,43 +2102,53 @@ kbd {
 
 .grain-toggle {
   display: inline-flex;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
+  gap: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 100px;
+  padding: 2px;
 }
 
 .grain-option {
-  padding: 5px 12px;
-  font-size: 12px;
+  padding: 3px 12px;
+  border-radius: 100px;
+  font-size: 12.5px;
   color: var(--text-muted);
   text-decoration: none;
 }
 
 .grain-option:hover {
-  background: var(--bg-hover);
+  color: var(--text);
+  text-decoration: none;
 }
 
+/* the current selection, in the one colour that means something */
 .grain-option.active {
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-soft);
+  color: var(--text);
 }
 
 .toggle-label {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 12px;
+  gap: 6px;
+  font-size: 12.5px;
   color: var(--text-muted);
 }
 
 .highlight-input {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 5px 10px;
-  font-size: 12px;
+  background: var(--field);
+  border: 1px solid var(--field-border);
+  border-radius: 100px;
+  padding: 5px 12px;
+  font-family: var(--mono);
+  font-size: 12.5px;
   color: var(--text);
-  width: 150px;
+  width: 170px;
+  outline: none;
+}
+
+.highlight-input:focus {
+  border-color: var(--accent);
 }
 
 /* pipeline map node */
@@ -1952,14 +2227,16 @@ kbd {
 
 /* lineage node */
 
+/* A card on the canvas, in the language of 8a's tables: flat, hairline, radius
+   12, the name in mono because it is an identifier. No shadow — nothing on this
+   canvas is floating above anything else. */
 .flow-node {
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 12px;
+  border-radius: 12px;
+  padding: 10px 14px;
   min-width: 190px;
   max-width: 250px;
-  box-shadow: 0 1px 3px rgba(10, 20, 35, 0.12);
 }
 
 .flow-node.system-dbt {
@@ -1970,32 +2247,38 @@ kbd {
   border-left: 3px solid var(--metabase);
 }
 
+/* the node the page is about: the selection, in the accent */
 .flow-node.root {
+  background: var(--bg-hover);
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 .flow-node-title {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
 }
 
 .flow-node-name {
-  font-weight: 600;
-  font-size: 13px;
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: 12.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.flow-node.root .flow-node-name {
+  font-weight: 600;
 }
 
 .flow-node-sub {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-muted);
-  margin-top: 2px;
+  margin-top: 4px;
   overflow: hidden;
 }
 
