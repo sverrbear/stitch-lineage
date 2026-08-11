@@ -45,6 +45,7 @@ import {
   warehouseColumn,
   warehouseRelation,
 } from '../lib/present'
+import { columnDefinition, definedAsSummary } from '../lib/trace'
 import { lineageHref } from '../router'
 import type { GraphNode } from '../types'
 
@@ -187,6 +188,44 @@ function PanelHeader({
   )
 }
 
+/**
+ * 'Defined as' (#148): how this column is built, and — when lineage could not
+ * follow it — why (#147). Every column answers one of the two, so the panel is
+ * never silent about a column it has no upstreams for.
+ *
+ * Renders nothing for a source column: warehouse-native, no SQL behind it, and
+ * "unknown" there would be noise rather than a finding. The expression is also the
+ * evidence for the upstream list right below it, which is why it sits above it.
+ */
+function DefinedAsBlock({ node }: { node: GraphNode }) {
+  const info = columnDefinition(node)
+  if (!info) return null
+  return (
+    <Section title="Defined as">
+      {/* the reason leads: on an untraced column it IS the finding */}
+      {info.reason && (
+        <>
+          <p className="defined-as-untraced">
+            <span className="defined-as-reason" title={info.reason.hint}>
+              {info.reason.label}
+            </span>
+          </p>
+          <p className="muted defined-as-hint">{info.reason.hint}</p>
+        </>
+      )}
+      {info.definition && (
+        <div className={info.reason ? 'defined-as-body is-secondary' : 'defined-as-body'}>
+          {/* the summary already names the upstream, so the SQL needs no caption */}
+          <p className="defined-as-summary">{definedAsSummary(info.definition)}</p>
+          <pre className="defined-as-sql">
+            <code>{info.definition.sql}</code>
+          </pre>
+        </div>
+      )}
+    </Section>
+  )
+}
+
 function ColumnPanel({ nodeId }: { nodeId: string }) {
   const { index } = useStitch()
   const staging = useStaging(index)
@@ -242,6 +281,8 @@ function ColumnPanel({ nodeId }: { nodeId: string }) {
           )}
         </Fact>
       </dl>
+
+      <DefinedAsBlock node={node} />
 
       <Section title={`Upstream — ${plural(detail.upstreamColumns.length, 'column')}, ${plural(detail.upstreamSources.length, 'source')}`}>
         {detail.upstreamSources.length > 0 && (
