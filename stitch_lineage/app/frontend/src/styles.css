@@ -1513,18 +1513,23 @@ kbd {
   font-size: 11px;
 }
 
-/* how much of the graph-wide candidate list this scope holds (#60) */
-.suggest-scope {
-  order: 3;
-  flex-basis: 100%;
-  font-size: 11px;
-}
-
 .suggest-filter {
   display: flex;
   gap: 4px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
+}
+
+/* the reach row sits directly under the title, above the evidence tabs */
+.suggest-filter + .suggest-filter {
+  padding-top: 0;
+}
+
+/* Where a cross-scope pair actually lives — the context that stands in for
+   seeing it drawn, on a canvas that draws neither of its ends (#121). */
+.suggest-elsewhere {
+  font-family: var(--mono);
+  font-size: 11px;
 }
 
 .suggest-filter-option {

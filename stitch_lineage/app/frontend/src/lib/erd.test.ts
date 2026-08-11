@@ -13,6 +13,7 @@ import {
   findScope,
   initialScope,
   listScopes,
+  relationshipScopeLabel,
   scopeModelIds,
   suggestionsInScope,
   visibleColumns,
@@ -466,5 +467,26 @@ describe('erdCounts / erdCountsLabel', () => {
     expect(erdCountsLabel({ models: 1, relationships: 1, external: 1 })).toBe(
       '1 model · 1 relationship · +1 joined from other scopes',
     )
+  })
+})
+
+// #121: a cross-scope candidate is judged on the pair, not the picture — so the
+// panel says where its two models live instead of drawing neither of them.
+describe('relationshipScopeLabel', () => {
+  const rel = (fromModelId: string, toModelId: string) => ({ fromModelId, toModelId })
+  const M = 'model.demo'
+
+  it('names one scope when both ends share it', () => {
+    expect(relationshipScopeLabel(index, rel(`${M}.fct_revenue`, `${M}.dim_users`))).toBe('marts')
+  })
+
+  it('names both when the pair crosses scopes', () => {
+    expect(relationshipScopeLabel(index, rel(`${M}.stg_payments`, `${M}.fct_revenue`))).toBe(
+      'staging → marts',
+    )
+  })
+
+  it('is null when the graph knows neither model', () => {
+    expect(relationshipScopeLabel(index, rel('model.demo.gone', 'model.demo.also_gone'))).toBeNull()
   })
 })
