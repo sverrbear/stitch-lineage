@@ -15,7 +15,12 @@ from ruamel.yaml import YAML
 
 from stitch_lineage.config import RelationshipsConfig
 from stitch_lineage.io.staged_store import StagedDescription, StagedRelationship
-from stitch_lineage.write.yaml_writer import apply_plan, model_writeability, plan_writes
+from stitch_lineage.write.yaml_writer import (
+    apply_plan,
+    model_writeability,
+    plan_migration,
+    plan_writes,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "dbt_repo"
 MARTS = "models/marts/_schema.yml"
@@ -755,3 +760,110 @@ def test_the_arity_key_is_the_only_meta_the_test_form_writes(repo):
     (edit,) = _plan(repo, [_entry()]).edits
     meta = _column_of(edit, "fct_orders", "customer_id")["config"]["meta"]
     assert list(meta) == ["relationship_type"]
+
+
+# --- migrating meta-form declarations to the configured form (#135) ---------------------
+
+
+META_MANIFEST = {
+    "nodes": {
+        "model.demo.fct_orders": {
+            **_node("fct_orders"),
+            "columns": {
+                "customer_id": {
+                    "name": "customer_id",
+                    "meta": {
+                        "metabase.fk_target_table": "marts.dim_customers",
+                        "metabase.fk_target_field": "customer_id",
+                        "relationship_type": "one-to-one",
+                    },
+                },
+                "order_id": {"name": "order_id"},
+            },
+        },
+        "model.demo.dim_customers": {**_node("dim_customers"), "columns": {}},
+    }
+}
+
+
+def _meta_repo(repo):
+    """The fixture file, with the FK meta keys already applied to customer_id."""
+    target = repo / MARTS
+    target.write_text(
+        target.read_text().replace(
+            "        description: 'Who placed the order'",
+            "        description: 'Who placed the order'\n"
+            "        config:\n"
+            "          meta:\n"
+            "            metabase.fk_target_table: marts.dim_customers\n"
+            "            metabase.fk_target_field: customer_id\n"
+            "            relationship_type: one-to-one",
+        )
+    )
+    return repo
+
+
+def _migrate(repo, **config):
+    return plan_migration(META_MANIFEST, repo, RelationshipsConfig(**config))
+
+
+def test_migration_writes_the_test_and_drops_the_keys_it_replaces(repo):
+    plan = _migrate(_meta_repo(repo), write_to="relationships_test")
+    (edit,) = plan.edits
+    assert "          - relationships:" in edit.updated
+    assert "              to: ref('dim_customers')" in edit.updated
+    assert "metabase.fk_target_table" not in edit.updated
+    assert "metabase.fk_target_field" not in edit.updated
+
+
+def test_migration_keeps_the_cardinality(repo):
+    """The one key a relationships test cannot replace (#134)."""
+    (edit,) = _migrate(_meta_repo(repo), write_to="relationships_test").edits
+    assert _column_of(edit, "fct_orders", "customer_id")["config"]["meta"] == {
+        "relationship_type": "one-to-one"
+    }
+
+
+def test_migration_touches_nothing_else_in_the_file(repo):
+    """Everything outside the migrated column survives byte for byte."""
+    before = _meta_repo(repo)
+    original = (before / MARTS).read_text()
+    (edit,) = _migrate(before, write_to="relationships_test").edits
+    for fragment in (
+        "# grain: one row per order line. Owned by the revenue pod.",
+        "tags: ['core', \"revenue\"]",
+        "description: |",
+        'description: "Customer dimension (SCD1)"',
+    ):
+        assert fragment in edit.updated, fragment
+    assert edit.original == original
+
+
+def test_migration_is_a_no_op_when_the_target_form_is_meta(repo):
+    """Nothing to migrate TO: previewing a rewrite that changes nothing is noise."""
+    plan = _migrate(_meta_repo(repo), write_to="meta")
+    assert plan.edits == []
+    assert plan.results == []
+
+
+def test_migration_leaves_a_column_with_no_declaration_alone(repo):
+    (edit,) = _migrate(_meta_repo(repo), write_to="relationships_test").edits
+    assert "order_id" in edit.updated
+    assert _column_of(edit, "fct_orders", "order_id").get("data_tests") == ["unique", "not_null"]
+
+
+def test_migration_refuses_a_file_it_cannot_round_trip(repo):
+    """#132's guarantee holds here too: never reformat to force a write."""
+    (repo / MARTS).write_text(MIXED_INDENT)
+    plan = _migrate(repo, write_to="relationships_test")
+    assert plan.edits == []
+
+
+def test_migrating_twice_is_a_no_op(repo):
+    """The keys are gone after the first pass, so the second finds nothing to do."""
+    first = _migrate(_meta_repo(repo), write_to="relationships_test")
+    apply_plan(first.edits)
+    # the manifest still advertises the meta (it is stale until dbt docs generate),
+    # so this is the worst case: the migration must not write the test twice
+    second = _migrate(repo, write_to="relationships_test")
+    assert second.edits == []
