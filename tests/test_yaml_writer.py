@@ -15,7 +15,7 @@ from ruamel.yaml import YAML
 
 from stitch_lineage.config import RelationshipsConfig
 from stitch_lineage.io.staged_store import StagedDescription, StagedRelationship
-from stitch_lineage.write.yaml_writer import apply_plan, plan_writes
+from stitch_lineage.write.yaml_writer import apply_plan, model_writeability, plan_writes
 
 FIXTURES = Path(__file__).parent / "fixtures" / "dbt_repo"
 MARTS = "models/marts/_schema.yml"
@@ -407,6 +407,121 @@ def test_a_file_that_cannot_be_reproduced_is_refused_not_reformatted(repo):
     assert target.read_text() == before
 
 
+# --- indented blank lines inside a block scalar (#132) ----------------------------------
+#
+# The shape that refused every write into a 2156-line file on the real repo. A long
+# `description: |` with paragraphs in it has blank lines BETWEEN those paragraphs, and
+# an author (or an editor) writes them at the block's own indentation:
+#
+#     description: |
+#       Orders, one row per line item.
+#     ......                              <- six spaces, not an empty line
+#       Rebuilt nightly by the core pipeline.
+#
+# YAML strips block indentation, so the string is identical either way -- but ruamel
+# re-emits that line as truly empty, the pristine round trip came back differing in
+# those bytes, and the ENTIRE file was declared unwritable. Two invisible lines cost
+# every description edit and every relationship write-back in the file.
+
+INDENTED_BLANK = """version: 2
+
+models:
+  - name: fct_orders
+    description: |
+      Orders, one row per line item.
+{pad}
+      Rebuilt nightly by the core pipeline.
+    columns:
+      - name: order_id
+        description: "Primary key"
+      - name: customer_id
+        description: "Who placed the order"
+"""
+
+PADDED = INDENTED_BLANK.format(pad="      ")
+
+
+def test_the_fixture_really_is_only_cosmetically_different(repo):
+    """Guard the fixture itself: the two spellings must parse to the same document."""
+    loader = YAML(typ="safe")
+    assert loader.load(PADDED) == loader.load(INDENTED_BLANK.format(pad=""))
+    assert "      \n" in PADDED
+    assert len(PADDED.splitlines()) == len(INDENTED_BLANK.format(pad="").splitlines())
+
+
+def test_an_indented_blank_in_a_block_scalar_no_longer_blocks_the_whole_file(repo):
+    (repo / MARTS).write_text(PADDED)
+    plan = _plan(repo, [_entry()])
+    assert plan.failures == [], [result.message for result in plan.failures]
+    assert len(plan.edits) == 1
+
+
+def test_that_blank_line_comes_back_exactly_as_its_author_wrote_it(repo):
+    """The rescue may not cost the guarantee: untouched lines stay byte-identical."""
+    (repo / MARTS).write_text(PADDED)
+    (edit,) = _plan(repo, [_entry()]).edits
+    opcodes = difflib.SequenceMatcher(
+        None, PADDED.splitlines(), edit.updated.splitlines(), autojunk=False
+    ).get_opcodes()
+    # insert-only, exactly as for a file that never needed the repair
+    assert {tag for tag, *_ in opcodes} <= {"equal", "insert"}
+    assert edit.updated.count("      \n") == PADDED.count("      \n")
+
+
+def test_it_survives_the_write_itself(repo):
+    target = repo / MARTS
+    target.write_text(PADDED)
+    apply_plan(_plan(repo, [_entry()]).edits)
+    assert target.read_text().count("      \n") == PADDED.count("      \n")
+
+
+def test_a_description_edit_into_such_a_file_removes_nothing_but_the_description(repo):
+    """The exact case from #132: a description edit on a file with an indented blank."""
+    (repo / MARTS).write_text(PADDED)
+    (edit,) = _plan(repo, [_description(column="order_id", text="The order's primary key")]).edits
+    removed = [
+        line
+        for line in edit.diff().splitlines()
+        if line.startswith("-") and not line.startswith("---")
+    ]
+    assert all(line[1:].strip() != "" for line in removed), removed
+
+
+# --- files that genuinely cannot round-trip, and are declared so up front ---------------
+
+
+MIXED_INDENT = """version: 2
+
+models:
+  - name: fct_orders
+    description: "Orders"
+    columns:
+      - name: order_id
+        description: "Primary key"
+        data_tests:
+        - unique
+        - not_null
+"""
+
+
+def test_a_file_mixing_two_list_indentation_styles_still_refuses(repo):
+    """ruamel has one indent setting per dump, so this shape cannot be reproduced."""
+    (repo / MARTS).write_text(MIXED_INDENT)
+    plan = _plan(repo, [_entry(from_column="order_id")])
+    assert plan.edits == []
+    assert "does not survive a round trip" in plan.failures[0].message
+
+
+def test_the_refusal_names_the_remedy_for_the_change_that_asked(repo):
+    """#132: a refused DESCRIPTION edit used to tell you to add the relationship by hand."""
+    (repo / MARTS).write_text(MIXED_INDENT)
+    relationship = _plan(repo, [_entry(from_column="order_id")]).failures[0].message
+    description = _plan(repo, [_description(column=None, text="Orders")]).failures[0].message
+    assert "add the relationship by hand" in relationship
+    assert "relationship" not in description
+    assert "description" in description
+
+
 # --- descriptions (issue #70) -----------------------------------------------------------
 
 
@@ -533,3 +648,57 @@ def test_a_relationship_and_a_description_in_one_file_make_one_edit(repo):
     assert [result.status for result in plan.results] == ["planned", "planned"]
     # and both clear from their stores together
     assert plan.ids_for({edit.path}) == {change.id for change in changes}
+
+
+# --- write-ability, decided before anything is staged (#132) ----------------------------
+
+
+def test_writeability_says_yes_for_a_file_stitch_can_reproduce(repo):
+    entries = model_writeability(MANIFEST, repo)
+    assert entries["fct_orders"].writable is True
+    assert entries["fct_orders"].reason is None
+    assert entries["fct_orders"].path == MARTS
+
+
+def test_writeability_says_no_for_a_file_that_cannot_round_trip(repo):
+    (repo / MARTS).write_text(MIXED_INDENT)
+    entries = model_writeability(MANIFEST, repo)
+    assert entries["fct_orders"].writable is False
+    assert "does not survive a round trip" in entries["fct_orders"].reason
+    # a model in a DIFFERENT file is unaffected -- the verdict is per file, not global
+    assert entries["fct_events"].writable is True
+
+
+def test_writeability_says_no_when_the_model_has_no_schema_file(repo):
+    entry = model_writeability(MANIFEST, repo)["dim_stores"]
+    assert entry.writable is False
+    assert "no schema YAML file" in entry.reason
+
+
+def test_writeability_says_no_when_the_schema_file_is_missing_from_the_repo(repo):
+    entry = model_writeability(MANIFEST, repo)["dim_regions"]
+    assert entry.writable is False
+    assert "not in the repo" in entry.reason
+
+
+def test_writeability_agrees_with_what_apply_actually_does(repo):
+    """The promise the affordance rests on: offered == appliable, refused == refused."""
+    for text, expected in ((PADDED, True), (MIXED_INDENT, False)):
+        (repo / MARTS).write_text(text)
+        offered = model_writeability(MANIFEST, repo)["fct_orders"].writable
+        applied = _plan(repo, [_entry(from_column="order_id")]).failures == []
+        assert offered is expected
+        assert offered == applied
+
+
+def test_writeability_proves_each_file_once(repo, monkeypatch):
+    """Two models in one file must not cost two parses of it."""
+    import stitch_lineage.write.yaml_writer as writer
+
+    seen = []
+    original = writer._file_refusal
+    monkeypatch.setattr(
+        writer, "_file_refusal", lambda path: (seen.append(path), original(path))[1]
+    )
+    model_writeability(MANIFEST, repo)
+    assert len(seen) == len(set(seen))

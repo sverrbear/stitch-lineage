@@ -40,8 +40,10 @@ from stitch_lineage.io.staged_store import (
 from stitch_lineage.write.yaml_writer import (
     EntryResult,
     FileEdit,
+    ModelWriteability,
     WritePlan,
     apply_plan,
+    model_writeability,
     plan_writes,
 )
 
@@ -52,6 +54,7 @@ __all__ = [
     "ApplyPlan",
     "FilePreview",
     "GraphPatch",
+    "ModelWriteability",
     "StagedChanges",
     "build_plan",
     "execute",
@@ -60,6 +63,7 @@ __all__ = [
     "paths_for",
     "read_changes",
     "refusals",
+    "writeability",
 ]
 
 
@@ -178,6 +182,23 @@ class ApplyContext:
 
     def plan(self) -> "ApplyPlan":
         return build_plan(self.config, self.cfg)
+
+    def writeability(self) -> dict[str, ModelWriteability]:
+        return writeability(self.config, self.cfg)
+
+
+def writeability(config_path: Path, cfg: StitchConfig) -> dict[str, ModelWriteability]:
+    """Which models stitch can write a declaration into, before anything is staged.
+
+    The app asks this at load so an edit it cannot honour is never offered (#132).
+    It reads the manifest and the schema files; it writes nothing.
+
+    Raises:
+        StitchArtifactError: the dbt manifest is missing or unparseable.
+    """
+    paths = paths_for(config_path, cfg)
+    manifest = load_manifest(config_path.parent / cfg.dbt.project_dir / cfg.dbt.target_path)
+    return model_writeability(manifest, paths.project_dir)
 
 
 def paths_for(config_path: Path, cfg: StitchConfig) -> ApplyPaths:

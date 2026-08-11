@@ -1875,6 +1875,15 @@ kbd {
   font-size: 12px;
 }
 
+/* A model whose schema file stitch cannot rewrite (#132). Amber, like everything
+   else in this app that means "this may not be what you want": the edit is not
+   offered, and pointing at it says why. */
+.desc-unwritable {
+  color: var(--amber);
+  border-bottom: 1px dotted var(--amber);
+  cursor: help;
+}
+
 .desc-was summary {
   cursor: pointer;
   color: var(--text-muted);

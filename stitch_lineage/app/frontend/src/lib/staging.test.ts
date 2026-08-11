@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  fetchWriteability,
+  refusalFor,
   StagingError,
   applyStaged,
   cardinalitySentence,
@@ -405,5 +407,61 @@ describe('previewApply / applyStaged', () => {
     await expect(applyStaged(broken as unknown as typeof fetch)).rejects.toThrow(
       'manifest is unreadable',
     )
+  })
+})
+
+// What the app is allowed to withhold, and what it must not (#132).
+describe('fetchWriteability', () => {
+  const served = (body: unknown, status = 200) =>
+    (async () => respond(status, body)) as unknown as typeof fetch
+
+  it('collects only the refusals — a writable model needs no entry', async () => {
+    const map = await fetchWriteability(
+      served({
+        models: {
+          fct_orders: { writable: true, reason: null },
+          fct_events: { writable: false, reason: 'mixes two list-indentation styles' },
+        },
+      }),
+    )
+    expect(map.size).toBe(1)
+    expect(refusalFor(map, 'fct_events')).toBe('mixes two list-indentation styles')
+    expect(refusalFor(map, 'fct_orders')).toBeNull()
+  })
+
+  it('matches model names case-insensitively, as the writer does', async () => {
+    const map = await fetchWriteability(
+      served({ models: { fct_events: { writable: false, reason: 'nope' } } }),
+    )
+    expect(refusalFor(map, 'FCT_Events')).toBe('nope')
+  })
+
+  it('offers everything when the route is missing, rather than nothing', async () => {
+    // a static export or a serve older than this endpoint must not lose every
+    // affordance in the app — absent means "no opinion", and apply keeps the last word
+    for (const fetcher of [
+      served({}, 404),
+      served('not json'),
+      (async () => {
+        throw new Error('no server')
+      }) as unknown as typeof fetch,
+    ]) {
+      const map = await fetchWriteability(fetcher)
+      expect(map.size).toBe(0)
+      expect(refusalFor(map, 'fct_events')).toBeNull()
+    }
+  })
+
+  it('has no opinion about a model it was never told about', async () => {
+    const map = await fetchWriteability(served({ models: {} }))
+    expect(refusalFor(map, 'anything')).toBeNull()
+    expect(refusalFor(map, null)).toBeNull()
+  })
+
+  it('still refuses when the server sends no reason', async () => {
+    const map = await fetchWriteability(
+      served({ models: { fct_events: { writable: false } } }),
+    )
+    expect(refusalFor(map, 'fct_events')).toBeTruthy()
   })
 })

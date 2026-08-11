@@ -67,13 +67,16 @@ import {
   listStaged,
   listStagedDescriptions,
   probeApply,
+  fetchWriteability,
   probeStaging,
+  refusalFor,
   stageRelationship,
   unstageDescription,
   unstageRelationship,
   type Cardinality,
   type StagedDescription,
   type StagedRelationship,
+  type Writeability,
 } from '../lib/staging'
 import {
   countBySource,
@@ -293,6 +296,7 @@ export function ErdPage({
   // Staging exists only under `stitch serve`. A static export, or an older serve
   // without the endpoint, must read as a plain read-only ERD -- not as a broken one.
   const [canStage, setCanStage] = useState(false)
+  const [writeability, setWriteability] = useState<Writeability>(new Map())
   const [staged, setStaged] = useState<StagedRelationship[]>([])
   const [descriptions, setDescriptions] = useState<StagedDescription[]>([])
   // Applying is a separate capability from staging: `stitch serve` without a
@@ -389,6 +393,8 @@ export function ErdPage({
     void probeStaging(meta.staging_enabled).then(async (enabled) => {
       if (cancelled || !enabled) return
       setCanStage(true)
+      const refusals = await fetchWriteability()
+      if (!cancelled) setWriteability(refusals)
       await refreshStaged()
       // description edits and applying are later additions than staging: probe each
       // separately, so an older serve shows no such control rather than a broken one
@@ -931,6 +937,13 @@ export function ErdPage({
             const fromModel = modelNameOf(connection.source)
             const toModel = modelNameOf(connection.target)
             if (!fromModel || !toModel || !connection.sourceHandle || !connection.targetHandle) return
+            // The declaration is written into the SOURCE model's schema file, so a file
+            // apply could never write is refused here rather than at apply time (#132).
+            const refusal = refusalFor(writeability, fromModel)
+            if (refusal) {
+              setNotice(`${fromModel}: ${refusal}`)
+              return
+            }
             setNotice(null)
             setDraft({
               fromModel,
