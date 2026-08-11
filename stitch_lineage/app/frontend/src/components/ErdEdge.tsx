@@ -1,31 +1,42 @@
-// The ERD's relationship edge. One dead-straight segment, point to point, the way
-// Power BI draws a relationship (#130).
+// The ERD's relationship edge: orthogonal elbows, the shape Power BI actually
+// draws (#139).
 //
-// It used to be a planned polyline through the corridors between the cards (#79):
-// React Flow's own edge types run handle to handle and know nothing about the
-// cards in between, so a relationship could disappear under a table and come out
-// the other side, and the router existed to stop that. A routed line reads as a
-// diagram of itself though — it bends, so the eye follows the bends instead of the
-// join. A straight one is a single unambiguous statement that these two columns are
-// the same thing, and it stays legible at any zoom.
+// #130 read "straight, Power BI style" as one dead-straight point-to-point segment.
+// Seen live against Power BI that is the wrong shape: its relationship lines are
+// axis-aligned runs joined by SQUARE turns. A diagonal is what a force layout
+// produces; an elbow is what a diagram draws, and the right angles are what make a
+// line readable as it passes a card rather than through it.
 //
-// The two things that survive the change:
-//   * which BORDER each end leaves from is still chosen per pair (#100/#106), so a
-//     straight segment sets off towards the card it is headed for instead of out of
-//     the back of its own;
-//   * cards are kept out of the line's way by the LAYOUT (#129) rather than by
-//     bending the line around them — which is the Power BI bargain, and the reason
-//     the two issues are worth doing together.
+// So the planned polyline from #79 comes back — the A* router that keeps a line in
+// the corridors BETWEEN the cards, rather than letting it disappear under a table
+// and come out the other side. The only difference from what #130 removed is the
+// corner radius: 9px of rounding then, square now.
+//
+// Unchanged through all three issues:
+//   * which BORDER each end leaves from is chosen per pair (#100/#106), so the first
+//     run sets off towards the card it is headed for, not out of the back of its own;
+//   * the ✓ sits at the midpoint measured ALONG the path, so it lands on the line
+//     rather than beside a corner;
+//   * every stroke, dash and colour. None of this touches styling, and none of the
+//     indicators in Power BI's own reference come with it — no 1/* glyphs (#117
+//     removed those), no arrow boxes, no direction markers. Just the elbowed line.
 
 import { BaseEdge, Position, useStore, type EdgeProps } from '@xyflow/react'
 import { useMemo } from 'react'
 import { chooseAnchors } from '../lib/edgeAnchors'
 import {
   polylineMidpoint,
-  straightPath,
+  roundedPath,
+  routeEdge,
   type AnchorSide,
   type RoutingRect,
 } from '../lib/edgeRouting'
+
+/**
+ * Corner radius of the routed path. Zero: Power BI turns square, and a rounded
+ * corner reads as a curve at the zoom levels a big scope is actually viewed at.
+ */
+const CORNER_PX = 0
 
 /**
  * Every card on the canvas, in flow coordinates. Positions are quantised so a
@@ -85,11 +96,12 @@ export function ErdRoutedEdge({
   interactionWidth,
 }: EdgeProps) {
   const cards = useCardRects()
-  // Which border each end attaches to is decided for this pair of cards (#100), and
-  // the segment is drawn between the two. React Flow's own handle positions stay
-  // left/right — they are where a relationship is DRAWN from, not where a drawn one
-  // has to leave.
+  // Sides first, then the route: which border each end attaches to is decided for
+  // this pair of cards (#100), and the router is handed the result. React Flow's own
+  // handle positions stay left/right — they are where a relationship is DRAWN from,
+  // not where a drawn one has to run.
   const { points } = useMemo(() => {
+    const own: RoutingRect[] = []
     const obstacles: RoutingRect[] = []
     let sourceCard: RoutingRect | undefined
     let targetCard: RoutingRect | undefined
@@ -98,6 +110,8 @@ export function ErdRoutedEdge({
       else if (rect.id === target) targetCard = rect
       else obstacles.push(rect)
     }
+    if (sourceCard) own.push(sourceCard)
+    if (targetCard) own.push(targetCard)
     // Before React Flow has measured both cards there is nothing to choose between:
     // fall back to the handles' own sides so the edge still draws.
     const anchors =
@@ -111,7 +125,9 @@ export function ErdRoutedEdge({
             from: { x: sourceX, y: sourceY, side: sideOf(sourcePosition, 'right') },
             to: { x: targetX, y: targetY, side: sideOf(targetPosition, 'left') },
           }
-    return { points: [anchors.from, anchors.to] }
+    // `soft`: the edge's own two cards are passable at a stiff price, so a satellite
+    // placed behind its hub still gets a line instead of no line at all.
+    return { points: routeEdge(anchors.from, anchors.to, obstacles, { soft: own }) }
   }, [cards, source, target, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition])
 
   // The ✓ is the only thing still drawn ON a relationship (#118). The
@@ -124,7 +140,7 @@ export function ErdRoutedEdge({
   return (
     <>
       <BaseEdge
-        path={straightPath(points[0], points[1])}
+        path={roundedPath(points, CORNER_PX)}
         style={style}
         interactionWidth={interactionWidth}
       />
