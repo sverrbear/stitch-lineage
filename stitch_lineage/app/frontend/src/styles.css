@@ -461,8 +461,22 @@ kbd {
   border-bottom: 0;
 }
 
+.coverage-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
 .coverage-row-label {
   color: var(--text-2);
+}
+
+/* The qualifier on the ratio — the inferred share, the excluded models. Quiet,
+   but on the row itself: a caveat one click away is a caveat nobody reads. */
+.coverage-row-note {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .coverage-row:hover {
@@ -653,6 +667,17 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 40%;
+}
+
+/* Archived is a caveat on the answer, so it wears the same amber as every other
+   "this may not be what you think it is" (#122). */
+.search-hit-archived {
+  font-size: 11px;
+  color: var(--amber);
+  background: var(--amber-soft);
+  border-radius: 4px;
+  padding: 0 5px;
+  white-space: nowrap;
 }
 
 /* ---- palette ---- */
@@ -1499,18 +1524,23 @@ kbd {
   font-size: 11px;
 }
 
-/* how much of the graph-wide candidate list this scope holds (#60) */
-.suggest-scope {
-  order: 3;
-  flex-basis: 100%;
-  font-size: 11px;
-}
-
 .suggest-filter {
   display: flex;
   gap: 4px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
+}
+
+/* the reach row sits directly under the title, above the evidence tabs */
+.suggest-filter + .suggest-filter {
+  padding-top: 0;
+}
+
+/* Where a cross-scope pair actually lives — the context that stands in for
+   seeing it drawn, on a canvas that draws neither of its ends (#121). */
+.suggest-elsewhere {
+  font-family: var(--mono);
+  font-size: 11px;
 }
 
 .suggest-filter-option {
@@ -2444,16 +2474,32 @@ kbd {
   text-decoration: underline;
 }
 
-/* the two rows a hovered relationship joins, so you can see what it connects
-   without a permanent label floating over the canvas (#65) */
-.erd-column.lit {
+/* The two rows a relationship joins, lit while it is hovered and kept lit while it
+   is the picked one. This is the whole of what an edge says now — there is no label
+   on the line to read instead (#65, #118) — so it has to hold its own against the
+   row's own hover tint in both themes. */
+.erd-column.lit,
+.erd-column.lit:hover,
+.erd-column.lit:focus-visible {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
-  box-shadow: inset 2px 0 0 var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
-/* the edge under the pointer takes the accent, so "which line am I on" and "which
-   two rows does it join" are the same answer */
-.erd-edge.hovered .react-flow__edge-path {
+/* selection on this canvas is stitch's own (`picked`), so React Flow's default
+   selected stroke must not paint a second, greyer state underneath it */
+.erd-edge.selected .react-flow__edge-path {
+  stroke: var(--edge-strong);
+}
+
+/* the edge you point at — or the one you clicked — takes the accent, so "which line
+   am I on" and "which two rows does it join" are the same answer. A relationship is
+   clickable now, and looks it. */
+.erd-edge {
+  cursor: pointer;
+}
+
+.erd-edge.hovered .react-flow__edge-path,
+.erd-edge.picked .react-flow__edge-path {
   stroke: var(--accent);
   stroke-width: 4;
   opacity: 1;
@@ -2517,13 +2563,15 @@ kbd {
   opacity: 0.75;
 }
 
-.erd-edge .react-flow__edge-text {
+/* The only mark left on a relationship: ✓ for one a dbt `relationships` test proves.
+   Everything the line used to spell out — the column pair, `staged`, `suggested` —
+   is read off the cards and the dash pattern instead (#118). */
+.erd-edge-validated {
   fill: var(--ok);
+  font-size: 11px;
   font-weight: 700;
-}
-
-.erd-edge .react-flow__edge-textbg {
-  fill: var(--bg-elev);
+  pointer-events: none;
+  user-select: none;
 }
 
 /* scope selector */

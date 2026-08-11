@@ -7,10 +7,13 @@ import {
   defaultScope,
   erdClickHref,
   erdColumnNodeId,
+  erdCounts,
+  erdCountsLabel,
   erdForScope,
   findScope,
   initialScope,
   listScopes,
+  relationshipScopeLabel,
   scopeModelIds,
   suggestionsInScope,
   visibleColumns,
@@ -422,3 +425,68 @@ describe('auto-expanding a small scope (#62)', () => {
   })
 })
 
+
+// #120: the picker said "intermediate (100 models, 2 rels)" and the header beside
+// it said "102 models · 2 relationships" for the same scope. Whatever the canvas
+// pulls in, the two numbers have to be talking about the same population.
+describe('erdCounts / erdCountsLabel', () => {
+  it('keeps the scope own models apart from the endpoints it reaches into', () => {
+    const finance = listScopes(index).find((s) => s.kind === 'tag' && s.value === 'finance')!
+    const erd = erdForScope(index, finance)
+    const counts = erdCounts(erd)
+    // dim_users is on the canvas, but it is not one of finance's models
+    expect(erd.models).toHaveLength(counts.models + counts.external)
+    expect(counts.external).toBeGreaterThan(0)
+    expect(counts.models).toBe(finance.modelCount)
+  })
+
+  it('every scope the picker offers reports what its canvas draws', () => {
+    for (const scope of listScopes(index)) {
+      const erd = erdForScope(index, scope)
+      expect([scope.value, erdCounts(erd).models]).toEqual([scope.value, scope.modelCount])
+      expect([scope.value, erd.relationships.length]).toEqual([
+        scope.value,
+        scope.relationshipCount,
+      ])
+    }
+  })
+
+  it('labels the joined-in endpoints instead of hiding them in the total', () => {
+    expect(erdCountsLabel({ models: 100, relationships: 2, external: 2 })).toBe(
+      '100 models · 2 relationships · +2 joined from other scopes',
+    )
+  })
+
+  it('says nothing about other scopes when it reached into none', () => {
+    expect(erdCountsLabel({ models: 42, relationships: 33, external: 0 })).toBe(
+      '42 models · 33 relationships',
+    )
+  })
+
+  it('counts one of a thing in the singular', () => {
+    expect(erdCountsLabel({ models: 1, relationships: 1, external: 1 })).toBe(
+      '1 model · 1 relationship · +1 joined from other scopes',
+    )
+  })
+})
+
+// #121: a cross-scope candidate is judged on the pair, not the picture — so the
+// panel says where its two models live instead of drawing neither of them.
+describe('relationshipScopeLabel', () => {
+  const rel = (fromModelId: string, toModelId: string) => ({ fromModelId, toModelId })
+  const M = 'model.demo'
+
+  it('names one scope when both ends share it', () => {
+    expect(relationshipScopeLabel(index, rel(`${M}.fct_revenue`, `${M}.dim_users`))).toBe('marts')
+  })
+
+  it('names both when the pair crosses scopes', () => {
+    expect(relationshipScopeLabel(index, rel(`${M}.stg_payments`, `${M}.fct_revenue`))).toBe(
+      'staging → marts',
+    )
+  })
+
+  it('is null when the graph knows neither model', () => {
+    expect(relationshipScopeLabel(index, rel('model.demo.gone', 'model.demo.also_gone'))).toBeNull()
+  })
+})

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { biDetail, columnDetail, modelDetail } from './details'
+import { biDetail, columnDetail, dataTypeLabel, modelDetail } from './details'
 import { buildIndex } from './graph'
 import { fixtureGraph } from './fixture'
 import type { GraphEdge, GraphNode, StitchGraph } from '../types'
@@ -113,5 +113,37 @@ describe('modelDetail', () => {
     expect(detail.cards.length).toBe(2)
     expect(detail.dashboards.length).toBe(1)
     expect(detail.relationships).toHaveLength(1)
+  })
+})
+
+// #122: a bare "unknown" data type reads as a broken tool. The graph knows why.
+describe('dataTypeLabel', () => {
+  const column = (data_type: string | null, reason?: string): GraphNode => ({
+    node_id: 'model.demo.fct_revenue::net_revenue',
+    node_type: 'column',
+    name: 'net_revenue',
+    data_type,
+    properties: reason ? { unknown_type_reason: reason } : {},
+  })
+
+  it('passes a real type through untouched', () => {
+    expect(dataTypeLabel(column('NUMBER'))).toEqual({ text: 'NUMBER', hint: null })
+  })
+
+  it('says the model was never built when the catalog has no entry for it', () => {
+    const label = dataTypeLabel(column(null, 'relation_not_in_catalog'))
+    expect(label.text).toBe('unknown — not in catalog')
+    expect(label.hint).toContain('dbt docs generate')
+  })
+
+  it('distinguishes an undeployed column from a missing model', () => {
+    const label = dataTypeLabel(column(null, 'column_not_in_catalog'))
+    expect(label.text).toBe('unknown — not in catalog yet')
+    expect(label.hint).toContain('undeployed, not lost')
+  })
+
+  it('claims no reason it does not have', () => {
+    expect(dataTypeLabel(column(null))).toEqual({ text: 'unknown', hint: null })
+    expect(dataTypeLabel(column(null, 'something_new'))).toEqual({ text: 'unknown', hint: null })
   })
 })

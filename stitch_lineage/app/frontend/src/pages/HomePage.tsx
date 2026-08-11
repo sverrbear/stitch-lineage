@@ -26,7 +26,15 @@ function Row({ row }: { row: CoverageRow }) {
   )
   const body = (
     <>
-      <span className="coverage-row-label">{row.label}</span>
+      <span className="coverage-row-main">
+        <span className="coverage-row-label">{row.label}</span>
+        {/* the caveat travels with the number, not in a footnote nobody reads */}
+        {row.note && (
+          <span className="coverage-row-note" title={row.noteHint ?? undefined}>
+            {row.note}
+          </span>
+        )}
+      </span>
       <span className="coverage-row-right">
         {/* the gap sits beside the number it qualifies, never on its own page */}
         {row.gapLabel && <span className="coverage-row-gap">{row.gapLabel}</span>}

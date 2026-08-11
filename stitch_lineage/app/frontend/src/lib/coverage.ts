@@ -21,6 +21,13 @@ export interface CoverageRow {
   list: CoverageListKind | null
   gapLabel: string | null
   hint: string
+  /**
+   * A qualifier on the number itself, not on what is missing from it: the share
+   * of the traced columns that is only inferred, the models config took out of
+   * the denominator. A ratio with an unstated caveat oversells (principle 03).
+   */
+  note: string | null
+  noteHint: string | null
 }
 
 function ratio(value: number | undefined, total: number | undefined): [number, number | null] {
@@ -53,6 +60,9 @@ export function coverageRows(coverage: Coverage | undefined): CoverageRow[] {
   const unbound = cov.unbound_models?.length ?? 0
   const unresolved = cov.unresolved_cards?.length ?? 0
 
+  const inferred = cov.columns_inferred ?? 0
+  const excluded = cov.models_excluded ?? 0
+
   return [
     {
       key: 'columns',
@@ -63,6 +73,13 @@ export function coverageRows(coverage: Coverage | undefined): CoverageRow[] {
       list: untraced > 0 ? 'untraced-columns' : null,
       gapLabel: untraced > 0 ? `${untraced.toLocaleString()} untraced` : null,
       hint: 'Traced means sqlglot resolved the column back to its upstreams. Untraced columns break lineage chains.',
+      // "2,551 traced" reads as one grade of evidence until you learn most of it
+      // was matched by name rather than parsed out of the SQL (#119).
+      note: inferred > 0 ? `${inferred.toLocaleString()} of those inferred${sharePart(inferred, traced)}` : null,
+      noteHint:
+        inferred > 0
+          ? 'Inferred columns were matched by star-expansion or name, not parsed from the SQL — weaker evidence than an exact or parsed trace.'
+          : null,
     },
     {
       key: 'models',
@@ -73,6 +90,11 @@ export function coverageRows(coverage: Coverage | undefined): CoverageRow[] {
       list: unbound > 0 ? 'unbound-models' : null,
       gapLabel: unbound > 0 ? `${unbound.toLocaleString()} unbound` : null,
       hint: 'A model is bound when Metabase has a table at its database, schema and physical name.',
+      note: excluded > 0 ? `${excluded.toLocaleString()} excluded by config` : null,
+      noteHint:
+        excluded > 0
+          ? 'Models metabase.exclude_packages / exclude_models in stitch.yml keeps out of this ratio — nobody expects them in Metabase. They keep their lineage.'
+          : null,
     },
     {
       key: 'cards',
@@ -83,8 +105,15 @@ export function coverageRows(coverage: Coverage | undefined): CoverageRow[] {
       list: unresolved > 0 ? 'unresolved-cards' : null,
       gapLabel: unresolved > 0 ? `${unresolved.toLocaleString()} unresolved` : null,
       hint: 'An unresolved card is one whose query stitch could not walk — its dependencies are missing from the graph.',
+      note: null,
+      noteHint: null,
     },
   ]
+}
+
+/** " (52%)" — omitted rather than divided by zero when there is no base to be a share of. */
+function sharePart(value: number, base: number): string {
+  return base > 0 ? ` (${Math.round((value / base) * 100)}%)` : ''
 }
 
 export interface GraphStats {

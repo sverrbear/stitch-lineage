@@ -135,7 +135,7 @@ def resolve_dbt(
     schema_mapping = MappingSchema(mapping, dialect=_DIALECT)
     column_specs = _column_specs(models, sources, catalog, catalog_specs, schema_mapping)
     entity_nodes = _entity_nodes(models, sources)
-    column_nodes = _column_nodes(models, sources, column_specs)
+    column_nodes = _column_nodes(models, sources, column_specs, _catalogued_relations(catalog))
     references, seed_snapshot_deps = _references_edges(models, sources, manifest_nodes)
     feeds = _feeds_edges(
         models, sources, column_specs, schema_mapping, manifest_sourced, on_progress
@@ -186,6 +186,9 @@ def _entity_nodes(models: dict[str, Any], sources: dict[str, Any]) -> list[Node]
             "tags": model.get("tags") or [],
             "materialization": (model.get("config") or {}).get("materialized"),
             "path": model.get("original_file_path") or model.get("path"),
+            # the dbt package that owns this model -- what metabase.exclude_packages
+            # matches on, read from the manifest rather than split out of the unique_id
+            "package": model.get("package_name"),
         }
         if _is_ephemeral(model):
             properties["is_ephemeral"] = True
@@ -512,22 +515,44 @@ def _catalog_column_specs(
     return specs
 
 
+def _catalogued_relations(catalog: dict[str, Any]) -> set[str]:
+    """uids the catalog has an entry for -- i.e. relations this target actually built."""
+    return {*(catalog.get("nodes") or {}), *(catalog.get("sources") or {})}
+
+
 def _column_nodes(
     models: dict[str, Any],
     sources: dict[str, Any],
     column_specs: dict[str, dict[str, dict[str, Any]]],
+    catalogued: set[str] | None = None,
 ) -> list[Node]:
     """Column nodes named the dbt way; `warehouse_name` carries the other spelling.
 
     The property is set only when the warehouse spells the column differently, so its
     absence means "same as name" (or "not in the catalog") rather than "unknown".
+
+    A column with no data type gets `unknown_type_reason` saying WHY, because a bare
+    "unknown" in the app reads as a broken tool rather than as a dev catalog that
+    never built this relation (#122). Two different situations, told apart:
+      relation_not_in_catalog -- this target never built the model at all
+      column_not_in_catalog   -- the model is built, this column is not in it yet
+                                 (it exists in the SQL, so it is undeployed, not lost)
+    Set only when there is no data type; its absence is never a claim.
     """
     entities = {**models, **sources}
+    catalogued = catalogued if catalogued is not None else set()
     nodes = []
     for uid, entity_specs in column_specs.items():
         entity = entities[uid]
         for spec in entity_specs.values():
             warehouse_name = spec.get("warehouse_name")
+            properties: dict[str, Any] = {}
+            if warehouse_name and warehouse_name != spec["name"]:
+                properties["warehouse_name"] = warehouse_name
+            if not spec["data_type"]:
+                properties["unknown_type_reason"] = (
+                    "column_not_in_catalog" if uid in catalogued else "relation_not_in_catalog"
+                )
             nodes.append(
                 Node(
                     node_id=column_node_id(uid, spec["name"]),
@@ -539,11 +564,7 @@ def _column_nodes(
                     column=spec["name"],
                     data_type=spec["data_type"],
                     description=spec["description"],
-                    properties=(
-                        {"warehouse_name": warehouse_name}
-                        if warehouse_name and warehouse_name != spec["name"]
-                        else {}
-                    ),
+                    properties=properties,
                 )
             )
     return nodes

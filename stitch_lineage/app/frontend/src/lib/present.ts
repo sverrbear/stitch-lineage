@@ -175,8 +175,21 @@ export function nodeContext(index: GraphIndex, node: GraphNode): string | null {
       return node.table ?? null
     case 'mb_card':
     case 'mb_dashboard':
-      return stringProperty(node, 'collection_name', 'collection')
+      // collection_path is the breadcrumb the resolver writes ("Growth/Retention");
+      // the other two are older spellings, kept so a graph built before this still
+      // says something. Three cards named "Match to Conversation Ratio" are told
+      // apart by nothing else (#122).
+      return stringProperty(node, 'collection_path', 'collection_name', 'collection')
   }
+}
+
+/**
+ * Archived in Metabase. It stays in the graph — a change still breaks it, and
+ * `doctor --dead` reports archived-but-bound cards — but it must never be
+ * mistaken for the live card of the same name sitting next to it in search.
+ */
+export function isArchived(node: GraphNode): boolean {
+  return node.properties?.archived === true
 }
 
 /**

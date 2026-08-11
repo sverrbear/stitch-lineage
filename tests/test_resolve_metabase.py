@@ -100,6 +100,7 @@ def test_mb_card_node_payload(resolution):
     assert node.properties == {
         "archived": False,
         "collection_id": 7,
+        "collection_path": "Marts",
         "creator": "Sverrir",
         "display": "line",
         "query_type": "query",
@@ -722,3 +723,20 @@ def test_on_progress_fires_per_card_with_fixed_total(payload):
     assert dones[-1] == 7, "progress must reach total"
     # the callback is observational only: the resolution is unchanged
     assert with_progress == resolve_metabase(payload, EXCLUDE)
+
+
+def test_card_carries_its_collection_breadcrumb(resolution):
+    """Duplicate card titles are only told apart by where they live (#122)."""
+    node = next(n for n in resolution.nodes if n.node_id == mb_card_node_id(201))
+    assert node.properties["collection_path"] == "Marts"
+
+
+def test_card_in_the_root_collection_claims_no_breadcrumb(payload):
+    """A null collection_id is the root -- not a collection with an empty name."""
+    rootless = payload.model_copy(
+        update={"cards": [{**card, "collection_id": None} for card in payload.cards]}
+    )
+    node = next(
+        n for n in resolve_metabase(rootless, EXCLUDE).nodes if n.node_id == mb_card_node_id(201)
+    )
+    assert "collection_path" not in node.properties

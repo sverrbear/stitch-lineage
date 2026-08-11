@@ -43,6 +43,12 @@ class MetabaseConfig(BaseModel):
     databases: list[MetabaseDatabaseMapping]
     include_schemas: list[str] = Field(default_factory=list)
     exclude_collections: list[str] = Field(default_factory=list)
+    # dbt packages whose models are not expected in Metabase (elementary,
+    # dbt_artifacts, ...). They keep their lineage; they leave the bind
+    # denominator, so "unbound" means "we expected this and did not find it".
+    exclude_packages: list[str] = Field(default_factory=list)
+    # same, per model: fnmatch globs on the dbt model name, e.g. ["stg_*"]
+    exclude_models: list[str] = Field(default_factory=list)
     missing_env: list[str] = Field(default_factory=list, exclude=True, repr=False)
 
     def require_env(self) -> None:
