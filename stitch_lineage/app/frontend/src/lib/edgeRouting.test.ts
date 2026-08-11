@@ -7,7 +7,6 @@ import {
   routeEdge,
   segmentHitsBox,
   simplify,
-  straightPath,
   type RoutingRect,
 } from './edgeRouting'
 
@@ -56,10 +55,14 @@ describe('routeEdge — obstacle avoidance', () => {
     const target = card('b', CARD_W + 52, 40)
     const from = rightOf(source)
     const to = leftOf(target)
-    const straight = Math.hypot(to.x - from.x, to.y - from.y)
     const path = routeEdge(from, to, [], { soft: [source, target] })
-    // the two stubs cost a little over the direct line; nothing else may
-    expect(polylineLength(path)).toBeLessThan(straight * 1.25)
+    // The bound is the MANHATTAN run, not the diagonal one: since #139 the path is
+    // axis-aligned, and an axis-aligned path between two points offset on both axes
+    // is Manhattan by definition -- up to a factor of root two longer than the
+    // straight line, with nothing wrong with it. What "not a detour" still means is
+    // that it costs the two offsets and the two stubs, and nothing else.
+    const manhattan = Math.abs(to.x - from.x) + Math.abs(to.y - from.y)
+    expect(polylineLength(path)).toBeLessThan(manhattan * 1.1)
     expect(bends(path)).toBeLessThanOrEqual(2)
   })
 
@@ -290,29 +293,41 @@ describe('segmentHitsBox', () => {
   })
 })
 
-describe('straightPath — what the ERD actually draws (#130)', () => {
-  it('is one move and one line, and nothing else', () => {
-    const d = straightPath({ x: 10, y: 20 }, { x: 300, y: 240 })
-    expect(d).toBe('M 10,20 L 300,240')
+describe('the elbowed path the ERD draws (#139)', () => {
+  const elbow = (points: Array<{ x: number; y: number }>) => roundedPath(points, 0)
+
+  it('turns square: no curve command anywhere in it', () => {
+    // Power BI's relationship lines turn at right angles; a rounded corner reads as
+    // a curve at the zoom a big scope is actually viewed at
+    const d = elbow([
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      { x: 100, y: 100 },
+    ])
+    expect(d).not.toMatch(/[QCAqca]/)
+    expect(d).toBe('M 0,0 L 100,0 L 100,100')
   })
 
-  it('carries no curve, however far apart the ends are', () => {
-    // the whole point of the issue: a relationship is a segment, not a shape
-    for (const to of [
-      { x: 900, y: 12 },
-      { x: -900, y: 400 },
-      { x: 4, y: -700 },
-    ]) {
-      const d = straightPath({ x: 0, y: 0 }, to)
-      expect(d).not.toMatch(/[QCAqcaSTst]/)
-      expect(d.match(/L/g)).toHaveLength(1)
+  it('keeps every segment axis-aligned when the route is', () => {
+    const points = routeEdge(
+      rightOf(card('a', 0, 0)),
+      leftOf(card('b', 900, 400)),
+      [card('wall', 420, -40)],
+      { soft: [card('a', 0, 0), card('b', 900, 400)] },
+    )
+    for (let i = 0; i < points.length - 1; i++) {
+      const dx = Math.abs(points[i + 1].x - points[i].x)
+      const dy = Math.abs(points[i + 1].y - points[i].y)
+      expect(dx < 0.01 || dy < 0.01, `segment ${i} is diagonal`).toBe(true)
     }
   })
 
-  it('lands exactly on both anchors, so an end never floats off its card', () => {
-    const from = { x: 123.5, y: 44 }
-    const to = { x: 998, y: 771.25 }
-    expect(straightPath(from, to)).toBe(`M ${from.x},${from.y} L ${to.x},${to.y}`)
+  it('still lands exactly on both anchors', () => {
+    const from = rightOf(card('a', 0, 0))
+    const to = leftOf(card('b', 900, 0))
+    const d = elbow(routeEdge(from, to, [], { soft: [card('a', 0, 0), card('b', 900, 0)] }))
+    expect(d.startsWith(`M ${from.x},${from.y}`)).toBe(true)
+    expect(d.endsWith(`L ${to.x},${to.y}`)).toBe(true)
   })
 })
 
