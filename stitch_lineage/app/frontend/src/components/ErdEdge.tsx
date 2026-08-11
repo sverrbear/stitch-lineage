@@ -1,21 +1,31 @@
-// The ERD's relationship edge (#79). React Flow's own edge types draw handle to
-// handle and know nothing about the cards in between, which is how a relationship
-// ends up running underneath a table and out the other side. This one asks
-// lib/edgeRouting for a path that stays in the corridors between the cards.
+// The ERD's relationship edge. One dead-straight segment, point to point, the way
+// Power BI draws a relationship (#130).
+//
+// It used to be a planned polyline through the corridors between the cards (#79):
+// React Flow's own edge types run handle to handle and know nothing about the
+// cards in between, so a relationship could disappear under a table and come out
+// the other side, and the router existed to stop that. A routed line reads as a
+// diagram of itself though — it bends, so the eye follows the bends instead of the
+// join. A straight one is a single unambiguous statement that these two columns are
+// the same thing, and it stays legible at any zoom.
+//
+// The two things that survive the change:
+//   * which BORDER each end leaves from is still chosen per pair (#100/#106), so a
+//     straight segment sets off towards the card it is headed for instead of out of
+//     the back of its own;
+//   * cards are kept out of the line's way by the LAYOUT (#129) rather than by
+//     bending the line around them — which is the Power BI bargain, and the reason
+//     the two issues are worth doing together.
 
 import { BaseEdge, Position, useStore, type EdgeProps } from '@xyflow/react'
 import { useMemo } from 'react'
 import { chooseAnchors } from '../lib/edgeAnchors'
 import {
   polylineMidpoint,
-  roundedPath,
-  routeEdge,
+  straightPath,
   type AnchorSide,
   type RoutingRect,
 } from '../lib/edgeRouting'
-
-/** Corner radius of the routed path — enough to read as drawn, not as a diagram. */
-const CORNER_PX = 9
 
 /**
  * Every card on the canvas, in flow coordinates. Positions are quantised so a
@@ -75,12 +85,11 @@ export function ErdRoutedEdge({
   interactionWidth,
 }: EdgeProps) {
   const cards = useCardRects()
-  // Sides first, then the route: which border each end attaches to is decided for
-  // this pair of cards (#100), and the router is handed the result. React Flow's own
-  // handle positions stay left/right — they are where a relationship is DRAWN from,
-  // not where a drawn one has to run.
+  // Which border each end attaches to is decided for this pair of cards (#100), and
+  // the segment is drawn between the two. React Flow's own handle positions stay
+  // left/right — they are where a relationship is DRAWN from, not where a drawn one
+  // has to leave.
   const { points } = useMemo(() => {
-    const own: RoutingRect[] = []
     const obstacles: RoutingRect[] = []
     let sourceCard: RoutingRect | undefined
     let targetCard: RoutingRect | undefined
@@ -89,8 +98,6 @@ export function ErdRoutedEdge({
       else if (rect.id === target) targetCard = rect
       else obstacles.push(rect)
     }
-    if (sourceCard) own.push(sourceCard)
-    if (targetCard) own.push(targetCard)
     // Before React Flow has measured both cards there is nothing to choose between:
     // fall back to the handles' own sides so the edge still draws.
     const anchors =
@@ -104,7 +111,7 @@ export function ErdRoutedEdge({
             from: { x: sourceX, y: sourceY, side: sideOf(sourcePosition, 'right') },
             to: { x: targetX, y: targetY, side: sideOf(targetPosition, 'left') },
           }
-    return { points: routeEdge(anchors.from, anchors.to, obstacles, { soft: own }) }
+    return { points: [anchors.from, anchors.to] }
   }, [cards, source, target, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition])
 
   // The ✓ is the only thing still drawn ON a relationship (#118). The
@@ -117,7 +124,7 @@ export function ErdRoutedEdge({
   return (
     <>
       <BaseEdge
-        path={roundedPath(points, CORNER_PX)}
+        path={straightPath(points[0], points[1])}
         style={style}
         interactionWidth={interactionWidth}
       />
