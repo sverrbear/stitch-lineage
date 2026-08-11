@@ -10,6 +10,7 @@ from pathlib import Path
 
 import mend_scenario as scenario
 import pytest
+from conftest import plain
 from test_mend_apply import FakeMetabase, plan_of, strip_card
 from typer.testing import CliRunner
 
@@ -174,7 +175,7 @@ def test_impact_rejects_an_unknown_format(tmp_path, monkeypatch):
     monkeypatch.chdir(_project(tmp_path))
     result = runner.invoke(app, ["impact", "--format", "yaml"])
     assert result.exit_code == 1
-    assert "unsupported --format" in result.output
+    assert "unsupported --format" in plain(result.output)
 
 
 # --------------------------------------------------------------------------------------
@@ -196,8 +197,8 @@ def test_mend_plan_writes_a_plan_and_renders_it(tmp_path, monkeypatch):
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "STRIP (2)" in result.output
-    assert "fct_orders.promo_code" in result.output
+    assert "STRIP (2)" in plain(result.output)
+    assert "fct_orders.promo_code" in plain(result.output)
 
     plan = read_plan(project / ".stitch" / "mend_plan.json")
     assert {card.card_id: card.action for card in plan.cards} == {
@@ -229,7 +230,7 @@ def test_mend_plan_renders_every_format(tmp_path, monkeypatch, output_format):
     monkeypatch.chdir(_project(tmp_path))
     result = runner.invoke(app, ["mend", "--plan", "--use-cache", "--format", output_format])
     assert result.exit_code == 0, result.output
-    assert "stitch mend" in result.output
+    assert "stitch mend" in plain(result.output)
 
 
 def test_mend_plan_without_a_cached_payload_says_what_to_run(tmp_path, monkeypatch):
@@ -240,7 +241,7 @@ def test_mend_plan_without_a_cached_payload_says_what_to_run(tmp_path, monkeypat
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["mend", "--plan", "--use-cache"])
     assert result.exit_code == 1
-    assert "no cached Metabase payload" in result.output
+    assert "no cached Metabase payload" in plain(result.output)
 
 
 @pytest.mark.parametrize(
@@ -250,7 +251,7 @@ def test_a_malformed_rename_is_refused(tmp_path, monkeypatch, bad_rename):
     monkeypatch.chdir(_project(tmp_path))
     result = runner.invoke(app, ["mend", "--plan", "--use-cache", "--rename", bad_rename])
     assert result.exit_code == 1
-    assert "--rename expects old=new" in result.output
+    assert "--rename expects old=new" in plain(result.output)
 
 
 def test_mend_needs_exactly_one_mode(tmp_path, monkeypatch):
@@ -258,14 +259,14 @@ def test_mend_needs_exactly_one_mode(tmp_path, monkeypatch):
     for args in (["mend"], ["mend", "--plan", "--apply"]):
         result = runner.invoke(app, args)
         assert result.exit_code == 1
-        assert "exactly one of --plan or --apply" in result.output
+        assert "exactly one of --plan or --apply" in plain(result.output)
 
 
 def test_a_plan_file_argument_without_apply_is_refused(tmp_path, monkeypatch):
     monkeypatch.chdir(_project(tmp_path))
     result = runner.invoke(app, ["mend", "--plan", "some_plan.json"])
     assert result.exit_code == 1
-    assert "only makes sense with --apply" in result.output
+    assert "only makes sense with --apply" in plain(result.output)
 
 
 # --------------------------------------------------------------------------------------
@@ -286,8 +287,8 @@ def test_mend_apply_writes_and_summarises(tmp_path, monkeypatch, fake_client):
     monkeypatch.chdir(project)
     result = runner.invoke(app, ["mend", "--apply"])
     assert result.exit_code == 0, result.output
-    assert "APPLIED (1)" in result.output
-    assert "#402 Orders, promo cohort" in result.output
+    assert "APPLIED (1)" in plain(result.output)
+    assert "#402 Orders, promo cohort" in plain(result.output)
     assert fake_client.writes
 
 
@@ -299,7 +300,7 @@ def test_mend_apply_exits_non_zero_when_a_card_fails(tmp_path, monkeypatch):
     monkeypatch.chdir(project)
     result = runner.invoke(app, ["mend", "--apply"])
     assert result.exit_code == 1
-    assert "FAILED (1)" in result.output
+    assert "FAILED (1)" in plain(result.output)
     assert client.reverts
 
 
@@ -316,7 +317,7 @@ def test_mend_apply_without_a_plan_names_the_fix(tmp_path, monkeypatch, fake_cli
     monkeypatch.chdir(_project(tmp_path))
     result = runner.invoke(app, ["mend", "--apply"])
     assert result.exit_code == 1
-    assert "run 'stitch mend --plan' first" in result.output
+    assert "run 'stitch mend --plan' first" in plain(result.output)
 
 
 def test_mend_apply_announces_force(tmp_path, monkeypatch, fake_client):
@@ -325,7 +326,7 @@ def test_mend_apply_announces_force(tmp_path, monkeypatch, fake_client):
     monkeypatch.chdir(project)
     result = runner.invoke(app, ["mend", "--apply", "--force"])
     assert result.exit_code == 0, result.output
-    assert "the staleness guard is off" in result.output
+    assert "the staleness guard is off" in plain(result.output)
 
 
 def test_a_notify_only_plan_writes_nothing(tmp_path, monkeypatch, fake_client):
@@ -337,7 +338,7 @@ def test_a_notify_only_plan_writes_nothing(tmp_path, monkeypatch, fake_client):
     monkeypatch.chdir(project)
     result = runner.invoke(app, ["mend", "--apply"])
     assert result.exit_code == 0, result.output
-    assert "nothing to write" in result.output
+    assert "nothing to write" in plain(result.output)
     assert fake_client.writes == []
 
 
@@ -349,7 +350,7 @@ def test_slack_posting_is_skipped_with_a_clear_reason_when_unconfigured(
     monkeypatch.chdir(project)
     result = runner.invoke(app, ["mend", "--apply", "--slack"])
     assert result.exit_code == 0, result.output
-    assert "no mend.slack_webhook configured" in result.output
+    assert "no mend.slack_webhook configured" in plain(result.output)
 
 
 def test_the_slack_notice_is_posted_through_the_webhook_client(tmp_path, monkeypatch):
@@ -363,7 +364,7 @@ def test_the_slack_notice_is_posted_through_the_webhook_client(tmp_path, monkeyp
     assert result.exit_code == 0, result.output
     assert posted and posted[0][0] == "https://hooks.example.com/T/B/x"
     assert "stitch mend" in posted[0][1]
-    assert "plan notice posted" in result.output
+    assert "plan notice posted" in plain(result.output)
 
 
 # --------------------------------------------------------------------------------------
@@ -399,27 +400,27 @@ def test_write_access_reports_identity_writability_and_the_autonomy_dial(tmp_pat
     client = WriteProbeClient([{"id": 1, "can_write": True}, {"id": 2, "can_write": False}])
     result = _run_doctor(tmp_path, monkeypatch, client)
     assert result.exit_code == 0, result.output
-    assert "authenticates as CI bot" in result.output
-    assert "1/2 cards report can_write" in result.output
-    assert "1 card(s) are read-only" in result.output
-    assert "revision history readable" in result.output
-    assert "mend.auto: repoint, strip, archive" in result.output
-    assert "notice and summary print locally only" in result.output
+    assert "authenticates as CI bot" in plain(result.output)
+    assert "1/2 cards report can_write" in plain(result.output)
+    assert "1 card(s) are read-only" in plain(result.output)
+    assert "revision history readable" in plain(result.output)
+    assert "mend.auto: repoint, strip, archive" in plain(result.output)
+    assert "notice and summary print locally only" in plain(result.output)
 
 
 def test_write_access_fails_when_nothing_is_writable(tmp_path, monkeypatch):
     client = WriteProbeClient([{"id": 1, "can_write": False}])
     result = _run_doctor(tmp_path, monkeypatch, client)
     assert result.exit_code == 1
-    assert "no card is writable" in result.output
+    assert "no card is writable" in plain(result.output)
 
 
 def test_write_access_degrades_when_the_version_is_silent(tmp_path, monkeypatch):
     client = WriteProbeClient([{"id": 1}], revisions=False)
     result = _run_doctor(tmp_path, monkeypatch, client)
     assert result.exit_code == 0, result.output
-    assert "do not report can_write" in result.output
-    assert "revision history not readable" in result.output
+    assert "do not report can_write" in plain(result.output)
+    assert "revision history not readable" in plain(result.output)
 
 
 def test_write_access_flags_a_webhook_variable_that_is_not_set(tmp_path, monkeypatch):
@@ -428,7 +429,7 @@ def test_write_access_flags_a_webhook_variable_that_is_not_set(tmp_path, monkeyp
     client = WriteProbeClient([{"id": 1, "can_write": True}])
     result = _run_doctor(tmp_path, monkeypatch, client, MEND_CONFIG)
     assert result.exit_code == 1
-    assert "STITCH_SLACK_WEBHOOK_URL" in result.output
+    assert "STITCH_SLACK_WEBHOOK_URL" in plain(result.output)
 
 
 def test_write_access_writes_nothing(tmp_path, monkeypatch):

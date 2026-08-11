@@ -1,8 +1,8 @@
 import json
-import re
 from pathlib import Path
 
 import uvicorn
+from conftest import plain, uncoloured
 from typer.main import get_command
 from typer.testing import CliRunner
 
@@ -25,18 +25,6 @@ from stitch_lineage.io.layout_store import LAYOUT_FILENAME, add_dismissed
 
 runner = CliRunner()
 
-_ANSI = re.compile(r"\x1b\[[0-9;]*m")
-
-
-def _plain(text: str) -> str:
-    """Console output with Rich's colour and wrapping taken back out.
-
-    CI runs on a narrow terminal with colour forced on, so asserting on raw stdout
-    pins the renderer rather than the message.
-    """
-    return " ".join(_ANSI.sub("", text).split())
-
-
 VALID_CONFIG = """
 metabase:
   url: https://mb.example.com
@@ -50,15 +38,6 @@ metabase:
 SCOPED_CONFIG = VALID_CONFIG + 'serve:\n  erd_default_scope: "schema:MARTS"\n'
 
 
-_ANSI = re.compile(r"\x1b\[[0-9;]*m")
-
-
-def _uncoloured(output: str) -> str:
-    """CI sets GITHUB_ACTIONS, which makes typer force-colour its help -- and rich's
-    option highlighter then splits '--base-file' across style codes mid-token."""
-    return _ANSI.sub("", output)
-
-
 def _write_graph(tmp_path, nodes=()):
     graph = Graph(generated_at="2026-08-06T00:00:00+00:00", nodes=list(nodes))
     write_graph(graph, tmp_path / ".stitch" / "graph.json")
@@ -69,10 +48,12 @@ def _marts_model():
 
 
 def test_help_lists_commands():
+    # asserted against the *registered* commands rather than rendered help: rich lays help
+    # out to the terminal's width and truncates the command column, so `--help` output
+    # answers "how wide was the runner" as much as "is this command registered"
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    output = _uncoloured(result.output)
-    for command in (
+    assert {
         "build",
         "search",
         "suggest",
@@ -82,16 +63,16 @@ def test_help_lists_commands():
         "init",
         "serve",
         "history",
-    ):
-        assert command in output
+    } <= set(get_command(app).commands)
 
 
 def test_history_works_without_a_config_and_points_at_build(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["history"])
     assert result.exit_code == 0, result.output
-    assert "no graph baselines stored in .stitch/history" in result.output
-    assert "keyed by the HEAD commit" in result.output
+    output = plain(result.output)
+    assert "no graph baselines stored in .stitch/history" in output
+    assert "keyed by the HEAD commit" in output
 
     as_json = runner.invoke(app, ["history", "--json"])
     assert as_json.exit_code == 0, as_json.output
@@ -105,25 +86,28 @@ def test_history_works_without_a_config_and_points_at_build(tmp_path, monkeypatc
 def test_impact_help_documents_every_baseline_source():
     own_help = runner.invoke(app, ["impact", "--help"])
     assert own_help.exit_code == 0
-    output = _uncoloured(own_help.output)
-    assert "--base-file" in output
-    assert "graph.prev.json" in output
+    # the documentation is the command's own help text and option list; the rendering of
+    # it is rich's business and changes with the terminal, so assert on the source
+    command = get_command(app).commands["impact"]
+    options = {opt for param in command.params for opt in param.opts}
+    assert {"--base", "--base-file", "--column"} <= options
+    documented = " ".join([command.help or "", *(param.help or "" for param in command.params)])
+    assert "graph.prev.json" in documented
     # the --base local-history path (issue #87) and the point query (issue #86)
-    assert "history" in output
-    assert "--column" in output
+    assert "history" in documented
 
 
 def test_version():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert __version__ in result.output
+    assert __version__ in plain(result.output)
 
 
 def test_init_outside_a_dbt_project_fails_with_the_fix(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["init"])
     assert result.exit_code == 1
-    assert "no dbt_project.yml" in result.output
+    assert "no dbt_project.yml" in plain(result.output)
 
 
 def test_init_runs_the_wizard(tmp_path, monkeypatch):
@@ -133,8 +117,8 @@ def test_init_runs_the_wizard(tmp_path, monkeypatch):
     (tmp_path / "dbt_project.yml").write_text("name: demo\n", encoding="utf-8")
     result = runner.invoke(app, ["init"], input="n\n")
     assert result.exit_code == 1
-    assert "no manifest at" in result.output
-    assert "dbt docs generate" in result.output
+    assert "no manifest at" in plain(result.output)
+    assert "dbt docs generate" in plain(result.output)
 
 
 def _stub_uvicorn(monkeypatch):
@@ -148,7 +132,7 @@ def test_serve_without_graph_points_at_build(tmp_path, monkeypatch):
     calls = _stub_uvicorn(monkeypatch)
     result = runner.invoke(app, ["serve", "--no-open"])
     assert result.exit_code == 1
-    assert "stitch build" in result.output
+    assert "stitch build" in plain(result.output)
     assert calls == []
 
 
@@ -161,7 +145,7 @@ def test_serve_binds_the_requested_host_and_port(tmp_path, monkeypatch):
     assert len(calls) == 1
     assert calls[0][1]["host"] == "0.0.0.0"
     assert calls[0][1]["port"] == 9123
-    assert "http://0.0.0.0:9123" in result.output
+    assert "http://0.0.0.0:9123" in plain(result.output)
 
 
 def test_serve_defaults_to_localhost_8787_and_opens_a_browser(tmp_path, monkeypatch):
@@ -183,8 +167,8 @@ def test_serve_warns_once_about_an_erd_scope_the_graph_does_not_have(tmp_path, m
     calls = _stub_uvicorn(monkeypatch)
     result = runner.invoke(app, ["serve", "--no-open"])
     assert result.exit_code == 0, result.output
-    assert "schema:nope" in result.output
-    assert "schema:MARTS" in result.output
+    assert "schema:nope" in plain(result.output)
+    assert "schema:MARTS" in plain(result.output)
     assert len(calls) == 1  # it is a warning, not a failure
 
 
@@ -197,7 +181,7 @@ def test_serve_hands_the_configured_erd_scope_to_the_app(tmp_path, monkeypatch):
     calls = _stub_uvicorn(monkeypatch)
     result = runner.invoke(app, ["serve", "--no-open"])
     assert result.exit_code == 0, result.output
-    assert "warning" not in result.output
+    assert "warning" not in plain(result.output)
     meta = TestClient(calls[0][0]).get("/api/meta").json()
     assert meta["erd_default_scope"] == "schema:MARTS"
 
@@ -216,7 +200,7 @@ def test_build_without_config_fails_cleanly(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["build"])
     assert result.exit_code == 1
-    assert "config file not found" in result.output
+    assert "config file not found" in plain(result.output)
 
 
 def test_build_with_literal_api_key_fails(tmp_path, monkeypatch):
@@ -225,7 +209,7 @@ def test_build_with_literal_api_key_fails(tmp_path, monkeypatch):
     (tmp_path / "stitch.yml").write_text(literal)
     result = runner.invoke(app, ["build"])
     assert result.exit_code == 1
-    assert "literal key" in result.output
+    assert "literal key" in plain(result.output)
 
 
 def test_build_without_artifacts_names_the_fix(tmp_path, monkeypatch):
@@ -234,8 +218,8 @@ def test_build_without_artifacts_names_the_fix(tmp_path, monkeypatch):
     (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
     result = runner.invoke(app, ["build"])
     assert result.exit_code == 1
-    assert "manifest.json" in result.output
-    assert "dbt docs generate" in result.output
+    assert "manifest.json" in plain(result.output)
+    assert "dbt docs generate" in plain(result.output)
 
 
 def _write_artifacts(tmp_path):
@@ -251,7 +235,7 @@ def test_build_without_metabase_env_fails_before_http(tmp_path, monkeypatch):
     _write_artifacts(tmp_path)
     result = runner.invoke(app, ["build"])
     assert result.exit_code == 1
-    assert "STITCH_METABASE_API_KEY" in result.output
+    assert "STITCH_METABASE_API_KEY" in plain(result.output)
 
 
 def test_build_without_metabase_env_fails_before_loading_artifacts(tmp_path, monkeypatch):
@@ -270,16 +254,16 @@ def test_build_without_metabase_env_fails_before_loading_artifacts(tmp_path, mon
     result = runner.invoke(app, ["build"])
     assert result.exit_code == 1
     assert docs_calls == []  # not even 'dbt docs generate' runs
-    assert "running dbt docs generate" not in result.output
+    assert "running dbt docs generate" not in plain(result.output)
 
 
-def test_build_missing_env_message_names_the_fix(tmp_path, monkeypatch):
+def test_build_missing_env_message_names_the_fix(tmp_path, monkeypatch, wide_console):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("STITCH_METABASE_API_KEY", raising=False)
     (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
     result = runner.invoke(app, ["build"])
     assert result.exit_code == 1
-    lines = [line.rstrip() for line in result.output.splitlines()]
+    lines = [uncoloured(line).rstrip() for line in result.output.splitlines()]
     assert lines[:4] == [
         "error: environment variable STITCH_METABASE_API_KEY is referenced in stitch.yml "
         "but not set",
@@ -297,7 +281,7 @@ def test_build_no_metabase_needs_no_env(tmp_path, monkeypatch):
     _write_artifacts(tmp_path)
     result = runner.invoke(app, ["build", "--no-metabase"])
     assert result.exit_code == 0, result.output
-    assert "dbt-only" in result.output
+    assert "dbt-only" in plain(result.output)
 
 
 def test_multiple_missing_env_vars_are_all_listed(tmp_path, monkeypatch):
@@ -313,14 +297,14 @@ def test_multiple_missing_env_vars_are_all_listed(tmp_path, monkeypatch):
         "environment variables STITCH_METABASE_URL, STITCH_METABASE_API_KEY "
         "are referenced in stitch.yml but not set" in result.output
     )
-    assert "needs them to call the Metabase API" in result.output
+    assert "needs them to call the Metabase API" in plain(result.output)
 
 
 def test_search_without_graph_points_at_build(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["search", "match_intensity"])
     assert result.exit_code == 1
-    assert "stitch build" in result.output
+    assert "stitch build" in plain(result.output)
 
 
 def test_search_works_without_metabase_env(tmp_path, monkeypatch):
@@ -357,14 +341,15 @@ def _suggestible_graph(tmp_path):
     )
 
 
-def test_suggest_prints_a_table(tmp_path, monkeypatch):
+def test_suggest_prints_a_table(tmp_path, monkeypatch, wide_console):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
     _suggestible_graph(tmp_path)
     result = runner.invoke(app, ["suggest"])
     assert result.exit_code == 0, result.output
+    output = plain(result.output)
     for expected in ("source", "score", "naming", "fct_orders", "dim_customers", "grain"):
-        assert expected in result.output, result.output
+        assert expected in output, result.output
 
 
 def test_suggest_json_carries_the_same_rows(tmp_path, monkeypatch):
@@ -391,7 +376,7 @@ def test_suggest_honours_dismissals_from_layout_yml(tmp_path, monkeypatch):
     add_dismissed(dismissed, tmp_path / ".stitch" / LAYOUT_FILENAME)
     result = runner.invoke(app, ["suggest"])
     assert result.exit_code == 0, result.output
-    assert "no suggestions" in result.output
+    assert "no suggestions" in plain(result.output)
 
 
 def test_suggest_limit_caps_the_list(tmp_path, monkeypatch):
@@ -408,7 +393,7 @@ def test_suggest_without_graph_points_at_build(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["suggest"])
     assert result.exit_code == 1
-    assert "stitch build" in result.output
+    assert "stitch build" in plain(result.output)
 
 
 def test_impact_without_candidate_graph_fails(tmp_path, monkeypatch):
@@ -417,7 +402,7 @@ def test_impact_without_candidate_graph_fails(tmp_path, monkeypatch):
     (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
     result = runner.invoke(app, ["impact"])
     assert result.exit_code == 1
-    assert "stitch build" in result.output
+    assert "stitch build" in plain(result.output)
 
 
 def test_explicitly_passed_missing_config_is_a_hard_error(tmp_path, monkeypatch):
@@ -425,7 +410,7 @@ def test_explicitly_passed_missing_config_is_a_hard_error(tmp_path, monkeypatch)
     for command in (["search", "x"], ["impact"], ["export"], ["doctor"], ["build"], ["serve"]):
         result = runner.invoke(app, [*command, "--config", "nope.yml"])
         assert result.exit_code == 1, command
-        assert "config file not found" in result.output
+        assert "config file not found" in plain(result.output)
 
 
 def test_impact_without_a_baseline_names_both_ways_out(tmp_path, monkeypatch):
@@ -434,9 +419,10 @@ def test_impact_without_a_baseline_names_both_ways_out(tmp_path, monkeypatch):
     _write_graph(tmp_path)
     result = runner.invoke(app, ["impact"])
     assert result.exit_code == 1
-    assert "no baseline at .stitch/graph.prev.json" in result.output
-    assert "run 'stitch build' twice" in result.output
-    assert "--base-file <path>" in result.output
+    output = plain(result.output)
+    assert "no baseline at .stitch/graph.prev.json" in output
+    assert "run 'stitch build' twice" in output
+    assert "--base-file <path>" in output
 
 
 def test_impact_base_file_must_exist(tmp_path, monkeypatch):
@@ -445,22 +431,22 @@ def test_impact_base_file_must_exist(tmp_path, monkeypatch):
     _write_graph(tmp_path)
     result = runner.invoke(app, ["impact", "--base-file", "nope.json"])
     assert result.exit_code == 1
-    assert "baseline file not found: nope.json" in result.output
+    assert "baseline file not found: nope.json" in plain(result.output)
 
 
 def test_impact_rejects_unknown_format(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["impact", "--format", "sms"])
     assert result.exit_code == 1
-    assert "unsupported --format" in result.output
+    assert "unsupported --format" in plain(result.output)
 
 
 def test_export_rejects_unknown_format(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["export", "--format", "parquet"])
     assert result.exit_code == 1
-    assert "unsupported --format" in result.output
-    assert "jsonl, site" in result.output
+    assert "unsupported --format" in plain(result.output)
+    assert "jsonl, site" in plain(result.output)
 
 
 def test_export_site_inlines_the_graph(tmp_path, monkeypatch):
@@ -489,7 +475,7 @@ def test_export_site_without_graph_points_at_build(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["export", "--format", "site"])
     assert result.exit_code == 1
-    assert "stitch build" in result.output
+    assert "stitch build" in plain(result.output)
 
 
 def test_export_site_inlines_the_configured_erd_scope(tmp_path, monkeypatch):
@@ -502,7 +488,7 @@ def test_export_site_inlines_the_configured_erd_scope(tmp_path, monkeypatch):
         '"erd_default_scope":"schema:MARTS"'
         in (tmp_path / ".stitch" / "site" / "index.html").read_text()
     )
-    assert "warning" not in result.output
+    assert "warning" not in plain(result.output)
 
 
 def test_export_site_warns_about_an_erd_scope_the_graph_does_not_have(tmp_path, monkeypatch):
@@ -511,7 +497,7 @@ def test_export_site_warns_about_an_erd_scope_the_graph_does_not_have(tmp_path, 
     _write_graph(tmp_path, [_marts_model()])
     result = runner.invoke(app, ["export", "--format", "site"])
     assert result.exit_code == 0, result.output
-    assert "tag:nope" in result.output
+    assert "tag:nope" in plain(result.output)
     assert "schema:MARTS" in result.output  # names what is available
     # still exported, and the app is told what was configured so it can say so too
     assert (
@@ -568,7 +554,9 @@ def _coverage_output(
             case_mismatch_count=case_mismatch_count,
             bindings_total=bindings_total,
         )
-    return capture.get()
+    # rich highlights bare numbers, so a captured "warning: 3 ..." carries style codes
+    # around the 3 -- every caller wants the sentence, not the styling
+    return plain(capture.get())
 
 
 def test_coverage_report_surfaces_unverified_fields_and_seed_deps():
@@ -630,7 +618,7 @@ def test_build_docs_flag_runs_docs_generate(tmp_path, monkeypatch):
     project_dir, extra_args = calls[0]
     assert Path(project_dir).resolve() == tmp_path.resolve()
     assert extra_args == []
-    assert "running dbt docs generate" in result.output
+    assert "running dbt docs generate" in plain(result.output)
 
 
 def test_build_auto_docs_config_runs_docs_generate_with_docs_args(tmp_path, monkeypatch):
@@ -641,7 +629,7 @@ def test_build_auto_docs_config_runs_docs_generate_with_docs_args(tmp_path, monk
     result = runner.invoke(app, ["build"])
     assert len(calls) == 1
     assert calls[0][1] == ["--target", "prod"]
-    assert "running dbt docs generate" in result.output
+    assert "running dbt docs generate" in plain(result.output)
 
 
 def test_build_no_docs_flag_overrides_auto_docs(tmp_path, monkeypatch):
@@ -651,7 +639,7 @@ def test_build_no_docs_flag_overrides_auto_docs(tmp_path, monkeypatch):
     calls = _record_docs_calls(monkeypatch)
     result = runner.invoke(app, ["build", "--no-docs"])
     assert calls == []
-    assert "running dbt docs generate" not in result.output
+    assert "running dbt docs generate" not in plain(result.output)
 
 
 def test_build_docs_absent_defaults_to_off(tmp_path, monkeypatch):
@@ -661,7 +649,7 @@ def test_build_docs_absent_defaults_to_off(tmp_path, monkeypatch):
     calls = _record_docs_calls(monkeypatch)
     result = runner.invoke(app, ["build"])
     assert calls == []
-    assert "running dbt docs generate" not in result.output
+    assert "running dbt docs generate" not in plain(result.output)
 
 
 def test_build_docs_runner_failure_fails_cleanly(tmp_path, monkeypatch):
@@ -675,21 +663,10 @@ def test_build_docs_runner_failure_fails_cleanly(tmp_path, monkeypatch):
     monkeypatch.setattr("stitch_lineage.cli.run_docs_generate", _boom)
     result = runner.invoke(app, ["build", "--docs"])
     assert result.exit_code == 1
-    assert "dbt executable not found on PATH" in result.output
+    assert "dbt executable not found on PATH" in plain(result.output)
 
 
 # --- stitch impact --column: point-query blast radius (issue #86) --------------------
-
-
-def _plain(output):
-    """Rich output with the styling taken back out, for substring assertions.
-
-    Under CI rich force-enables terminal mode (it treats GITHUB_ACTIONS as a tty) and
-    renders at 80 columns, so it both splits a token like '--column' across ANSI style
-    codes and wraps long messages mid-sentence. Strip the escapes and collapse runs of
-    whitespace, and the assertion checks the text rather than the terminal it ran in.
-    """
-    return " ".join(re.sub(r"\x1b\[[0-9;]*m", "", output).split())
 
 
 def _write_impact_graph(tmp_path):
@@ -734,17 +711,17 @@ def _write_impact_graph(tmp_path):
     write_graph(Graph(nodes=nodes, edges=edges), tmp_path / ".stitch" / "graph.json")
 
 
-def test_impact_column_prints_the_blast_radius_offline(tmp_path, monkeypatch):
+def test_impact_column_prints_the_blast_radius_offline(tmp_path, monkeypatch, wide_console):
     # no stitch.yml and no Metabase credentials: the point query reads graph.json only
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("STITCH_METABASE_API_KEY", raising=False)
     _write_impact_graph(tmp_path)
     result = runner.invoke(app, ["impact", "--column", "fct_matches.match_intensity"])
     assert result.exit_code == 0, result.output
-    assert "fct_matches.match_intensity" in result.output
-    assert "1 downstream model: mart_engagement" in result.output
-    assert "#412 Intensity by country  (Board)" in result.output
-    assert "1 dashboard: Board" in result.output
+    assert "fct_matches.match_intensity" in plain(result.output)
+    assert "1 downstream model: mart_engagement" in plain(result.output)
+    assert "#412 Intensity by country  (Board)" in uncoloured(result.output)
+    assert "1 dashboard: Board" in plain(result.output)
 
 
 def test_impact_column_json_is_pipeable(tmp_path, monkeypatch):
@@ -763,7 +740,7 @@ def test_impact_column_ambiguous_reference_lists_candidates(tmp_path, monkeypatc
     _write_impact_graph(tmp_path)
     result = runner.invoke(app, ["impact", "--column", "match_intensity"])
     assert result.exit_code == 1
-    output = _plain(result.output)
+    output = plain(result.output)
     assert "matches 2 columns" in output
     assert "qualify it as model.column" in output
     assert "fct_matches.match_intensity" in output
@@ -774,7 +751,7 @@ def test_impact_column_unknown_reference_suggests(tmp_path, monkeypatch):
     _write_impact_graph(tmp_path)
     result = runner.invoke(app, ["impact", "--column", "fct_matches.match_intensety"])
     assert result.exit_code == 1
-    output = _plain(result.output)
+    output = plain(result.output)
     assert "no column matching" in output
     assert "did you mean" in output
     assert "fct_matches.match_intensity" in output
@@ -786,7 +763,7 @@ def test_impact_column_on_a_model_names_its_columns(tmp_path, monkeypatch):
     _write_impact_graph(tmp_path)
     result = runner.invoke(app, ["impact", "--column", "fct_matches"])
     assert result.exit_code == 1
-    output = _plain(result.output)
+    output = plain(result.output)
     assert "is a model, not a column" in output
     assert "fct_matches.match_intensity" in output
 
@@ -796,13 +773,13 @@ def test_impact_json_and_format_are_scoped_to_their_own_paths(tmp_path, monkeypa
     _write_impact_graph(tmp_path)
     no_column = runner.invoke(app, ["impact", "--json"])
     assert no_column.exit_code == 1
-    assert "--json requires --column" in _plain(no_column.output)
+    assert "--json requires --column" in plain(no_column.output)
 
     wrong_format = runner.invoke(
         app, ["impact", "--column", "fct_matches.match_intensity", "--format", "slack"]
     )
     assert wrong_format.exit_code == 1
-    assert "use --json with --column" in _plain(wrong_format.output)
+    assert "use --json with --column" in plain(wrong_format.output)
 
 
 def test_impact_column_documented_on_the_command(tmp_path, monkeypatch):
@@ -810,10 +787,10 @@ def test_impact_column_documented_on_the_command(tmp_path, monkeypatch):
     # baseline, so the top-level help lists it again
     monkeypatch.chdir(tmp_path)
     top_help = runner.invoke(app, ["--help"])
-    assert "impact" in _plain(top_help.output)
+    assert "impact" in plain(top_help.output)
     own_help = runner.invoke(app, ["impact", "--help"])
     assert own_help.exit_code == 0
-    assert "--column" in _plain(own_help.output)
+    assert "--column" in plain(own_help.output)
 
 
 def test_impact_column_rejects_a_baseline(tmp_path, monkeypatch):
@@ -821,14 +798,14 @@ def test_impact_column_rejects_a_baseline(tmp_path, monkeypatch):
     for extra in (["--base", "main"], ["--base-file", "graph.json"]):
         result = runner.invoke(app, ["impact", "--column", "fct.col", *extra])
         assert result.exit_code == 1
-        assert "takes no baseline" in _plain(result.output)
+        assert "takes no baseline" in plain(result.output)
 
 
 def test_impact_column_without_a_graph_points_at_build(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["impact", "--column", "fct_matches.match_intensity"])
     assert result.exit_code == 1
-    assert "stitch build" in _plain(result.output)
+    assert "stitch build" in plain(result.output)
 
 
 def test_migrate_relationships_is_registered_and_documented():
@@ -862,4 +839,4 @@ def test_migrate_relationships_declines_when_the_target_form_is_meta(tmp_path):
     )
     result = runner.invoke(app, ["migrate-relationships", "--config", str(config)])
     assert result.exit_code == 0
-    assert "nothing to migrate to" in _plain(result.stdout)
+    assert "nothing to migrate to" in plain(result.stdout)

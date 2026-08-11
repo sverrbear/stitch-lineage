@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 import responses
+from conftest import plain, uncoloured
 from typer.testing import CliRunner
 
 from stitch_lineage.cli import app
@@ -141,23 +142,25 @@ def test_full_build_produces_unbroken_end_to_end_chain(project):
     assert graph.metabase_version == "v0.53.2"
     assert graph.dbt_invocation_id == "11111111-2222-3333-4444-555555555555"
 
-    assert "models bound" in result.output
-    assert "dbt column lineage" in result.output
+    assert "models bound" in plain(result.output)
+    assert "dbt column lineage" in plain(result.output)
     # every binding in this fixture is a case-only mismatch (warehouse identifier
     # casing), so the line reports itself calmly instead of as a warning
-    assert "note: 4/4 column bindings matched on a case-only mismatch" in result.output
+    assert "note: 4/4 column bindings matched on a case-only mismatch" in plain(result.output)
 
 
-def test_build_progress_renders_to_stderr_and_keeps_stdout_clean(project):
+def test_build_progress_renders_to_stderr_and_keeps_stdout_clean(project, wide_console):
     result = _full_build()
     graph = _graph(project)
     lines = result.stdout.splitlines()
+    # this one is about line *structure*, so it pins the width rather than unwrapping:
+    # collapsing the output would erase the very boundary being asserted.
     # stdout starts with the summary line and carries the coverage report, exactly as
     # without progress -- the progress display goes to stderr (free-form there)
-    assert lines[0] == (
+    assert plain(lines[0]) == (
         f"wrote .stitch/graph.json ({len(graph.nodes)} nodes, {len(graph.edges)} edges)"
     )
-    assert lines[1].startswith("models bound")
+    assert plain(lines[1]).startswith("models bound")
     for stage in (
         "loading artifacts",
         "tracing column lineage",
@@ -165,7 +168,7 @@ def test_build_progress_renders_to_stderr_and_keeps_stdout_clean(project):
         "resolving cards",
         "writing graph",
     ):
-        assert stage not in result.stdout, f"progress stage '{stage}' leaked to stdout"
+        assert stage not in plain(result.stdout), f"progress stage '{stage}' leaked to stdout"
 
 
 def test_rebuild_is_deterministic_modulo_volatile_header(project):
@@ -195,7 +198,7 @@ def test_build_check_green_then_detects_drift(project):
 
         in_sync = runner.invoke(app, ["build", "--check"])
         assert in_sync.exit_code == 0, in_sync.output
-        assert "up to date" in in_sync.output
+        assert "up to date" in plain(in_sync.output)
         assert graph_path.read_text() == committed  # --check never writes
 
         payload = json.loads(committed)
@@ -205,7 +208,7 @@ def test_build_check_green_then_detects_drift(project):
 
         drifted = runner.invoke(app, ["build", "--check"])
     assert drifted.exit_code == 1
-    assert "drift" in drifted.output
+    assert "drift" in plain(drifted.output)
     assert graph_path.read_text() == tweaked  # --check never writes
 
 
@@ -271,7 +274,7 @@ def test_build_no_metabase_without_baseline_is_dbt_only(project, monkeypatch):
         result = runner.invoke(app, ["build", "--no-metabase"])
         assert result.exit_code == 0, result.output
         assert len(rsps.calls) == 0
-    assert "dbt-only" in result.output
+    assert "dbt-only" in plain(result.output)
     graph = _graph(project)
     assert not any(n.node_id.startswith("mb_") for n in graph.nodes)
     assert graph.coverage.models_bound == 0
@@ -280,8 +283,8 @@ def test_build_no_metabase_without_baseline_is_dbt_only(project, monkeypatch):
     # a second run over the dbt-only baseline must not pretend a Metabase side exists
     rerun = runner.invoke(app, ["build", "--no-metabase"])
     assert rerun.exit_code == 0, rerun.output
-    assert "no Metabase side" in rerun.output
-    assert "models bound" not in rerun.output
+    assert "no Metabase side" in plain(rerun.output)
+    assert "models bound" not in plain(rerun.output)
 
 
 # --- local impact: previous-build snapshot + build summary --------------------
@@ -291,7 +294,7 @@ def test_first_build_takes_no_snapshot_and_a_no_op_rebuild_stays_quiet(project):
     prev_path = project / ".stitch" / "graph.prev.json"
     first = _full_build()
     assert not prev_path.exists()
-    assert "since last build" not in first.output
+    assert "since last build" not in plain(first.output)
 
     written = (project / ".stitch" / "graph.json").read_text()
     second = _full_build()
@@ -310,7 +313,7 @@ def test_rebuild_after_a_dropped_column_summarizes_the_blast_radius(project):
     assert (
         "since last build: 2 columns removed -> 4 cards on 1 dashboard affected "
         "(run 'stitch impact' for the tree)"
-    ) in result.output
+    ) in plain(result.output)
 
 
 def test_impact_defaults_to_the_previous_build(project, monkeypatch):
@@ -323,9 +326,10 @@ def test_impact_defaults_to_the_previous_build(project, monkeypatch):
 
     bare = runner.invoke(app, ["impact"])
     assert bare.exit_code == 0, bare.output
-    assert "2 columns removed or renamed" in bare.output
-    assert "stg_payments.amount_usd" in bare.output
-    assert "#201 Orders overview" in bare.output
+    bare_out = plain(bare.output)
+    assert "2 columns removed or renamed" in bare_out
+    assert "stg_payments.amount_usd" in bare_out
+    assert "#201 Orders overview" in bare_out
 
     kept = project / "kept-graph.json"
     shutil.copy(project / ".stitch" / "graph.prev.json", kept)
@@ -333,21 +337,21 @@ def test_impact_defaults_to_the_previous_build(project, monkeypatch):
     assert explicit.exit_code == 0, explicit.output
     # same baseline bytes -> same payload; only the stderr provenance names a different source
     assert explicit.stdout == bare.stdout
-    assert "baseline: the graph your previous build overwrote" in bare.stderr
-    assert explicit.stderr.strip() == f"baseline: {kept}"
+    assert "baseline: the graph your previous build overwrote" in plain(bare.stderr)
+    assert plain(explicit.stderr) == f"baseline: {kept}"
 
     # --base-file wins over the snapshot: against the current graph nothing changed
     self_diff = runner.invoke(
         app, ["impact", "--base-file", str(project / ".stitch" / "graph.json")]
     )
     assert self_diff.exit_code == 0, self_diff.output
-    assert "no downstream-impacting column changes" in self_diff.output
+    assert "no downstream-impacting column changes" in plain(self_diff.output)
 
 
 # --- impact -----------------------------------------------------------------
 
 
-def test_impact_reports_downstream_blast_radius(project, monkeypatch):
+def test_impact_reports_downstream_blast_radius(project, monkeypatch, wide_console):
     _full_build()
     _git(project, "init", "-b", "main")
     _git(project, "add", ".")
@@ -382,15 +386,15 @@ def test_impact_reports_downstream_blast_radius(project, monkeypatch):
 
     text = runner.invoke(app, ["impact", "--base", "main"])
     assert text.exit_code == 0, text.output
-    assert "stg_payments.amount_usd" in text.output
+    assert "stg_payments.amount_usd" in plain(text.output)
 
     slack = runner.invoke(app, ["impact", "--base", "main", "--format", "slack"])
     assert slack.exit_code == 0, slack.output
-    assert "*⚠ 2 columns removed or renamed*" in slack.output
-    assert "*stg_payments.amount_usd* → removed" in slack.output
-    assert "    • #201 Orders overview (Orders Board, Sverrir)" in slack.output
-    assert "Orders Board" in slack.output
-    assert "├" not in slack.output and "└" not in slack.output
+    assert "*⚠ 2 columns removed or renamed*" in plain(slack.output)
+    assert "*stg_payments.amount_usd* → removed" in plain(slack.output)
+    assert "    • #201 Orders overview (Orders Board, Sverrir)" in uncoloured(slack.output)
+    assert "Orders Board" in plain(slack.output)
+    assert "├" not in slack.output and "└" not in plain(slack.output)
 
 
 def test_impact_no_change_is_quiet_and_passes_fail_on_impact(project):
@@ -400,7 +404,7 @@ def test_impact_no_change_is_quiet_and_passes_fail_on_impact(project):
     _git(project, "commit", "-m", "baseline graph")
     result = runner.invoke(app, ["impact", "--base", "main", "--fail-on-impact"])
     assert result.exit_code == 0, result.output
-    assert "no downstream-impacting column changes" in result.output
+    assert "no downstream-impacting column changes" in plain(result.output)
 
 
 def test_impact_missing_baseline_is_a_clear_error(project):
@@ -408,7 +412,7 @@ def test_impact_missing_baseline_is_a_clear_error(project):
     _git(project, "init", "-b", "main")
     result = runner.invoke(app, ["impact", "--base", "main"])
     assert result.exit_code == 1
-    assert "baseline" in result.output
+    assert "baseline" in plain(result.output)
 
 
 def test_impact_baseline_missing_at_ref_names_the_fix(project):
@@ -418,11 +422,12 @@ def test_impact_baseline_missing_at_ref_names_the_fix(project):
     _git(project, "commit", "-m", "base ref without a committed graph")
     result = runner.invoke(app, ["impact", "--base", "main"])
     assert result.exit_code == 1
-    assert "no committed baseline at main:.stitch/graph.json" in result.output
-    assert "--base diffs the current build against the graph committed on that ref" in result.output
-    assert "run 'stitch build' and commit .stitch/graph.json" in result.output
-    assert "--base <ref>" in result.output
-    assert "drop --base to diff against your own previous build" in result.output
+    output = plain(result.output)
+    assert "no committed baseline at main:.stitch/graph.json" in output
+    assert "--base diffs the current build against the graph committed on that ref" in output
+    assert "run 'stitch build' and commit .stitch/graph.json" in output
+    assert "--base <ref>" in output
+    assert "drop --base to diff against your own previous build" in output
 
 
 def test_impact_bad_base_ref_keeps_the_raw_git_error(project):
@@ -432,9 +437,9 @@ def test_impact_bad_base_ref_keeps_the_raw_git_error(project):
     _git(project, "commit", "-m", "baseline graph")
     result = runner.invoke(app, ["impact", "--base", "nosuchref"])
     assert result.exit_code == 1
-    assert "could not load the baseline" in result.output
-    assert "nosuchref" in result.output
-    assert "no committed baseline" not in result.output
+    assert "could not load the baseline" in plain(result.output)
+    assert "nosuchref" in plain(result.output)
+    assert "no committed baseline" not in plain(result.output)
 
 
 # --- local history (issue #87) ----------------------------------------------
@@ -454,7 +459,7 @@ def _gitignored_repo(project: Path) -> str:
 def test_impact_base_resolves_from_local_history_with_nothing_committed(project, monkeypatch):
     base_sha = _gitignored_repo(project)
     build = _full_build()  # clean tree -> the graph is kept as the baseline for base_sha
-    assert f"history: stored baseline for {base_sha[:7]} (1/20 kept)" in build.output
+    assert f"history: stored baseline for {base_sha[:7]} (1/20 kept)" in plain(build.output)
     assert not subprocess.run(
         ["git", "ls-files", ".stitch"], cwd=project, capture_output=True, text=True, check=True
     ).stdout.strip(), "the graph must stay uncommitted for this test to mean anything"
@@ -464,20 +469,18 @@ def test_impact_base_resolves_from_local_history_with_nothing_committed(project,
     with responses.RequestsMock():
         rebuild = runner.invoke(app, ["build", "--no-metabase"])
     assert rebuild.exit_code == 0, rebuild.output
-    assert "history: no snapshot stored" in rebuild.output  # dirty tree
+    assert "history: no snapshot stored" in plain(rebuild.output)  # dirty tree
 
     monkeypatch.delenv("STITCH_METABASE_URL")
     monkeypatch.delenv("STITCH_METABASE_API_KEY")
     result = runner.invoke(app, ["impact", "--base", "main", "--format", "github-comment"])
     assert result.exit_code == 0, result.output
-    assert "2 columns removed or renamed" in result.output
-    assert "stg_payments.amount_usd" in result.output
-    assert "#201 Orders overview" in result.output
+    assert "2 columns removed or renamed" in plain(result.output)
+    assert "stg_payments.amount_usd" in plain(result.output)
+    assert "#201 Orders overview" in plain(result.output)
     # provenance goes to stderr, so the comment on stdout stays pipeable
-    assert result.stderr.strip() == (
-        f"baseline: local history snapshot for {base_sha[:7]} ('main')"
-    )
-    assert "baseline:" not in result.stdout
+    assert plain(result.stderr) == (f"baseline: local history snapshot for {base_sha[:7]} ('main')")
+    assert "baseline:" not in plain(result.stdout)
 
 
 def test_impact_prefers_local_history_over_the_committed_graph(project):
@@ -485,8 +488,8 @@ def test_impact_prefers_local_history_over_the_committed_graph(project):
     _full_build()
     result = runner.invoke(app, ["impact", "--base", "main"])
     assert result.exit_code == 0, result.output
-    assert "no downstream-impacting column changes" in result.output
-    assert "local history snapshot" in result.stderr
+    assert "no downstream-impacting column changes" in plain(result.output)
+    assert "local history snapshot" in plain(result.stderr)
 
 
 def test_prev_build_and_commit_history_answer_different_questions(project, monkeypatch):
@@ -502,21 +505,21 @@ def test_prev_build_and_commit_history_answer_different_questions(project, monke
             rebuild = runner.invoke(app, ["build", "--no-metabase"])
         assert rebuild.exit_code == 0, rebuild.output
     # the second rebuild changed nothing, so the build summary stays quiet
-    assert "since last build" not in rebuild.output
-    assert "history: no snapshot stored" in rebuild.output  # dirty tree throughout
+    assert "since last build" not in plain(rebuild.output)
+    assert "history: no snapshot stored" in plain(rebuild.output)  # dirty tree throughout
 
     monkeypatch.delenv("STITCH_METABASE_URL")
     monkeypatch.delenv("STITCH_METABASE_API_KEY")
 
     bare = runner.invoke(app, ["impact"])
     assert bare.exit_code == 0, bare.output
-    assert "no downstream-impacting column changes" in bare.output
-    assert "previous build" in bare.stderr
+    assert "no downstream-impacting column changes" in plain(bare.output)
+    assert "previous build" in plain(bare.stderr)
 
     since_main = runner.invoke(app, ["impact", "--base", "main"])
     assert since_main.exit_code == 0, since_main.output
-    assert "2 columns removed or renamed" in since_main.output
-    assert f"local history snapshot for {base_sha[:7]}" in since_main.stderr
+    assert "2 columns removed or renamed" in plain(since_main.output)
+    assert f"local history snapshot for {base_sha[:7]}" in plain(since_main.stderr)
 
     # an explicit file outranks --base: same two baselines on disk, provenance says which
     kept = project / "kept-graph.json"
@@ -524,7 +527,7 @@ def test_prev_build_and_commit_history_answer_different_questions(project, monke
     both = runner.invoke(app, ["impact", "--base", "main", "--base-file", str(kept)])
     assert both.exit_code == 0, both.output
     assert both.stdout == bare.stdout
-    assert both.stderr.strip() == f"baseline: {kept}"
+    assert plain(both.stderr) == f"baseline: {kept}"
 
     # and --column asks neither question: it walks the current graph, so no baseline
     point = runner.invoke(app, ["impact", "--column", "raw_payments.amount"])
@@ -539,9 +542,9 @@ def test_history_lists_stored_baselines(project):
 
     listing = runner.invoke(app, ["history"])
     assert listing.exit_code == 0, listing.output
-    assert "1 baseline in .stitch/history (keeping 20), newest first" in listing.output
-    assert f"  {base_sha[:7]}  " in listing.output
-    assert f"{len(graph.nodes)} nodes / {len(graph.edges)} edges" in listing.output
+    assert "1 baseline in .stitch/history (keeping 20), newest first" in plain(listing.output)
+    assert f"  {base_sha[:7]}  " in uncoloured(listing.output)
+    assert f"{len(graph.nodes)} nodes / {len(graph.edges)} edges" in plain(listing.output)
     assert "project sources" in listing.output  # the commit subject
 
     as_json = runner.invoke(app, ["history", "--json"])
@@ -567,37 +570,38 @@ def test_history_retention_prunes_and_can_be_turned_off(project):
 
     listing = runner.invoke(app, ["history"])
     assert listing.exit_code == 0, listing.output
-    assert f"  {second[:7]}  " in listing.output
+    assert f"  {second[:7]}  " in uncoloured(listing.output)
     assert len([line for line in listing.output.splitlines() if line.startswith("  ")]) == 1
 
     (project / "stitch.yml").write_text(STITCH_YML + "  history_retention: 0\n")
     _full_build()
     off = runner.invoke(app, ["history"])
-    assert "no graph baselines stored in .stitch/history" in off.output
-    assert "history is off" in off.output
+    off_out = plain(off.output)
+    assert "no graph baselines stored in .stitch/history" in off_out
+    assert "history is off" in off_out
 
 
 def test_history_without_a_repo_stores_nothing_and_says_how(project):
     build = _full_build()
-    assert "history:" not in build.output
+    assert "history:" not in plain(build.output)
     listing = runner.invoke(app, ["history"])
     assert listing.exit_code == 0, listing.output
-    assert "no graph baselines stored" in listing.output
-    assert "clean working tree" in listing.output
+    assert "no graph baselines stored" in plain(listing.output)
+    assert "clean working tree" in plain(listing.output)
 
 
 # --- search / export / doctor ------------------------------------------------
 
 
-def test_search_cli_hits_models_and_cards(project, monkeypatch):
+def test_search_cli_hits_models_and_cards(project, monkeypatch, wide_console):
     _full_build()
     monkeypatch.delenv("STITCH_METABASE_URL")
     monkeypatch.delenv("STITCH_METABASE_API_KEY")
 
     table = runner.invoke(app, ["search", "orders"])
     assert table.exit_code == 0, table.output
-    assert "fct_orders" in table.output
-    assert "Orders overview" in table.output
+    assert "fct_orders" in plain(table.output)
+    assert "Orders overview" in plain(table.output)
 
     piped = runner.invoke(app, ["search", "orders", "--json"])
     assert piped.exit_code == 0
@@ -643,9 +647,9 @@ def test_doctor_unresolved_cards_without_env(project, monkeypatch):
     monkeypatch.delenv("STITCH_METABASE_API_KEY")
     result = runner.invoke(app, ["doctor", "--unresolved-cards"])
     assert result.exit_code == 0, result.output
-    assert "unresolved cards (1)" in result.output
-    assert "card 208: unresolvable field name" in result.output
-    assert "ghost_column" in result.output
+    assert "unresolved cards (1)" in plain(result.output)
+    assert "card 208: unresolvable field name" in plain(result.output)
+    assert "ghost_column" in plain(result.output)
 
 
 def test_doctor_happy_path(project):
@@ -658,8 +662,8 @@ def test_doctor_happy_path(project):
         )
         result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0, result.output
-    assert "v0.53.2" in result.output
-    assert "fail" not in result.output
+    assert "v0.53.2" in plain(result.output)
+    assert "fail" not in plain(result.output)
 
 
 def test_doctor_missing_artifacts_fails(tmp_path, monkeypatch):
@@ -669,27 +673,28 @@ def test_doctor_missing_artifacts_fails(tmp_path, monkeypatch):
     (tmp_path / "stitch.yml").write_text(STITCH_YML)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 1
-    assert "manifest.json" in result.output
+    assert "manifest.json" in plain(result.output)
     assert "skip" in result.output  # metabase check skipped, not failed
 
 
-def test_doctor_unbound_and_untraced_without_env(project, monkeypatch):
+def test_doctor_unbound_and_untraced_without_env(project, monkeypatch, wide_console):
     _full_build()
     monkeypatch.delenv("STITCH_METABASE_URL")
     monkeypatch.delenv("STITCH_METABASE_API_KEY")
 
     unbound = runner.invoke(app, ["doctor", "--unbound"])
     assert unbound.exit_code == 0, unbound.output
-    assert "model.demo.mart_payments" in unbound.output
-    assert "model.demo.fct_orders" not in unbound.output
+    assert "model.demo.mart_payments" in plain(unbound.output)
+    assert "model.demo.fct_orders" not in plain(unbound.output)
 
     untraced = runner.invoke(app, ["doctor", "--untraced"])
     assert untraced.exit_code == 0, untraced.output
-    assert "model.demo.mart_pivot::pivot_a" in untraced.output
+    untraced_out = plain(untraced.output)
+    assert "model.demo.mart_pivot::pivot_a" in untraced_out
     # every row says WHY, not just which: the list is only actionable with the
     # reason on it (#147), and CLI parity with the in-app drill-down
-    assert "why" in untraced.output
-    assert "SQL could not be parsed" in untraced.output
+    assert "why" in untraced_out
+    assert "SQL could not be parsed" in untraced_out
 
 
 def test_doctor_list_databases(project):
@@ -701,5 +706,5 @@ def test_doctor_list_databases(project):
         )
         result = runner.invoke(app, ["doctor", "--list-databases"])
     assert result.exit_code == 0, result.output
-    assert "Analytics" in result.output
-    assert "Sample Database" in result.output
+    assert "Analytics" in plain(result.output)
+    assert "Sample Database" in plain(result.output)
