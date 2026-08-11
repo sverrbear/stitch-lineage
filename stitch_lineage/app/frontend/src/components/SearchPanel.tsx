@@ -4,6 +4,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStitch } from '../data'
+import { consequenceLabel } from '../lib/consequence'
 import { groupHits, type SearchHit } from '../lib/search'
 import { NODE_TYPE_NAME, displayName, isArchived } from '../lib/present'
 import { navigate, nodeHref } from '../router'
@@ -26,7 +27,7 @@ export function SearchPanel({
   inputRef,
   hero,
 }: SearchPanelProps) {
-  const { search } = useStitch()
+  const { search, consequence } = useStitch()
   const [query, setQuery] = useState('')
   const [cursor, setCursor] = useState(0)
   const localRef = useRef<HTMLInputElement | null>(null)
@@ -88,6 +89,9 @@ export function SearchPanel({
                 flatIndex += 1
                 const active = flatIndex === cursor
                 const idx = flatIndex
+                // what depends on this hit, so the choice is made in the dropdown
+                // rather than by opening every candidate (#115)
+                const depends = consequenceLabel(hit.node, consequence.of(hit.node.node_id))
                 return (
                   <button
                     key={hit.node.node_id}
@@ -102,6 +106,7 @@ export function SearchPanel({
                     <span className="search-hit-name">{displayName(hit.node)}</span>
                     <span className="search-hit-type">{NODE_TYPE_NAME[hit.node.node_type]}</span>
                     {hit.context && <span className="search-hit-context">{hit.context}</span>}
+                    {depends && <span className="search-hit-consequence">{depends}</span>}
                     {/* two cards can share a title; the collection and the archived
                         flag are what tell them apart in a list (#122) */}
                     {isArchived(hit.node) && (
