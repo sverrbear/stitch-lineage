@@ -332,39 +332,6 @@ kbd {
   letter-spacing: -0.025em;
 }
 
-/* the examples: real names out of this graph, fully qualified, in mono — they are
-   what the reader is about to type (principles 02 + 05) */
-.home-examples {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 9px;
-  font-size: 13px;
-  color: var(--text-muted);
-}
-
-.home-example-slot {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-}
-
-.home-example-sep {
-  color: var(--text-muted);
-}
-
-.home-example {
-  font-family: var(--mono);
-  font-size: 12.5px;
-  color: var(--text-2);
-}
-
-.home-example:hover {
-  color: var(--accent);
-  text-decoration: none;
-}
-
 /* the two canvases, as rows rather than cards: a link is a link */
 .home-links {
   display: flex;

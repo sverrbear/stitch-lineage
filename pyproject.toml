@@ -108,7 +108,12 @@ forbidden_modules = [
 ]
 
 [[tool.importlinter.contracts]]
-name = "only io.metabase_client speaks HTTP"
+# SPEC.md section 4's HTTP seam. It read "only io/metabase_client.py" until `stitch mend`
+# needed to post a Slack notice (issue #143); what the rule protects was never the file
+# count, it is that HTTP lives at the edge behind a NAMED client so everything above it is
+# testable with no network. Two clients, and no more without a spec change:
+# io/metabase_client.py and io/slack_webhook.py.
+name = "only io HTTP clients speak HTTP"
 type = "forbidden"
 # direct imports only: cli may import metabase_client (which imports requests),
 # but no listed module may import requests itself
@@ -122,15 +127,36 @@ source_modules = [
     "stitch_lineage.graph",
     "stitch_lineage.export",
     "stitch_lineage.app",
+    "stitch_lineage.mend",
     "stitch_lineage.io.artifacts",
     "stitch_lineage.io.dbt_runner",
     "stitch_lineage.io.git",
     "stitch_lineage.io.graph_store",
     "stitch_lineage.io.history_store",
+    "stitch_lineage.io.mend_store",
     "stitch_lineage.io.staged_store",
     "stitch_lineage.write",
 ]
 forbidden_modules = ["requests"]
+
+[[tool.importlinter.contracts]]
+# Deciding a repair must be possible offline, from graphs and raw payloads alone -- that is
+# what lets the taxonomy, both MBQL rewrite shapes and the essentialness rule be unit-tested
+# against synthetic cards instead of against a live BI estate. Only mend/apply.py, the loop
+# that writes, may reach io/ -- and mend/apply.py is exactly where the guards live.
+name = "mend planning is pure: only mend.apply reaches the API"
+type = "forbidden"
+source_modules = [
+    "stitch_lineage.mend.models",
+    "stitch_lineage.mend.plan",
+    "stitch_lineage.mend.render",
+    "stitch_lineage.mend.rewrite",
+]
+forbidden_modules = [
+    "requests",
+    "stitch_lineage.io",
+    "stitch_lineage.write",
+]
 
 [[tool.importlinter.contracts]]
 name = "graph depends only on schema, never on resolve or io"

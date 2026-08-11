@@ -69,6 +69,60 @@ class MetabaseConfig(BaseModel):
             )
 
 
+class MendConfig(BaseModel):
+    """`stitch mend` autonomy and its Slack destination (SPEC.md section 14).
+
+    `auto` is the real safety dial: an action named here is applied without a human gate,
+    and an action removed from it downgrades to `notify` -- the card is listed in the notice
+    and written to by nobody. All three are on by default, because a repoint executes a
+    rename a human already made deliberately in a reviewed PR and declared explicitly, and
+    an archive is reversible. `strip` is the one worth thinking about: a card with a dead
+    filter removed still runs and shows different numbers under the same title, which
+    re-execution validation cannot catch.
+
+    `notify_only_collections` are glob patterns matched against collection names and full
+    paths (personal collections match "*Personal*" whatever they are called). Cards there
+    are never written to.
+    """
+
+    slack_webhook: str | None = None
+    auto: list[str] = Field(default_factory=lambda: ["repoint", "strip", "archive"])
+    notify_only_collections: list[str] = Field(default_factory=lambda: ["*Personal*"])
+    missing_env: list[str] = Field(default_factory=list, exclude=True, repr=False)
+
+    @field_validator("auto")
+    @classmethod
+    def _validate_auto(cls, value: list[str]) -> list[str]:
+        allowed = ("repoint", "strip", "archive")
+        for action in value:
+            if action == "notify":
+                raise ValueError(
+                    "mend.auto must not list 'notify' -- notify is the absence of a write, "
+                    "not an autonomy level. Remove an action to downgrade it to notify."
+                )
+            if action not in allowed:
+                raise ValueError(
+                    f"mend.auto: unknown action '{action}' (expected any of {', '.join(allowed)})"
+                )
+        return list(dict.fromkeys(value))
+
+    def require_env(self) -> None:
+        """Raise unless every ${ENV_VAR} in the mend section resolved at load time.
+
+        Same lazy contract as MetabaseConfig: a webhook variable that is only set in CI must
+        not stop `stitch serve` from starting on a laptop, so the failure lands when a
+        command actually wants to post.
+        """
+        names = list(dict.fromkeys(self.missing_env))
+        if names:
+            plural = len(names) > 1
+            raise StitchConfigError(
+                f"environment variable{'s' if plural else ''} {', '.join(names)} "
+                f"{'are' if plural else 'is'} referenced in the mend section of stitch.yml "
+                "but not set"
+            )
+
+
 class RelationshipsConfig(BaseModel):
     # A drawn relationship is written as a dbt `relationships` test by default (#134):
     # dbt-native and tool-agnostic -- dbt-metabase infers FKs from these tests and
@@ -127,18 +181,21 @@ class StitchConfig(BaseModel):
     relationships: RelationshipsConfig = Field(default_factory=RelationshipsConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     serve: ServeConfig = Field(default_factory=ServeConfig)
+    mend: MendConfig = Field(default_factory=MendConfig)
 
 
 def load_config(path: Path) -> StitchConfig:
     """Parse and validate stitch.yml, interpolating ${ENV_VAR} references.
 
-    Hard rule: metabase.api_key must be a whole-value env reference in the file --
-    a literal key in stitch.yml is a startup error, not a warning.
+    Hard rule: metabase.api_key and mend.slack_webhook must be whole-value env references
+    in the file -- a literal secret in stitch.yml is a startup error, not a warning.
 
-    Env interpolation of the metabase section is lazy/tolerant: a referenced-but-unset
-    env var is not a load error; the raw reference is kept, the name recorded on
-    cfg.metabase.missing_env, and MetabaseConfig.require_env() raises when a command
-    that actually calls the API runs. All other sections interpolate strictly.
+    Env interpolation of the metabase and mend sections is lazy/tolerant: a
+    referenced-but-unset env var is not a load error; the raw reference is kept, the name
+    recorded on cfg.<section>.missing_env, and require_env() raises when a command that
+    actually needs the credential runs. Both sections hold values that only exist in CI, and
+    a laptop without them must still be able to run `stitch serve`. All other sections
+    interpolate strictly.
     """
     if not path.is_file():
         raise StitchConfigError(f"config file not found: {path} -- run 'stitch init' to create one")
@@ -171,16 +228,29 @@ def load_config(path: Path) -> StitchConfig:
             "metabase.databases is required -- run 'stitch doctor --list-databases'"
         )
 
+    mend = raw.get("mend")
+    if isinstance(mend, dict):
+        webhook = mend.get("slack_webhook")
+        if webhook is not None and (
+            not isinstance(webhook, str) or _ENV_REF.fullmatch(webhook) is None
+        ):
+            raise StitchConfigError(
+                "mend.slack_webhook must be an environment variable reference like "
+                "${STITCH_SLACK_WEBHOOK_URL} -- a literal webhook URL in stitch.yml is an "
+                "error, for the same reason a literal API key is: it grants posting rights "
+                "to anyone who reads the repo"
+            )
+
     missing: list[str] = []
-    interpolated = {
-        key: _interpolate_env(value, missing if key == "metabase" else None)
-        for key, value in raw.items()
-    }
+    mend_missing: list[str] = []
+    lazy = {"metabase": missing, "mend": mend_missing}
+    interpolated = {key: _interpolate_env(value, lazy.get(key)) for key, value in raw.items()}
     try:
         cfg = StitchConfig.model_validate(interpolated)
     except ValidationError as exc:
         raise StitchConfigError(f"invalid stitch.yml: {exc}") from exc
     cfg.metabase.missing_env = missing
+    cfg.mend.missing_env = mend_missing
     return cfg
 
 
