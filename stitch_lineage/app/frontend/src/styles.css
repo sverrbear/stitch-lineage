@@ -648,6 +648,15 @@ kbd {
   color: var(--text-2);
 }
 
+/* where the value was DEFINED, under the parent it is read from (#162). The caption
+   for the SQL below it, so it sits tight to it and reads as the stronger of the two
+   lines: the parent is one step, this is the answer. */
+.defined-as-origin {
+  margin: -4px 0 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+
 /* what the SQL says, under why stitch could not follow it: still shown, because
    an untraced column's own projection is the first thing you need to read */
 .defined-as-body.is-secondary {
