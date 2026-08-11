@@ -1,65 +1,218 @@
-# stitch
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img src="assets/logo-light.svg" width="300" alt="stitch">
+  </picture>
+</p>
 
-**dbt ↔ Metabase column lineage — so you know what a column change breaks before you make it.**
+[![image](https://img.shields.io/github/license/sverrbear/stitch-lineage.svg)](LICENSE)
+[![image](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg)](pyproject.toml)
+[![image](https://img.shields.io/github/actions/workflow/status/sverrbear/stitch-lineage/ci.yml?branch=main&label=test)](https://github.com/sverrbear/stitch-lineage/actions/workflows/ci.yml)
+
+dbt ↔ Metabase column lineage — so you know what a column change breaks before you make it.
+
+Use `stitch` to trace a column from its source table through your dbt models into the Metabase
+fields, cards and dashboards that read it. It reads your dbt artifacts and the Metabase API and
+writes one plain local file, `.stitch/graph.json`, which the CLI queries and the browser app draws.
+
+stitch is **local-first**: no server, no warehouse backend, no hosted anything, and nothing it
+generates needs to be committed. It connects **read-only** to Metabase, and the only thing it ever
+writes into your repo is a relationship or description you explicitly asked it to apply.
+
+Requires **Python 3.11+**, a dbt project whose artifacts you can generate, and **Metabase 49 or
+newer** (the first release with API keys).
+
+This project is in active development — v0.2.1, alpha. Full design in [SPEC.md](SPEC.md) (v0.5);
+work is tracked as [GitHub issues](https://github.com/sverrbear/stitch-lineage/issues).
+
+<p align="center">
+  <img src="assets/lineage.png" alt="The stitch lineage view: one column traced from its source table through dbt models into Metabase fields, cards and dashboards" width="100%">
+</p>
+<p align="center">
+  <sub><code>stitch serve</code> — one column's blast radius, source to dashboard. Synthetic demo project.</sub>
+</p>
+
+## Table of Contents
+
+1. [Getting Started](#getting-started)
+2. [What breaks if I change this column?](#what-breaks-if-i-change-this-column)
+3. [The app](#the-app)
+4. [Configuration](#configuration)
+5. [Coverage](#coverage)
+6. [Roadmap](#roadmap)
+7. [Built on](#built-on)
+8. [FAQ](#faq)
+9. [Contributing](#contributing)
+10. [License](#license)
+
+## Getting Started
+
+### Installation
+
+stitch is installed from git. There is no PyPI package — that is deliberate (see the
+[FAQ](#why-is-there-no-pypi-package)):
+
+```shell
+pip install git+https://github.com/sverrbear/stitch-lineage.git
+```
+
+The browser app ships prebuilt, so installing never needs a node toolchain.
+
+### Usage
+
+From your dbt project root:
+
+```shell
+stitch init                      # write stitch.yml (a wizard, not a scaffolder)
+stitch build                     # resolve dbt + Metabase into .stitch/graph.json
+stitch serve                     # explore it at http://127.0.0.1:8787
+```
+
+`stitch init` reads `dbt_project.yml` and `target/manifest.json` for your project name, target path,
+databases, schemas and model inventory, and never asks a question dbt already answers. It asks for
+the Metabase URL and an API key, calls Metabase, proposes the database mapping
+(`Metabase "Analytics" ↔ dbt "analytics" — confirm?`) and the `include_schemas` where your marts
+actually live, then writes `stitch.yml`, a `.env.example` line and a `.gitignore` entry, and
+finishes with a mini-doctor and the next command. Four inputs, under two minutes. **The API key is
+never written to disk** — `stitch.yml` gets the `${STITCH_METABASE_API_KEY}` reference, and a
+literal key in the file is a startup error rather than a warning.
+
+`stitch build` needs `target/manifest.json` and `target/catalog.json`. Set `dbt.auto_docs: true` and
+it runs `dbt docs generate` for you; otherwise run dbt yourself and pass `--no-docs`:
+
+```shell
+dbt docs generate
+stitch build --no-docs           # --docs/--no-docs overrides dbt.auto_docs either way
+```
+
+Every other command reads that one graph file:
+
+| Command | Description |
+| ------- | ----------- |
+| `stitch build` | Resolve dbt + Metabase into `graph.json`. `--no-metabase` does the dbt side only; `--check` exits 1 on drift against a committed graph. |
+| `stitch impact` | What the last build changed, and what it hits. `--column <model.column>` for a point query, `--base <ref>` to diff a git ref. |
+| `stitch serve` | The local lineage + ERD app on `127.0.0.1:8787` (`--port`, `--host`, `--no-open`). |
+| `stitch search <term>` | Find models, columns, Metabase fields, cards and dashboards. |
+| `stitch suggest` | Relationships worth declaring, strongest evidence first. |
+| `stitch apply` | Write staged relationships and descriptions into model YAML (`--dry-run` shows the diff). |
+| `stitch doctor` | Config, artifacts, graph and Metabase connectivity. `--unbound`, `--untraced`, `--unresolved-cards`, `--dead`, `--list-databases`. |
+| `stitch history` | The graph baselines past builds stored locally, keyed by commit sha. |
+| `stitch export` | `--format jsonl` for agents and warehouses, `--format site` for a static build of the app. |
+| `stitch --version` | Print the installed version. |
+
+Everything except `build` and `doctor`'s connectivity checks works without the Metabase environment
+variables set. `--json` is available on `impact --column`, `search`, `suggest`, `history` and
+`doctor --dead`. Add `.stitch/` to `.gitignore`; the graph is a local artifact.
+
+## What breaks if I change this column?
+
+That is the question stitch exists to answer, and it takes one command over the local graph — no
+baseline, no git ref, no Metabase credentials, no CI job:
 
 ```
 $ stitch impact --column fct_orders.discount_amount
 fct_orders.discount_amount
-  ├ 2 downstream models: mart_orders_enriched, mart_revenue_daily
-  ├ 2 downstream columns:
-      mart_orders_enriched.discount_amount
+  ├ 2 downstream models: fct_orders, mart_revenue_daily
+  ├ 3 downstream columns:
+      fct_orders.net_revenue
       mart_revenue_daily.discount_amount
-  ├ 1 Metabase field: Discount Amount
+      mart_revenue_daily.net_revenue
+  ├ 4 Metabase fields: Discount Amount, Net Revenue, Total Discount, Total Net Revenue
   ├ 4 Metabase cards:
-      #412 Discount impact by region  (Revenue review, dana)
+      #412 Discount impact by country  (Revenue review, dana)
       #418 Weekly discount trend  (Revenue review, dana)
-      #503 Promo cohort summary  (Growth weekly)
-      #547 Net revenue after discounts  (Growth weekly, priya)
-  └ 2 dashboards: Growth weekly, Revenue review
+      #503 Revenue by country  (Board KPIs, priya)
+      #547 Net revenue after discounts  (Board KPIs, priya)
+  └ 2 dashboards: Board KPIs, Revenue review
 ```
 
-No baseline, no git, no Metabase credentials, no CI job — one command over a local file, answerable *before* you touch the model. Three questions, three commands:
+It takes `model.column`, a bare column name when that is unique, or a full node id; anything
+ambiguous gets `search`-style suggestions rather than a guess.
 
-| Question | Command |
-|---|---|
-| What breaks if I change this column? | `stitch impact --column fct_orders.discount_amount` |
-| What did my last build change, and what does it hit? | `stitch impact` |
-| What has my branch changed since `main`? | `stitch impact --base main` |
-
-You don't have to remember the second one. Every `stitch build` closes with the blast radius of what it just changed, and stays silent when nothing did:
+The mirror question — *what did my last build just change?* — needs no argument. Every build copies
+the graph it is about to overwrite to `.stitch/graph.prev.json` and closes with the difference,
+staying silent when nothing changed:
 
 ```
 since last build: 2 columns removed, 1 type-changed -> 4 cards on 2 dashboards affected (run 'stitch impact' for the tree)
 ```
 
-## What it is
+`stitch impact` prints the tree behind that line. A rename shows up as a removal plus an addition:
+ids are name-based, and the downstream card breaks either way until it is repointed.
 
-stitch answers "where does this column go, and what uses it?" for the half of the stack where the answer usually isn't visible. It reads your dbt artifacts and the Metabase API and traces column lineage end to end — source column → staging → mart → Metabase field → card → dashboard. The result is `.stitch/graph.json`, a plain local file next to your dbt project: query it from the terminal, explore it in the browser (`stitch serve`), export it for agents. Local-first: no server, no warehouse backend, no hosted anything — and nothing generated needs to be committed. (Teams that want git history of the graph can commit it; nothing requires that.)
+**Baselines without committing anything.** Every build on a clean working tree also stores a
+gzipped snapshot in `.stitch/history/<commit-sha>.json.gz`, so `--base` has somewhere local to look:
 
-> Full design in [SPEC.md](SPEC.md) (v0.5).
-
-## Quickstart
-
-```bash
-pip install stitch-lineage
-# or straight from GitHub:
-pip install git+https://github.com/sverrbear/stitch-lineage.git
+```shell
+git switch main && stitch build     # history: stored baseline for a1b2c3d (1/20 kept)
+git switch -c feat/rename-columns   # ... edit models, dbt docs generate ...
+stitch build --no-docs
+stitch impact --base main           # diffed against main's stored snapshot
 ```
 
-Then, from your dbt project root:
+`--base <ref>` resolves the ref to its merge-base with `HEAD`, then takes that commit's snapshot or
+the nearest stored ancestor, and always prints the baseline it picked on stderr so it can never be a
+guess. Builds with uncommitted changes store nothing and say so — that graph describes your working
+tree, not the commit. `stitch history` lists what is stored.
 
-```bash
-stitch init
+In CI, `stitch impact --format github-comment` posts the same blast radius as a PR comment,
+`--format slack` as a deploy alert (workflow templates in [`action/`](action/)), and
+`--fail-on-impact` exits 1 when a column was removed or type-changed. That path does need a baseline
+`graph.json` committed on the base branch, which is why it is not the default story.
+
+## The app
+
+`stitch serve` opens a local browser app over the same file: search everything with `/` and `⌘K`,
+per-node detail panels, the end-to-end lineage view above, and a scoped ERD. Every node carries the
+badge of the system it lives in — Snowflake on the warehouse side, Metabase on the BI side — so a
+glance shows where one ends and the other begins. Cards deep-link back into Metabase.
+
+<p align="center">
+  <img src="assets/erd.png" alt="The stitch ERD: two scoped models with a validated relationship drawn between their key columns" width="100%">
+</p>
+
+In the ERD you can **draw** relationships: drag one column's handle onto another's, name the
+cardinality, and the declaration stages locally. Nothing you do in the app touches your repo.
+Relationships stage to `.stitch/staged_relationships.yml` and description edits to
+`.stitch/staged_descriptions.yml`; `stitch apply` materializes them into your model YAML as one
+reviewable step:
+
+```diff
+--- a/models/marts/_schema.yml
++++ b/models/marts/_schema.yml
+       - name: customer_id
+         description: 'Who placed the order'
++        config:
++          meta:
++            metabase.fk_target_table: marts.dim_customers
++            metabase.fk_target_field: customer_id
++            relationship_type: many-to-one
 ```
 
-`stitch init` is a wizard, not a scaffolder: it reads `dbt_project.yml` and `target/manifest.json` for your project name, target path, databases, schemas and model inventory, and never asks a question dbt already answers. It asks for the Metabase URL and an API key, calls Metabase, proposes the database mapping (`Metabase "Analytics" ↔ dbt "analytics" — confirm?`) and the `include_schemas` where your marts actually live, then writes `stitch.yml`, a `.env.example` line, a `.gitignore` entry, and finishes with a mini-doctor and the next command. Four inputs, under two minutes. **The API key is never written anywhere** — `stitch.yml` gets the `${STITCH_METABASE_API_KEY}` reference and `.env.example` gets the name.
+The write is deliberately conservative. It is **insert-only** — comments, quoting, key order and
+blank lines survive byte-identically, and a file stitch cannot reproduce exactly is reported as
+unappliable instead of reformatted. It **never invents files**: the target comes from the manifest's
+`patch_path`, and a model with no schema YAML is reported, not scaffolded. A target with uncommitted
+changes is refused unless you pass `--force`. What was applied is then patched into `graph.json`, so
+the relationship is in the app on a refresh rather than after the next build.
 
-Or write `stitch.yml` yourself at the dbt project root:
+Where to start is `stitch suggest`, which ranks the relationships nobody has declared yet.
+**Implicit joins** come from Metabase itself — when a card reaches a column by joining through an
+FK, the score is the number of cards already relying on a relationship nobody wrote down — and the
+weaker **naming** convention (`<entity>_id` → matching-grain model) always ranks below a single
+witnessing card. Pairs you have declared, staged or dismissed never come back.
+
+`stitch export --format site` writes the same app as a static directory with the graph inlined into
+`index.html` — no server, no API, and so read-only: the drawing affordances are simply absent.
+
+## Configuration
+
+`stitch.yml` lives at your dbt project root. `stitch init` writes it; only the `metabase` section is
+required. `${ENV_VAR}` references are interpolated at load time anywhere in the file.
 
 ```yaml
 dbt:
   project_dir: .
-  target_path: target/
   auto_docs: true                       # run `dbt docs generate` at the start of every build
 
 metabase:
@@ -68,220 +221,73 @@ metabase:
   databases:
     - metabase_name: "Analytics"        # display name in Metabase
       dbt_database: analytics           # database per the dbt manifest
-      table_prefix: ${USER_PREFIX}_     # optional: prefix on dbt physical table names
-                                        # absent in the BI database, stripped before
-                                        # matching (dev artifacts vs prod Metabase)
+      table_prefix: ${USER_PREFIX}_     # optional, stripped before matching
+  include_schemas: [marts, reporting]
+  exclude_models: ["stg_*"]
 
 serve:
-  erd_default_scope: "schema:marts"     # optional: ERD scope to open on ("tag:core" works too)
+  erd_default_scope: "schema:marts"
 
 output:
-  dir: .stitch/
-  history_retention: 20                 # graph baselines kept in .stitch/history/ (0 = off)
+  history_retention: 20
 ```
 
-Then, with `auto_docs: true`, one command does everything:
+### `dbt`
 
-```bash
-stitch build                     # dbt docs generate + resolve dbt + Metabase into .stitch/graph.json
-```
+| Key | Required | Default | Description |
+| --- | -------- | ------- | ----------- |
+| `project_dir` | no | `.` | dbt project root, relative to `stitch.yml`. |
+| `target_path` | no | `target/` | Where `manifest.json` and `catalog.json` live. |
+| `auto_docs` | no | `false` | Run `dbt docs generate` at the start of every build. `--docs`/`--no-docs` overrides it per invocation. |
+| `docs_args` | no | `[]` | Extra args for that command, e.g. `["--target", "prod"]`. |
 
-Or keep the two steps explicit (typical in CI, where `dbt docs generate` runs its own way):
+### `metabase`
 
-```bash
-stitch init                      # set up stitch.yml (--force overwrites an existing one)
+Required — stitch has no default Metabase to talk to.
 
-dbt docs generate                # produce target/manifest.json + catalog.json
-stitch build --no-docs           # resolve only; --docs/--no-docs overrides auto_docs either way
+| Key | Required | Default | Description |
+| --- | -------- | ------- | ----------- |
+| `url` | **yes** | — | Base URL of your Metabase instance. |
+| `api_key` | **yes** | — | Must be a whole-value `${ENV_VAR}` reference; a literal key in the file is a startup error. |
+| `databases` | **yes** | — | List of `metabase_name` ↔ `dbt_database` mappings, each with an optional `table_prefix` that is present on dbt's physical table names but absent in the BI database (dev artifacts against a prod-pointed Metabase) and stripped before matching. |
+| `include_schemas` | no | `[]` (all) | Restrict binding to these schemas — normally where your marts live. |
+| `exclude_collections` | no | `[]` | Metabase collections to skip entirely. |
+| `exclude_packages` | no | `[]` | dbt packages not expected in Metabase (`elementary`, `dbt_artifacts`, …). They keep their lineage but leave the bind denominator, so "unbound" keeps meaning "expected and not found". |
+| `exclude_models` | no | `[]` | The same, per model: `fnmatch` globs on the dbt model name, e.g. `["stg_*"]`. |
+| `min_version` | no | `"0.49"` | Minimum Metabase version stitch will run against. |
 
-stitch build --no-metabase       # dbt side only; reuses the existing Metabase side
+### `relationships`
 
-stitch impact                    # what did my last build change, and what does it hit?
-stitch impact --base main        # ... since main instead, off the local per-commit history
-stitch impact --column fct.col   # blast radius of one column, no baseline needed
+Controls what `stitch apply` writes for a relationship you declared in the app.
 
-stitch history                   # graph baselines stored per commit, newest first
-stitch history --json            # the same listing as one JSON object
+| Key | Required | Default | Description |
+| --- | -------- | ------- | ----------- |
+| `write_to` | no | `meta` | The written form: `meta` (dbt-metabase interop keys under the column's `config: meta:`) or `relationships_test` (a dbt `relationships` test on the FK column). `contract_constraint` is accepted by the config but not implemented — `apply` raises rather than write a shape it cannot round-trip. Contract constraints already in your repo are still *read* as relationship evidence. |
+| `validated_test_severity` | no | `warn` | `severity:` on a written `relationships` test — warn, so a declaration never fails a pipeline. |
+| `fk_meta_keys` | no | `["metabase.fk_target_table", "metabase.fk_target_field"]` | Exactly two keys: the target-table and target-field meta keys read and written for FK declarations. |
+| `cardinality_meta_key` | no | `relationship_type` | Meta key carrying the cardinality — `dbterd`'s, by design. |
 
-stitch search order_total        # find models, columns, fields, cards, dashboards
-stitch search order_total --json # JSON lines for piping
+### `output`
 
-stitch serve                     # local lineage + ERD app on http://127.0.0.1:8787
+| Key | Required | Default | Description |
+| --- | -------- | ------- | ----------- |
+| `dir` | no | `.stitch/` | Where the graph, staging stores, cache and history go. Local; gitignore it. |
+| `history_retention` | no | `20` | SHA-keyed graph snapshots kept for `impact --base`; oldest pruned first. `0` turns history off and clears the directory. |
+| `retain_cache_runs` | no | `3` | Metabase payload cache generations kept. |
 
-stitch suggest                   # relationships worth declaring, strongest evidence first
-stitch suggest --json            # JSON lines for piping
+### `serve`
 
-stitch apply                     # write staged relationships into model YAML (diff, then confirm)
-stitch apply --dry-run           # show the diff and stop
-stitch apply --yes               # skip the confirmation prompt
-stitch apply --build             # ... then reconcile the whole graph with a real build
+Presentation defaults, shared by `stitch serve` and `export --format site`.
 
-stitch doctor                    # config, artifacts, graph, Metabase connectivity
-stitch doctor --list-databases   # database names visible to the API key
-stitch doctor --unbound          # dbt models with no bound Metabase table
-stitch doctor --untraced         # columns sqlglot could not trace
-stitch doctor --dead             # dead weight: unconsumed columns, models feeding nothing
-stitch doctor --dead --json      # the same report as one JSON object
+| Key | Required | Default | Description |
+| --- | -------- | ------- | ----------- |
+| `erd_default_scope` | no | none | ERD scope to open on: `schema:<name>` or `tag:<name>`. Anything else is a config error. |
+| `strip_model_prefixes` | no | `[]` | Routing prefixes stripped from a model's *display* name, e.g. `["viz_"]`. Purely cosmetic — ids, search keys and everything written back keep the real dbt name. |
 
-stitch export --format jsonl     # flat nodes.jsonl/edges.jsonl for agents/warehouses
-stitch export --format site      # static build of the app, graph inlined, host anywhere
-```
+## Coverage
 
-Commands that don't call the Metabase API (`build --no-metabase`, `impact`, `history`, `search`, `suggest`, `export`, `doctor --unbound/--untraced/--dead`) work without the `STITCH_METABASE_*` env vars set. Add `.stitch/` to your `.gitignore` — the graph is a local artifact.
-
-## Asking before the edit: `impact --column`
-
-The blast radius at the top of this README is the whole feature: `stitch impact --column` walks the current `graph.json` downstream from one column and groups what it reaches — models, columns, Metabase fields, cards (with their dashboards and owner), dashboards. It needs one graph and nothing else: no baseline, no git ref, no Metabase credentials.
-
-It takes `model.column`, a bare column name when that is unique, or a full node id; anything unknown or ambiguous gets `stitch search`-style suggestions rather than a guess. Add `--json` to pipe it.
-
-## What did my last build change?
-
-The mirror question, asked after the edit. Every build first copies the graph it is about to overwrite to `.stitch/graph.prev.json`, then closes with the blast radius of the difference:
-
-```
-since last build: 2 columns removed, 1 type-changed -> 4 cards on 2 dashboards affected (run 'stitch impact' for the tree)
-```
-
-Silent when nothing changed. `stitch impact` prints the tree behind that line — each changed column with the downstream models, Metabase cards and dashboards it reaches — diffing against that snapshot by default, so there is nothing to commit and no git ceremony:
-
-```bash
-stitch impact                              # vs your previous build (.stitch/graph.prev.json)
-stitch impact --base-file path/graph.json  # vs a graph file you kept
-stitch impact --base origin/main           # vs a git ref (local history first, see below)
-```
-
-A rename shows up as a removal plus an addition: ids are name-based, so a rename is indistinguishable from remove + add — and the downstream card breaks either way until it is repointed.
-
-## Baselines without committing anything
-
-Every `stitch build` on a clean working tree keeps a gzipped copy of the graph in `.stitch/history/<commit-sha>.json.gz`, keyed by the commit you built. Nothing is committed — `.stitch/` stays gitignored — but `stitch impact --base <ref>` now has somewhere local to look:
-
-```bash
-git switch main && stitch build     # history: stored baseline for a1b2c3d (1/20 kept)
-git switch -c feat/rename-columns   # ... edit models, dbt docs generate ...
-stitch build --no-metabase
-stitch impact --base main           # diffed against main's stored snapshot
-```
-
-`--base <ref>` resolves the ref to its merge-base with `HEAD` — the commit your branch actually diverged from — then takes that commit's snapshot, or the nearest stored ancestor of it. The baseline it picked is always printed, on stderr, so it can never be a guess (and so stdout stays a clean payload for `--format github-comment`):
-
-```
-baseline: local history snapshot for a1b2c3d ('main')
-baseline: local history snapshot for a1b2c3d -- nearest stored ancestor of the merge-base of 'origin/main' and HEAD, 3 commits back
-```
-
-With no snapshot in the ancestry it falls back to the `graph.json` committed on that ref, and a miss on both names the fix. `stitch history` lists what is stored:
-
-```
-2 baselines in .stitch/history (keeping 20), newest first
-  a1b2c3d  2026-08-10T09:12:04+00:00  1904 nodes / 3120 edges  feat: split fct_orders
-  9f4e0b1  2026-08-09T16:40:11+00:00  1901 nodes / 3117 edges  chore: bump dbt
-```
-
-Builds with uncommitted changes store nothing and say so: that graph describes your working tree, not the commit, and as a baseline it would quietly report no impact at all. `output.history_retention` caps how many are kept (oldest pruned first; `0` turns history off and clears the directory).
-
-The two local stores answer different questions, so neither replaces the other: `graph.prev.json` is *the graph my last build overwrote* (kept on every build, whatever the tree and commit), while `.stitch/history/` is *the graph as of commit `<sha>`* (clean trees only) and is what `--base` reads.
-
-## `doctor --dead`: the same edges, walked the other way
-
-Impact asks what depends on a column. Run the flow edges backwards and you get estate hygiene — what nothing depends on. Counts headline, then the lists:
-
-```
-unconsumed columns                  412/1901   (across 96 models, 4 sources)
-models feeding nothing              23/147
-archived cards still bound          2
-cards only on archived dashboards   5
-```
-
-- **unconsumed columns** — no `feeds`/`binds_to`/`consumed_by` path reaches any card, grouped by the owning model or source (an owner whose every column is unconsumed collapses to one line).
-- **models feeding nothing** — no path from the model to any card or dashboard. A model whose downstream model *is* consumed counts as alive even when the column lineage between the two went untraced, so stitch's own blind spot doesn't become the report's loudest finding.
-- **archived-but-bound** — archived cards still consuming live columns (they are why those columns look consumed), and live cards whose every dashboard is archived.
-
-> **Caveat, printed with every report:** stitch only sees Metabase. A column no card reaches may still be read by reverse ETL, a notebook, ad-hoc SQL or another BI tool. Treat the output as candidates to review, never as a delete queue.
-
-## The app
-
-`stitch serve` opens a local browser app over the same `graph.json`: search everything (models, columns, Metabase fields, cards, dashboards) with `/` and `⌘K`, per-node detail panels, the end-to-end column lineage view from source column to dashboard, and a scoped ERD where you can also **draw** relationships (below). Every node carries the badge of the system it lives in — Snowflake on the warehouse side, Metabase on the BI side — so a glance shows where one ends and the other begins. Cards deep-link back into Metabase.
-
-`stitch export --format site` writes the same app as a static directory with the graph inlined into `index.html` — no server, no API, and so **read-only**: the drawing affordances are simply absent. Drop it on any static host for people who will never run a CLI.
-
-## Declaring relationships: plan, then apply
-
-In the ERD, drag one column's handle onto another's. A dialog names both endpoints, asks for the cardinality, and stages the declaration — the edge then draws dashed until it is applied, and a bar above the canvas lists everything staged so far with a way to drop any of it.
-
-Nothing you do in the app touches your repo directly. Relationships stage to `.stitch/staged_relationships.yml` and description edits to `.stitch/staged_descriptions.yml` (local, like the rest of `.stitch/`), and `stitch apply` materializes all of it into your model YAML as one separate, reviewable step:
-
-```bash
-stitch apply --dry-run           # exactly what would change, and nothing else
-stitch apply                     # same diff, then a confirmation prompt
-```
-
-```diff
---- a/models/marts/_schema.yml
-+++ b/models/marts/_schema.yml
-       - name: customer_id
-         description: 'Who placed the order'
-+        data_tests:
-+          - relationships:
-+              to: ref('dim_customers')
-+              field: customer_id
-+              config:
-+                severity: warn
-```
-
-The write is deliberately conservative:
-
-- **Insert-only.** Comments, quoting, key order and blank lines survive byte-identically — the diff contains the declaration and nothing else. A file stitch cannot reproduce exactly is reported as unappliable instead of being reformatted.
-- **Never invents files.** The target comes from the manifest's `patch_path`; a model with no schema YAML is reported, not scaffolded.
-- **Respects your edits.** A target file with uncommitted changes is refused unless you pass `--force`.
-- **`relationships.write_to`** picks the written form: `relationships_test` (a dbt `relationships` test on the FK column) or `meta` (dbt-metabase interop keys, so FK sync into Metabase keeps working).
-
-What was applied is then patched into `.stitch/graph.json`, so the relationships are in the app on a refresh rather than after the next build:
-
-```
-wrote models/marts/_schema.yml
-applied 1 relationship — graph updated, refresh the app · next 'stitch build' will confirm them from the manifest
-```
-
-A `relationships` test lands as a validated edge and a meta declaration as a declared one — exactly what the next build reads back out of the manifest, which is why the patch is a preview of state your repo already contains and never an invention. `--no-graph-update` skips it; `--build` runs a full `stitch build` afterwards (`dbt docs generate` and all) when you want everything reconciled on the spot.
-
-### Editing documentation
-
-Column and model descriptions are staged and applied through the same flow. An edit lands in `.stitch/staged_descriptions.yml` (one entry per model+column, last write wins), and the next `stitch apply` writes it onto the model or column entry in its `_schema.yml`:
-
-```diff
-       - name: order_id
--        description: "The unique identifier for the order."
-+        description: |
-+          One row per order.
-+          Null for abandoned carts.
-```
-
-The same guarantees hold: the `description:` key is created when it is missing, multi-line text becomes a `|` block, the file's own quoting style is kept, a description the repo already has is reported as nothing to do, and everything around it survives byte-identically. Relationships and descriptions applied in one run share one diff, one confirmation and one graph patch.
-
-Applied entries clear from the staging store; anything that could not be applied stays staged and is reported with the reason.
-
-### Where to start: `stitch suggest`
-
-Starting from zero declared relationships, `stitch suggest` tells you which ones are worth declaring first:
-
-```bash
-stitch suggest
-```
-```
- source         score  from                       to                         why
- implicit_join  204    fct_orders.customer_id     dim_customers.customer_id  204 cards join through it
- naming         0.5    dim_subscriptions.user_id  dim_users.user_id          names the 'user' grain
-```
-
-Two sources of candidates. **Implicit joins** come from Metabase itself: when a card reaches a column by joining through an FK, that join is recorded in the graph, so the score is the number of cards already relying on a relationship nobody wrote down. **Naming** is the weaker `<entity>_id` → matching-grain-model convention, always ranked below a single witnessing card.
-
-Pairs you have already declared in the repo, already staged, or dismissed in the app never come back.
-
-## Coverage report
-
-Every build prints what it could and couldn't resolve, so a thin graph is a documented limitation instead of a mystery:
+Every build prints what it could and could not resolve, so a thin graph is a documented limitation
+instead of a mystery:
 
 ```
 models bound         142/147   (5 unmatched -> stitch doctor --unbound)
@@ -291,44 +297,110 @@ dashboards           19/19
 dbt column lineage   1842/1901 columns traced   (37 inferred via star-expansion, 22 unresolved -> stitch doctor --untraced)
 ```
 
-MBQL cards resolve exactly, including card-on-card sources. Native SQL cards resolve by parsing: stitch substitutes the card's template tags (`{{variable}}`, `[[optional clauses]]`, `{{snippet: name}}`, `{{#123-card}}`), parses the result with sqlglot, and maps every column that lands on a table Metabase knows to that table's field — so a hand-written card's columns join the same lineage chain an MBQL card's do, marked `parsed` rather than `exact`. A field-filter tag names its field outright and stays `exact`. Anything that will not parse degrades to the tables it reads (`stitch doctor --unresolved-cards` says which card and why); no card is ever dropped, and no column is ever invented. Both query formats are handled on both paths: the legacy `dataset_query.query` shape and the MBQL 5 (`lib/type` + `stages`) shape modern Metabase returns.
+MBQL cards resolve exactly, including card-on-card sources. Native SQL cards resolve by parsing:
+stitch substitutes the card's template tags (`{{variable}}`, `[[optional clauses]]`,
+`{{snippet: name}}`, `{{#123-card}}`), parses the result with sqlglot, and maps every column that
+lands on a table Metabase knows to that table's field — so a hand-written card's columns join the
+same lineage chain an MBQL card's do, marked `parsed` rather than `exact`. Anything that will not
+parse degrades to the tables it reads; no card is ever dropped, and no column is ever invented.
+Both query shapes are handled, the legacy `dataset_query.query` and the MBQL 5 `stages` form modern
+Metabase returns.
 
-## Phases
+Run the same edges backwards and you get estate hygiene: `stitch doctor --dead` reports unconsumed
+columns, models feeding nothing, and archived cards still bound to live columns. It prints its own
+caveat every time — stitch only sees Metabase, so a column no card reaches may still be read by
+reverse ETL, a notebook or another BI tool. Candidates to review, never a delete queue.
+
+## Roadmap
 
 | Phase | Scope | Status |
 |---|---|---|
-| **0** | `build` (dbt column lineage via sqlglot + MBQL cards), deterministic `graph.json` + `--check`, coverage report, recursive `impact` — the previous-build summary, `--column` point query and SHA-keyed local history — `search` CLI, `doctor` incl. `--dead` | **shipped** |
-| **1** | `serve`: search + detail panels, end-to-end lineage view, catalog, read-only ERD; `export --format site` | **shipped** |
-| **2** | Editable ERD canvas: staged relationships and descriptions, `stitch apply` with diff preview, suggestion layer, `stitch init` | **shipped** — except saved views and node positions (#31); composite and conceptual relationship shapes (#55) backlogged |
+| **0** | `build` (dbt column lineage via sqlglot + MBQL cards), deterministic `graph.json` + `--check`, coverage report, recursive `impact` incl. `--column` and SHA-keyed history, `search`, `doctor` incl. `--dead` | **shipped** |
+| **1** | `serve`: search + detail panels, lineage view, catalog, read-only ERD; `export --format site` | **shipped** |
+| **2** | Editable ERD canvas: staged relationships and descriptions, `stitch apply` with diff preview, suggestions, `stitch init` | **shipped** — except saved views and node positions (#31), composite and conceptual relationship shapes (#55) |
 | 3 | Native SQL cards via sqlglot and MBQL 5 stages (**shipped**, ahead of phase order); rename heuristics, `--verify-lineage`, Metabase version matrix | ongoing |
 
-Work is tracked as GitHub issues; that tracker, not this table, is the operational truth.
-
-## The CI variant: PR impact comments
-
-The same blast radius can be posted as a PR comment (`stitch impact --format github-comment`) or a Slack deploy alert (`--format slack`; workflow templates in [`action/`](action/)). Both formats work today. That CI workflow needs a baseline `graph.json` committed on the base branch, which is why it isn't the default story — but it remains available for teams that do keep a committed graph. Locally, `stitch impact` needs none of it: the previous-build snapshot and the SHA-keyed history above answer the same questions without committing anything.
+The issue tracker, not this table, is the operational truth.
 
 ## Built on
 
-stitch deliberately reuses the conventions of the tools next to it rather than reinventing them (SPEC §2): relationship metadata is written in `dbt-metabase`'s and `dbterd`'s meta keys, so those tools keep working unchanged on a stitch-annotated repo.
+stitch reuses the conventions of the tools next to it rather than reinventing them (SPEC §2):
+relationship metadata is written in `dbt-metabase`'s and `dbterd`'s meta keys, so those tools keep
+working unchanged on a stitch-annotated repo.
 
 - [sqlglot](https://github.com/tobymao/sqlglot) — SQL parsing and column-level lineage over dbt compiled SQL
-- [dbt-metabase](https://github.com/gouline/dbt-metabase) — FK/semantic-type/description sync into Metabase; stitch's `metabase.fk_target_*` relationship meta keys are interop-compatible with it by design
+- [dbt-metabase](https://github.com/gouline/dbt-metabase) — FK/semantic-type/description sync into Metabase; stitch's `metabase.fk_target_*` keys are interop-compatible by design
 - [dbterd](https://github.com/datnguye/dbterd) — ERD conventions; stitch matches its `relationship_type` meta key
-- [typer](https://github.com/fastapi/typer) + [pydantic](https://github.com/pydantic/pydantic) + [ruamel.yaml](https://sourceforge.net/projects/ruamel-yaml/) + [requests](https://github.com/psf/requests) + [rich](https://github.com/Textualize/rich) — CLI, data contracts/validation, round-trip YAML write-back, Metabase API access, terminal output
-- [FastAPI](https://github.com/fastapi/fastapi) + [uvicorn](https://github.com/encode/uvicorn) + [React Flow](https://github.com/xyflow/xyflow) — `stitch serve`; the SPA ships prebuilt in the wheel, so installing never needs a node toolchain
+- [typer](https://github.com/fastapi/typer), [pydantic](https://github.com/pydantic/pydantic), [ruamel.yaml](https://sourceforge.net/projects/ruamel-yaml/), [requests](https://github.com/psf/requests), [rich](https://github.com/Textualize/rich) — CLI, data contracts, round-trip YAML write-back, Metabase API, terminal output
+- [FastAPI](https://github.com/fastapi/fastapi), [uvicorn](https://github.com/encode/uvicorn), [React Flow](https://github.com/xyflow/xyflow) — `stitch serve`
 
-## Development
+## FAQ
 
-```bash
+### Does it need a server?
+
+No. stitch is a CLI that writes one file and a local app that reads it. There is no service to
+deploy, no database to provision and no account to create. `stitch serve` binds `127.0.0.1` by
+default, and `stitch export --format site` produces a static directory you can host anywhere for
+people who will never run a CLI.
+
+### Will this slow down my dbt build?
+
+By default it adds nothing: `relationships.write_to` is `meta`, so an applied declaration is
+metadata on a column and no test runs. If you set `write_to: relationships_test`, stitch writes a
+real dbt `relationships` test at `severity: warn` (`relationships.validated_test_severity`) — it
+reports, it does not fail your pipeline. Raise it yourself if you want it to.
+
+### What about native SQL cards?
+
+They are resolved, by parsing the SQL with sqlglot after substituting the card's template tags, and
+they are counted separately in the coverage report as `parsed` rather than `exact`. This was phase 3
+work that shipped early. Cards whose SQL will not parse degrade to the tables they read and are
+listed by `stitch doctor --unresolved-cards` with the reason — never dropped, never guessed.
+
+### Which Metabase versions are supported?
+
+Metabase 49 and newer, which is where API keys arrive; stitch never wants a password. The floor is
+`metabase.min_version` (default `"0.49"`) if you need to move it. Both the legacy and MBQL 5 query
+shapes are handled, so modern instances resolve the same as older ones.
+
+### Does `stitch build` run dbt?
+
+Only if you ask it to. With `dbt.auto_docs: true` (or `--docs`) it runs `dbt docs generate` first,
+which connects to your warehouse — **if your dbt profile uses MFA, expect a push notification**.
+With `--no-docs` it reuses whatever is already in `target/` and touches nothing.
+
+### Do I have to commit anything?
+
+No. `.stitch/` is local and gitignored, including the per-commit baselines `impact --base` reads.
+Teams that want git history of the graph can commit it, and the CI comment workflow does need that,
+but nothing in the local flow requires it.
+
+### Why is there no PyPI package?
+
+Distribution is deliberately git-install (SPEC.md). stitch is alpha and pinned to conventions in
+your own repo; installing from a ref you chose keeps you in control of when it changes. The
+packaging is real — `pyproject.toml` builds a wheel with the app bundled — so this can change later
+without anything else changing.
+
+## Contributing
+
+Contributions are welcome. Issues and PRs are the unit of work; the same checks CI runs are the ones
+to run locally:
+
+```shell
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-pytest          # unit + end-to-end tests
-ruff check .    # lint
-lint-imports    # architecture seams (SPEC.md §4)
+pytest -q             # unit + end-to-end tests
+ruff check .          # lint
+ruff format --check . # formatting
+lint-imports          # architecture seams (SPEC.md §4)
 ```
 
-The app's source lives in [`stitch_lineage/app/frontend/`](stitch_lineage/app/frontend/) (its own README covers the stack). Its built `dist/` is committed and bundled into the wheel — rebuild it with `npm run build` there whenever `src/` changes.
+The app's source lives in [`stitch_lineage/app/frontend/`](stitch_lineage/app/frontend/) and its own
+README covers that stack. The built `dist/` is committed and bundled into the wheel — rebuild it
+with `npm run build` there whenever `src/` changes.
 
-MIT licensed.
+## License
+
+`stitch` is distributed under the terms of the [MIT license](LICENSE).
