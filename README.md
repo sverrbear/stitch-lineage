@@ -299,7 +299,7 @@ MBQL cards resolve exactly, including card-on-card sources. Native SQL cards res
 |---|---|---|
 | **0** | `build` (dbt column lineage via sqlglot + MBQL cards), deterministic `graph.json` + `--check`, coverage report, recursive `impact` — the previous-build summary, `--column` point query and SHA-keyed local history — `search` CLI, `doctor` incl. `--dead` | **shipped** |
 | **1** | `serve`: search + detail panels, end-to-end lineage view, catalog, read-only ERD; `export --format site` | **shipped** |
-| **2** | Editable ERD canvas: staged relationships and descriptions, `stitch apply` with diff preview, suggestion layer, `stitch init` | **shipped** |
+| **2** | Editable ERD canvas: staged relationships and descriptions, `stitch apply` with diff preview, suggestion layer, `stitch init` | **shipped** — except saved views and node positions (#31); composite and conceptual relationship shapes (#55) backlogged |
 | 3 | Native SQL cards via sqlglot and MBQL 5 stages (**shipped**, ahead of phase order); rename heuristics, `--verify-lineage`, Metabase version matrix | ongoing |
 
 Work is tracked as GitHub issues; that tracker, not this table, is the operational truth.
