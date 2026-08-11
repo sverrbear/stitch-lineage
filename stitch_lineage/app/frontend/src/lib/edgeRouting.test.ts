@@ -7,6 +7,7 @@ import {
   routeEdge,
   segmentHitsBox,
   simplify,
+  straightPath,
   type RoutingRect,
 } from './edgeRouting'
 
@@ -286,6 +287,32 @@ describe('segmentHitsBox', () => {
 
   it('sees a segment that ends inside the box', () => {
     expect(segmentHitsBox({ x: -50, y: 50 }, { x: 50, y: 50 }, box)).toBe(true)
+  })
+})
+
+describe('straightPath — what the ERD actually draws (#130)', () => {
+  it('is one move and one line, and nothing else', () => {
+    const d = straightPath({ x: 10, y: 20 }, { x: 300, y: 240 })
+    expect(d).toBe('M 10,20 L 300,240')
+  })
+
+  it('carries no curve, however far apart the ends are', () => {
+    // the whole point of the issue: a relationship is a segment, not a shape
+    for (const to of [
+      { x: 900, y: 12 },
+      { x: -900, y: 400 },
+      { x: 4, y: -700 },
+    ]) {
+      const d = straightPath({ x: 0, y: 0 }, to)
+      expect(d).not.toMatch(/[QCAqcaSTst]/)
+      expect(d.match(/L/g)).toHaveLength(1)
+    }
+  })
+
+  it('lands exactly on both anchors, so an end never floats off its card', () => {
+    const from = { x: 123.5, y: 44 }
+    const to = { x: 998, y: 771.25 }
+    expect(straightPath(from, to)).toBe(`M ${from.x},${from.y} L ${to.x},${to.y}`)
   })
 })
 
