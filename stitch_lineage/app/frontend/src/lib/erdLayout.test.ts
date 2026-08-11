@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { erdNodeHeight, layoutErd, type ErdLayoutEdge, type ErdLayoutNode } from './erdLayout'
+import { measureLayout, type MetricRect } from './layoutMetrics'
 
 const CARD_W = 300
 
@@ -237,3 +238,144 @@ describe('erdNodeHeight', () => {
     expect(erdNodeHeight(3, true)).toBeGreaterThan(erdNodeHeight(3, false))
   })
 })
+
+// The acceptance criteria for #101, asserted rather than eyeballed. `layoutMetrics`
+// computes them from the returned coordinates alone, so these check the constraint
+// and not the machinery that happens to satisfy it.
+describe('layoutErd — measured acceptance (#101)', () => {
+  const GUTTER = 28
+
+  function measure(all: ErdLayoutNode[], rels: ErdLayoutEdge[], options = {}) {
+    const layout = layoutErd(all, rels, options)
+    const rects: MetricRect[] = all.map((node) => {
+      const at = layout.get(node.id) as { x: number; y: number }
+      return { id: node.id, x: at.x, y: at.y, w: node.width ?? CARD_W, h: node.height }
+    })
+    return { layout, rects, ...measureLayout(rects, rels, GUTTER) }
+  }
+
+  /** A hub with `k` satellites, plus `extra` unrelated tables. */
+  function star(k: number, extra = 0) {
+    const dims = Array.from({ length: k }, (_, i) => `dim_${String(i).padStart(2, '0')}`)
+    const lonely = Array.from({ length: extra }, (_, i) => `lonely_${String(i).padStart(2, '0')}`)
+    return {
+      all: nodes('fct', ...dims, ...lonely),
+      rels: dims.map((dim) => edge('fct', dim)),
+      dims,
+      lonely,
+    }
+  }
+
+  it('never overlaps, and every pair clears the gutter', () => {
+    for (const k of [1, 2, 5, 8, 14, 20, 30]) {
+      const { all, rels } = star(k)
+      const m = measure(all, rels)
+      expect(m.overlaps, `k=${k}`).toBe(0)
+      expect(m.minClearance, `k=${k}`).toBeGreaterThanOrEqual(GUTTER - 1e-6)
+      expect(m.pairsUnderGutter, `k=${k}`).toBe(0)
+    }
+  })
+
+  it('holds the gutter with expanded cards in the mix', () => {
+    // an expanded table is much taller; the constraint is on real rendered sizes
+    const { all, rels } = star(12)
+    all[0].height = erdNodeHeight(48, false)
+    all[3].height = erdNodeHeight(30, false)
+    all[7].width = 520
+    const m = measure(all, rels)
+    expect(m.overlaps).toBe(0)
+    expect(m.minClearance).toBeGreaterThanOrEqual(GUTTER - 1e-6)
+  })
+
+  it('holds the gutter across the band of unrelated tables too', () => {
+    const { all, rels } = star(6, 40)
+    const m = measure(all, rels)
+    expect(m.overlaps).toBe(0)
+    expect(m.minClearance).toBeGreaterThanOrEqual(GUTTER - 1e-6)
+  })
+
+  it('puts every unrelated table below everything connected, clear of it', () => {
+    const { all, rels, dims, lonely } = star(6, 12)
+    const { layout, rects } = measure(all, rels)
+    const connected = ['fct', ...dims]
+    const lowest = Math.max(
+      ...connected.map((id) => (layout.get(id) as { y: number }).y + heightOf(all, id)),
+    )
+    const highestLonely = Math.min(...lonely.map((id) => (layout.get(id) as { y: number }).y))
+    expect(highestLonely).toBeGreaterThan(lowest)
+    // and clearly separated, not merely non-overlapping
+    expect(highestLonely - lowest).toBeGreaterThan(200)
+    expect(rects.length).toBe(all.length)
+  })
+
+  it('keeps a pure star free of crossings', () => {
+    for (const k of [6, 14, 20]) {
+      const { all, rels } = star(k)
+      expect(measure(all, rels).crossings, `k=${k}`).toBe(0)
+    }
+  })
+
+  it('does not cross the relationships of two facts that share a dimension', () => {
+    const all = nodes('fct_a', 'fct_b', 'dim_shared', 'a1', 'a2', 'a3', 'b1', 'b2', 'b3')
+    const rels = [
+      edge('fct_a', 'dim_shared'),
+      edge('fct_b', 'dim_shared'),
+      edge('fct_a', 'a1'),
+      edge('fct_a', 'a2'),
+      edge('fct_a', 'a3'),
+      edge('fct_b', 'b1'),
+      edge('fct_b', 'b2'),
+      edge('fct_b', 'b3'),
+    ]
+    expect(measure(all, rels).crossings).toBe(0)
+  })
+
+  it('keeps a hub nearer the middle of its constellation than its leaves', () => {
+    const { all, rels, dims } = star(12)
+    const { layout } = measure(all, rels)
+    const centre = (id: string) => ({
+      x: (layout.get(id) as { x: number }).x + CARD_W / 2,
+      y: (layout.get(id) as { y: number }).y + heightOf(all, id) / 2,
+    })
+    const points = ['fct', ...dims].map(centre)
+    const mid = {
+      x: points.reduce((s, p) => s + p.x, 0) / points.length,
+      y: points.reduce((s, p) => s + p.y, 0) / points.length,
+    }
+    const radius = (id: string) => distance(centre(id), mid)
+    for (const dim of dims) expect(radius('fct')).toBeLessThan(radius(dim))
+  })
+
+  it('gives identical coordinates on a second call — the canvas must not reshuffle', () => {
+    const { all, rels } = star(14, 9)
+    const first = layoutErd(all, rels)
+    const second = layoutErd(all, rels)
+    for (const [id, at] of first) {
+      expect(second.get(id), id).toEqual(at)
+    }
+  })
+
+  it('is unaffected by the order the scope arrives in', () => {
+    const { all, rels } = star(11, 7)
+    const forward = layoutErd(all, rels)
+    const backward = layoutErd([...all].reverse(), [...rels].reverse())
+    for (const [id, at] of forward) {
+      const other = backward.get(id) as { x: number; y: number }
+      expect(other.x, id).toBeCloseTo(at.x, 6)
+      expect(other.y, id).toBeCloseTo(at.y, 6)
+    }
+  })
+
+  it('shortens the relationships it draws as the constellation grows', () => {
+    // the objective, sanity-checked: a leaf stays within a few card widths of its hub
+    // however many siblings it has, rather than being flung onto an ever-bigger orbit
+    for (const k of [8, 14, 20, 30]) {
+      const { all, rels } = star(k)
+      expect(measure(all, rels).meanEdgeLength, `k=${k}`).toBeLessThan(CARD_W * 3)
+    }
+  })
+})
+
+function heightOf(all: ErdLayoutNode[], id: string): number {
+  return (all.find((node) => node.id === id) as ErdLayoutNode).height
+}

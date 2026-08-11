@@ -203,7 +203,7 @@ function placeComponent(
     idealLength: number
   },
 ): SeparationBox[] {
-  const { gutter, idealLength } = options
+  const { gutter } = options
   const adjacency = neighbours(component)
   const communities = communitiesOf(component, adjacency)
   const nodes = component.ids.map((id) => {
@@ -214,6 +214,10 @@ function placeComponent(
   const centres = stressLayout(nodes, component.edges, communities, options)
   const boxes: SeparationBox[] = nodes.map((node) => {
     const at = centres.get(node.id) ?? { x: 0, y: 0 }
+    // No mass here, deliberately. Degree-weighted mass belongs in the sweeps
+    // INTERLEAVED with majorization, where it biases which card yields while there is
+    // still freedom to move; carrying it into the pass that merely enforces the gutter
+    // measured slightly worse on both counts, so this last repair stays even-handed.
     return { id: node.id, cx: at.x, cy: at.y, w: node.w, h: node.h }
   })
 
