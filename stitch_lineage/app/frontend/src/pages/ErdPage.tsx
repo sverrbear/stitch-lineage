@@ -41,6 +41,8 @@ import {
   autoExpandedModels,
   erdClickHref,
   erdColumnNodeId,
+  erdCounts,
+  erdCountsLabel,
   erdForScope,
   initialScope,
   listScopes,
@@ -453,6 +455,9 @@ export function ErdPage({
     () => (active ? erdForScope(index, active, resolved.drawable, drawableSuggestions) : null),
     [index, active, resolved, drawableSuggestions],
   )
+  // what the header states: the scope's own models, kept apart from the FK
+  // targets pulled in from elsewhere, so it agrees with the picker (#120)
+  const counts = useMemo(() => (erd ? erdCounts(erd) : null), [erd])
 
   /** node id -> dbt model name, which is what the staging API speaks. */
   const modelNameOf = useCallback(
@@ -759,7 +764,7 @@ export function ErdPage({
     fitSoon()
   }, [activeKey])
 
-  if (!active || !erd) {
+  if (!active || !erd || !counts) {
     return (
       <main className="graph-page">
         <p className="muted panel">No models in the graph — nothing to draw.</p>
@@ -796,8 +801,15 @@ export function ErdPage({
             )
           })}
         </select>
-        <span className="muted">
-          {erd.models.length} models · {erd.relationships.length} relationships
+        <span
+          className="muted"
+          title={
+            counts.external > 0
+              ? `${counts.external} model${counts.external === 1 ? '' : 's'} from other scopes, drawn because a relationship in this one points at them`
+              : undefined
+          }
+        >
+          {erdCountsLabel(counts)}
           {erd.staged.length > 0 ? ` · ${erd.staged.length} staged` : ''}
           {erd.suggested.length > 0
             ? ` · ${erd.suggested.length} suggested drawn${erd.suggestedHidden > 0 ? ` of ${erd.suggested.length + erd.suggestedHidden}` : ''}`

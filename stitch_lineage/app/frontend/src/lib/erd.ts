@@ -10,7 +10,11 @@ export interface ErdScope {
   kind: 'schema' | 'tag'
   value: string
   modelCount: number
-  /** relates_to edges whose FK side lives in this scope. */
+  /**
+   * relates_to edges this scope's ERD draws: either endpoint inside it, counted
+   * once. It has to be the SAME rule `erdForScope` filters on, or the picker
+   * promises a number the canvas then contradicts (#120).
+   */
   relationshipCount: number
   /**
    * Plumbing rather than analytics — a package's own schema (elementary,
@@ -157,11 +161,18 @@ export function listScopes(index: GraphIndex): ErdScope[] {
   const relSchema = new Map<string, number>()
   const relTag = new Map<string, number>()
   for (const rel of rels) {
-    const model = index.nodesById.get(rel.fromModelId)
-    if (!model) continue
-    const schema = model.schema ?? ''
-    if (schema) relSchema.set(schema, (relSchema.get(schema) ?? 0) + 1)
-    for (const tag of tagsOf(model)) relTag.set(tag, (relTag.get(tag) ?? 0) + 1)
+    // Both endpoints, deduped: a relationship whose two ends sit in the same
+    // schema is one relationship in that scope, not two.
+    const schemas = new Set<string>()
+    const tags = new Set<string>()
+    for (const id of [rel.fromModelId, rel.toModelId]) {
+      const model = index.nodesById.get(id)
+      if (!model) continue
+      if (model.schema) schemas.add(model.schema)
+      for (const tag of tagsOf(model)) tags.add(tag)
+    }
+    for (const schema of schemas) relSchema.set(schema, (relSchema.get(schema) ?? 0) + 1)
+    for (const tag of tags) relTag.set(tag, (relTag.get(tag) ?? 0) + 1)
   }
 
   const root = rootPackage(index)
@@ -357,6 +368,43 @@ export function erdForScope(
     suggested: scopedSuggested,
     suggestedHidden,
   }
+}
+
+export interface ErdCounts {
+  /** Models the scope itself holds — the number the picker offered. */
+  models: number
+  /** Relationships drawn, same rule the picker counts on. */
+  relationships: number
+  /** Models on the canvas only because a scoped relationship reaches them. */
+  external: number
+}
+
+/**
+ * What the canvas is actually showing, split the way the picker counts (#120).
+ *
+ * The header used to read `erd.models.length`, which silently includes the
+ * out-of-scope FK targets `erdForScope` pulls in — so `intermediate` offered
+ * "100 models" in the dropdown and then claimed 102 beside it. The endpoints
+ * are wanted (an FK with no target is not a diagram), so they are counted
+ * separately and labelled rather than folded into the scope's own total.
+ */
+export function erdCounts(erd: ErdData): ErdCounts {
+  const external = erd.models.filter((model) => model.external).length
+  return {
+    models: erd.models.length - external,
+    relationships: erd.relationships.length,
+    external,
+  }
+}
+
+/** "100 models · 2 relationships · +2 joined from other scopes" */
+export function erdCountsLabel(counts: ErdCounts): string {
+  const parts = [
+    `${counts.models} model${counts.models === 1 ? '' : 's'}`,
+    `${counts.relationships} relationship${counts.relationships === 1 ? '' : 's'}`,
+  ]
+  if (counts.external > 0) parts.push(`+${counts.external} joined from other scopes`)
+  return parts.join(' · ')
 }
 
 /**
