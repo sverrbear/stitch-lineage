@@ -9,9 +9,10 @@ function card(id: string, x: number, y: number, width = CARD_W, height = CARD_H)
   return { id, x, y, width, height }
 }
 
-/** A card end joining through a row a third of the way down it. */
-function end(rect: RoutingRect, at = 0.33): AnchorEnd {
-  return { rect, row: rect.y + rect.height * at }
+/** A card end. `at` is vestigial since #139 bundled the landing point per side —
+ *  kept so the tests can still say "a different column of the same card" out loud. */
+function end(rect: RoutingRect, _at = 0.33): AnchorEnd {
+  return { rect }
 }
 
 function sides(from: AnchorEnd, to: AnchorEnd, obstacles: RoutingRect[] = []) {
@@ -64,35 +65,26 @@ describe('chooseAnchors — the side each end attaches to', () => {
     }
   })
 
-  it('anchors on the card border, never in a corner', () => {
+  it('anchors on the middle of the card border it chose', () => {
     const source = card('a', 0, 0)
     const target = card('b', 40, 800)
     const chosen = chooseAnchors(end(source), end(target))
-    expect(chosen.from.y).toBe(source.y + source.height)
-    expect(chosen.from.x).toBeGreaterThan(source.x + 8)
-    expect(chosen.from.x).toBeLessThan(source.x + source.width - 8)
-    expect(chosen.to.y).toBe(target.y)
+    expect(chosen.from).toEqual({
+      x: source.x + source.width / 2,
+      y: source.y + source.height,
+      side: 'bottom',
+    })
+    expect(chosen.to).toEqual({ x: target.x + target.width / 2, y: target.y, side: 'top' })
   })
 
-  it('keeps a left or right anchor on the row it joins through', () => {
-    const source = card('a', 0, 0)
-    const target = card('b', 800, 0)
-    const chosen = chooseAnchors({ rect: source, row: 120 }, { rect: target, row: 64 })
-    expect(chosen.from).toEqual({ x: source.x + source.width, y: 120, side: 'right' })
-    expect(chosen.to).toEqual({ x: target.x, y: 64, side: 'left' })
-  })
-
-  it('spreads two relationships between the same pair of cards apart', () => {
-    // stacked cards put both edges on the same border; landing them on the same
-    // point would draw one line where there are two
+  it('lands two relationships between the same pair of cards on the same point', () => {
+    // #139 replaces the spread that used to keep per-column anchors apart: Power BI
+    // bundles, and which column a line joins is read off the row highlight (#123)
     const source = card('a', 0, 0)
     const target = card('b', 0, 700)
-    const first = chooseAnchors({ rect: source, row: 40 }, { rect: target, row: 740 })
-    const second = chooseAnchors({ rect: source, row: 170 }, { rect: target, row: 860 })
-    expect(first.from.side).toBe('bottom')
-    expect(second.from.side).toBe('bottom')
-    expect(Math.abs(first.from.x - second.from.x)).toBeGreaterThan(8)
-    expect(Math.abs(first.to.x - second.to.x)).toBeGreaterThan(8)
+    expect(chooseAnchors(end(source), end(target))).toEqual(
+      chooseAnchors(end(source, 0.9), end(target, 0.1)),
+    )
   })
 
   it('prefers a side pair whose direct run is not already walled off', () => {
@@ -118,15 +110,18 @@ describe('chooseAnchors — the side each end attaches to', () => {
     expect(seen).toEqual(['right→left', 'right→left', 'left→right', 'left→right'])
   })
 
-  it('re-chooses when a card is expanded and grows past its partner', () => {
-    // expanding a table changes its height, which is exactly the case #62 reflows;
-    // the side pair has to be recomputed from the new box, not kept from the old one
+  it('re-measures when a card is expanded', () => {
+    // Expanding a table changes its height, which is exactly the case #62 reflows.
+    // Since #139 the anchor is the MIDDLE of its side, so it moves with the box: an
+    // anchor computed from the collapsed card would land inside the expanded one.
     const target = card('b', 500, 500)
     const collapsed = card('a', 0, 0, CARD_W, 200)
     const expanded = card('a', 0, 0, CARD_W, 800)
-    expect(sides(end(collapsed), end(target))).toBe('bottom→top')
-    // grown down past the target's row, leaving from the bottom would be a U-turn
-    expect(sides(end(expanded), end(target))).toBe('right→top')
+    const before = chooseAnchors(end(collapsed), end(target))
+    const after = chooseAnchors(end(expanded), end(target))
+    expect(before.from.y).toBe(collapsed.y + collapsed.height / 2)
+    expect(after.from.y).toBe(expanded.y + expanded.height / 2)
+    expect(after.from.y).not.toBe(before.from.y)
   })
 
   it('is deterministic, whatever order the obstacles arrive in', () => {
@@ -229,18 +224,35 @@ describe('chooseAnchors — the elbowed path it produces', () => {
   })
 })
 
-describe('anchorOn', () => {
-  it('puts a top or bottom anchor on the side of the card the other end is on', () => {
+describe('anchorOn — one landing point per side (#139)', () => {
+  it('puts every side\'s anchor at the middle of that side', () => {
     const rect = card('a', 0, 0)
-    const left = anchorOn({ rect, row: 100 }, 'bottom', { x: -900, y: 400 })
-    const right = anchorOn({ rect, row: 100 }, 'bottom', { x: 900, y: 400 })
-    expect(left.x).toBeLessThan(rect.x + rect.width / 2)
-    expect(right.x).toBeGreaterThan(rect.x + rect.width / 2)
-    expect(left.y).toBe(rect.y + rect.height)
+    expect(anchorOn({ rect }, 'left')).toEqual({ x: rect.x, y: rect.y + rect.height / 2, side: 'left' })
+    expect(anchorOn({ rect }, 'right')).toEqual({
+      x: rect.x + rect.width,
+      y: rect.y + rect.height / 2,
+      side: 'right',
+    })
+    expect(anchorOn({ rect }, 'top')).toEqual({ x: rect.x + rect.width / 2, y: rect.y, side: 'top' })
+    expect(anchorOn({ rect }, 'bottom')).toEqual({
+      x: rect.x + rect.width / 2,
+      y: rect.y + rect.height,
+      side: 'bottom',
+    })
+  })
+
+  it('is the same point however many relationships use the side', () => {
+    // the whole point of the addendum: a hub is entered ONCE per side, not once per
+    // column, so the border reads as structure instead of a row of arrival points
+    const rect = card('hub', 0, 0)
+    const seen = new Set(
+      [0, 40, 120, 199].map(() => JSON.stringify(anchorOn({ rect }, 'right'))),
+    )
+    expect(seen.size).toBe(1)
   })
 
   it('survives a card with no measured height', () => {
-    const anchor = anchorOn({ rect: card('a', 0, 0, 300, 0), row: 0 }, 'top', { x: 0, y: 500 })
+    const anchor = anchorOn({ rect: card('a', 0, 0, 300, 0) }, 'top')
     expect(Number.isFinite(anchor.x)).toBe(true)
     expect(Number.isFinite(anchor.y)).toBe(true)
   })

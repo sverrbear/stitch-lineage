@@ -37,15 +37,9 @@ import {
   type RoutingRect,
 } from './edgeRouting'
 
-/** One end of a relationship: the card it lands on, and the row it joins through. */
+/** One end of a relationship: the card it lands on. */
 export interface AnchorEnd {
   rect: RoutingRect
-  /**
-   * Flow-space y of the joined column's row. A left or right anchor sits exactly
-   * on it — the edge still points at its column — and a top or bottom anchor uses
-   * it only to spread two relationships between the same pair of cards apart.
-   */
-  row: number
 }
 
 export interface AnchorPair {
@@ -68,12 +62,6 @@ export interface AnchorOptions {
  */
 const DIRECT_RUN_MARGIN = DEFAULT_MARGIN
 
-/** How far an anchor stays clear of its card's corners, so the stub has room to turn. */
-const CORNER_INSET = 20
-
-/** How far the joined row's position within a card shifts a top/bottom anchor. */
-const ROW_SPREAD = 44
-
 /**
  * Leaving a card on a side that faces away from the other end costs this much: it
  * is a U-turn, and a U-turn is the thing #100 is about. Priced above a couple of
@@ -92,32 +80,32 @@ const BLOCKED_PRICE = 260
 const FROM_ORDER: readonly AnchorSide[] = ['right', 'left', 'bottom', 'top']
 const TO_ORDER: readonly AnchorSide[] = ['left', 'right', 'top', 'bottom']
 
-function clamp(value: number, low: number, high: number): number {
-  if (high < low) return (low + high) / 2
-  return Math.min(high, Math.max(low, value))
-}
-
-function centreOf(rect: RoutingRect): Point {
-  return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }
-}
-
 /**
- * The point on `side` of the card. Left and right keep the joined row's y; top and
- * bottom aim at the other card and are nudged by where the row sits in this one.
+ * The one point on `side` that every relationship using that side lands on: its
+ * middle.
+ *
+ * Anchors used to sit on the joined column's own row, so a hub was entered at a
+ * different height for every relationship and its border became a row of arrival
+ * points that read as noise rather than as structure. Power BI bundles instead --
+ * all edges meeting a card on a side converge on one point and fan out beyond it --
+ * so which SIDE is still chosen per pair (#100/#106), and the landing point on that
+ * side is shared.
+ *
+ * What that gives up is the endpoint encoding which column is joined. That
+ * information moves to the row highlight an edge lights up when hovered or clicked
+ * (#123), where it is legible; on a card with fifty columns the endpoint never was.
  */
-export function anchorOn(end: AnchorEnd, side: AnchorSide, towards: Point): RoutingAnchor {
-  const { rect, row } = end
+export function anchorOn(end: AnchorEnd, side: AnchorSide): RoutingAnchor {
+  const { rect } = end
   if (side === 'left' || side === 'right') {
     return {
       x: side === 'left' ? rect.x : rect.x + rect.width,
-      y: clamp(row, rect.y + CORNER_INSET, rect.y + rect.height - CORNER_INSET),
+      y: rect.y + rect.height / 2,
       side,
     }
   }
-  const fraction = rect.height > 0 ? clamp((row - rect.y) / rect.height, 0, 1) : 0.5
-  const spread = (fraction - 0.5) * ROW_SPREAD
   return {
-    x: clamp(towards.x + spread, rect.x + CORNER_INSET, rect.x + rect.width - CORNER_INSET),
+    x: rect.x + rect.width / 2,
     y: side === 'top' ? rect.y : rect.y + rect.height,
     side,
   }
@@ -142,8 +130,6 @@ export function chooseAnchors(
 ): AnchorPair {
   const stub = options.stub ?? DEFAULT_STUB
   const margin = options.margin ?? DIRECT_RUN_MARGIN
-  const toCentre = centreOf(to.rect)
-  const fromCentre = centreOf(from.rect)
   const walls = [...obstacles, from.rect, to.rect].map((rect) => ({
     left: rect.x - margin,
     right: rect.x + rect.width + margin,
@@ -153,11 +139,11 @@ export function chooseAnchors(
 
   // the four candidates per end, worked out once
   const fromEnds = FROM_ORDER.map((side) => {
-    const anchor = anchorOn(from, side, toCentre)
+    const anchor = anchorOn(from, side)
     return { anchor, stub: stubPoint(anchor, stub) }
   })
   const toEnds = TO_ORDER.map((side) => {
-    const anchor = anchorOn(to, side, fromCentre)
+    const anchor = anchorOn(to, side)
     return { anchor, stub: stubPoint(anchor, stub) }
   })
 

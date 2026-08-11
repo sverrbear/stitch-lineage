@@ -97,9 +97,11 @@ export function ErdRoutedEdge({
 }: EdgeProps) {
   const cards = useCardRects()
   // Sides first, then the route: which border each end attaches to is decided for
-  // this pair of cards (#100), and the router is handed the result. React Flow's own
-  // handle positions stay left/right — they are where a relationship is DRAWN from,
-  // not where a drawn one has to run.
+  // this pair of cards (#100), and the router is handed the result. The LANDING point
+  // on that border is the side's middle, shared by every relationship using it (#139),
+  // so a hub is entered at one place per side instead of once per column. React Flow's
+  // own handle positions stay left/right — they are where a relationship is DRAWN
+  // from, not where a drawn one has to run.
   const { points } = useMemo(() => {
     const own: RoutingRect[] = []
     const obstacles: RoutingRect[] = []
@@ -116,11 +118,7 @@ export function ErdRoutedEdge({
     // fall back to the handles' own sides so the edge still draws.
     const anchors =
       sourceCard && targetCard
-        ? chooseAnchors(
-            { rect: sourceCard, row: sourceY },
-            { rect: targetCard, row: targetY },
-            obstacles,
-          )
+        ? chooseAnchors({ rect: sourceCard }, { rect: targetCard }, obstacles)
         : {
             from: { x: sourceX, y: sourceY, side: sideOf(sourcePosition, 'right') },
             to: { x: targetX, y: targetY, side: sideOf(targetPosition, 'left') },
