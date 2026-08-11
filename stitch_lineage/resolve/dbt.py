@@ -1158,12 +1158,23 @@ def _relates_to_edges(
             continue
         from_id = column_node_id(test["fk_uid"], test["fk_column"])
         to_id = column_node_id(test["to_uid"], test["to_column"])
+        # A relationships test states that the two columns join; it has no field for
+        # the ARITY, so that is read from the FK column's own meta (#134). Without
+        # this a one-to-one drawn in the app came back as a many-to-one after the
+        # next build, and the ERD drew the wrong relationship.
+        fk_meta = _merged_meta(
+            (models[test["fk_uid"]].get("columns") or {}).get(test["fk_column"]) or {}
+        )
         edges[(from_id, to_id)] = Edge(
             from_=from_id,
             to=to_id,
             edge_type=EdgeType.RELATES_TO,
             confidence=Confidence.VALIDATED,
-            evidence={"source": "relationships_test", "test": test["test_id"]},
+            evidence={
+                "source": "relationships_test",
+                "test": test["test_id"],
+                "relationship_type": fk_meta.get(cardinality_meta_key),
+            },
         )
 
     return list(edges.values()), dangling

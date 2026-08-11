@@ -207,10 +207,12 @@ metabase:
                                         # dbt model name
 
 relationships:
-  write_to: meta                        # | relationships_test | contract_constraint
-  fk_meta_keys: [metabase.fk_target_table, metabase.fk_target_field]  # dbt-metabase interop
-  cardinality_meta_key: relationship_type                             # dbterd interop
-  validated_test_severity: warn         # used when a relationship is promoted to validated
+  write_to: relationships_test          # | meta | contract_constraint — the DEFAULT
+  fk_meta_keys: [metabase.fk_target_table, metabase.fk_target_field]  # dbt-metabase interop,
+                                        # used only by write_to: meta
+  cardinality_meta_key: relationship_type   # dbterd interop; also where the test form
+                                        # keeps the arity a test cannot express
+  validated_test_severity: warn         # every test stitch writes carries this, explicitly
 
 serve:
   erd_default_scope: "schema:MARTS"     # | tag:<name> — ERD scope the app opens on;
@@ -370,16 +372,24 @@ Many-to-many is not a stored shape — it's what the ERD *renders* when a bridge
 
 **Interop degrades explicitly, never silently:** simple relationships sync to Metabase via dbt-metabase and export to dbterd. Composite ones render in the ERD and count in impact analysis, but Metabase's FK model can't hold them (its own tracker says as much) — `stitch doctor` lists what didn't sync and why. Conceptual edges are ERD and documentation only, excluded from impact traversal and Metabase sync by definition.
 
-**Two tiers, orthogonal to shape:**
+**Two tiers, orthogonal to shape.** The tier is a property of what is ON DISK, not of who drew it — the resolver reads a repo it did not write, so the tier has to be readable from the YAML alone:
 
 | Tier | Stored as | Means | ERD rendering |
 |---|---|---|---|
-| **declared** (default) | meta only | "these relate" — documentation, zero build cost | solid edge |
-| **validated** (opt-in, simple + composite only) | meta **plus** a `relationships` test at `severity: warn` | dbt checks referential integrity each run | solid edge + check badge |
+| **declared** | a meta declaration, or a contract constraint | "these relate" — documentation, zero build cost | solid edge |
+| **validated** | a `relationships` test (at `severity: warn`) | dbt checks referential integrity on every run | solid edge + ✓ badge |
 
-The honest cost of declared-only: nothing exercises it against data. Mitigated structurally — `stitch build` statically validates every declaration against the manifest (target model exists, columns exist, types join-compatible; conceptual edges: target exists) and dangling declarations are build warnings in coverage output. Static checks catch typos; only the validated tier catches orphaned rows, which is exactly what the promote toggle is for.
+Since #134 the default written form IS the test, so a relationship drawn in the app and applied comes back **validated** on the next build. That is the point: the arrangement that costs nothing to maintain is also the one that is checked. `write_to: meta` still writes the declared tier for repos that want documentation without a test in their DAG.
 
-The edge modal exposes all of this: shape is inferred from what you dragged (column→column = simple; multi-select = composite; table header→table header = conceptual), cardinality is a dropdown, "also add integrity test" is an off-by-default checkbox. `relationships.write_to` in config remains for teams that want tests or contract constraints as the written form of *simple* relationships.
+What the ✓ therefore means, precisely: *dbt is checking this join's referential integrity.* Not "a human drew it" (the app's staged styling says that, before apply) and not "stitch is confident" (that is the confidence scale on inferred edges). An edge with no ✓ is one nothing exercises against data.
+
+**A written test never fails a pipeline.** Every test stitch writes carries `severity: warn` explicitly, from `validated_test_severity`. A relationship someone drew in a diagramming tool must not be the reason a deploy goes red; a warning is the honest signal, and the team can promote it by hand.
+
+**Arity lives beside the test, not in it.** A `relationships` test states that two columns join and has no field for many-to-one versus one-to-one, so the cardinality is written to `cardinality_meta_key` on the FK column and read back from there. Without that, drawing a one-to-one and rebuilding hands back a many-to-one.
+
+The honest cost of declared-only: nothing exercises it against data. Mitigated structurally — `stitch build` statically validates every declaration against the manifest (target model exists, columns exist, types join-compatible; conceptual edges: target exists) and dangling declarations are build warnings in coverage output. Static checks catch typos; only the validated tier catches orphaned rows.
+
+The edge modal exposes all of this: shape is inferred from what you dragged (column→column = simple; multi-select = composite; table header→table header = conceptual), and cardinality is a dropdown.
 
 ### 8.2 Write-back — staged, then `stitch apply` (v0.5, supersedes direct write)
 
@@ -387,7 +397,7 @@ Editing in the app never touches the repo. The flow is plan/apply (issues #24 + 
 
 1. Drawing an edge opens a modal: target column confirm, cardinality, shape. Confirming SAVES the declaration to a local staged store (`.stitch/staged_relationships.yml` — lives with the rest of the local state, never committed). Staged edges render visibly pending in the ERD and survive restarts. A staged relationship can be edited before it is applied (cardinality, or the endpoints — which re-hashes its id, so an edit is a replace that dedupes against what is already staged).
    Editing a column or model **description** stages the same way, into the sibling `.stitch/staged_descriptions.yml`: one entry per entity+column, keyed on the target so re-editing replaces (last write wins) rather than queueing.
-2. **`stitch apply`** materializes everything staged into the repo in ONE run — relationships and descriptions, one diff preview, one confirmation, one clearing pass. Relationships go on the FK column in the form `relationships.write_to` selects (meta / test / contract); a description is set on the model or column entry (created if the key is absent, emitted as a `|` block when it is multi-line, and left alone when the repo already says it):
+2. **`stitch apply`** materializes everything staged into the repo in ONE run — relationships and descriptions, one diff preview, one confirmation, one clearing pass. Relationships go on the FK column in the form `relationships.write_to` selects (test by default; meta / contract available); a description is set on the model or column entry (created if the key is absent, emitted as a `|` block when it is multi-line, and left alone when the repo already says it):
    - a diff preview is always shown before writing; `--dry-run` shows it and stops; a confirmation prompt gates the write (`--yes` skips)
    - `ruamel.yaml` round-trip mode — comments, quoting, key order preserved. A PR that reformats every line of a hand-maintained schema file gets the tool banned; this is non-negotiable.
    - target file from manifest `patch_path`; no YAML entry for the column → insert in catalog column order; no YAML file for the model → create per convention

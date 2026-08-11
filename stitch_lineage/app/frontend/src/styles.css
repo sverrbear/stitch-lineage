@@ -2341,6 +2341,23 @@ kbd {
   font-weight: 600;
 }
 
+/* The name is a link and the rest of the card is not (#140). At rest it reads as
+   the identifier it always was — a canvas of underlined blue names would be a wall
+   of chrome — and the affordance appears on hover, which is when the reader needs
+   to know the two halves do different things. The pointer stays on the name alone:
+   the card body re-traces, which is not navigation. */
+.flow-node-link {
+  color: inherit;
+  cursor: pointer;
+}
+
+.flow-node-link:hover,
+.flow-node-link:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .flow-node-sub {
   display: flex;
   align-items: baseline;
