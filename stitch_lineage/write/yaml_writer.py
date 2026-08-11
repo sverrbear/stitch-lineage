@@ -39,6 +39,7 @@ __all__ = [
     "YamlWriteError",
     "apply_plan",
     "model_writeability",
+    "plan_migration",
     "plan_writes",
 ]
 
@@ -128,6 +129,172 @@ class WritePlan:
 
     def diff(self, root: Path | None = None) -> str:
         return "".join(edit.diff(root) for edit in self.edits if edit.changed)
+
+
+def plan_migration(
+    manifest: dict[str, Any],
+    project_dir: Path,
+    relationships: RelationshipsConfig | None = None,
+) -> WritePlan:
+    """Rewrite `metabase.fk_*` meta declarations into the configured write form (#135).
+
+    Repos that declared relationships before the default flipped (#134) carry the FK
+    fact in two meta keys that only dbt-metabase reads. This restates each of them as
+    the configured form and REMOVES the now-redundant keys, so the declaration lives
+    in one place instead of two.
+
+    What it deliberately does not touch:
+      * `cardinality_meta_key` -- a relationships test has no field for arity, so that
+        key is the only thing remembering it (#134);
+      * model-level `stitch.relationships` entries -- composite and conceptual
+        relationships have no test form to migrate INTO, so rewriting them would lose
+        information rather than move it;
+      * anything at all when `write_to` is already `meta`, which is a no-op by
+        definition rather than a rewrite worth previewing.
+
+    Every guarantee `plan_writes` gives holds here, because it is the same machinery:
+    the file is proof-round-tripped before it is touched, the emitter is configured
+    from the file's own layout, and blank-line padding is restored and then asserted.
+    Writing is still the caller's job via `apply_plan`, so the dirty-file guard and
+    the diff-then-confirm flow are unchanged.
+    """
+    config = relationships or RelationshipsConfig()
+    models = _model_index(manifest)
+    project_dir = Path(project_dir)
+    if config.write_to == "meta":
+        return WritePlan(edits=[], results=[])
+
+    originals: dict[Path, str] = {}
+    current: dict[Path, str] = {}
+    results: list[EntryResult] = []
+
+    for entry in _declared_in_meta(models, config):
+        try:
+            path = _schema_path(entry, models, project_dir)
+            if path not in current:
+                text = _read(path)
+                _assert_round_trips(path, text, entry)
+                originals[path] = text
+                current[path] = text
+            updated = _migrate_entry(current[path], entry, models, config, path)
+        except YamlWriteError as exc:
+            results.append(EntryResult(entry=entry, status="failed", message=str(exc)))
+            continue
+        status: EntryStatus = "planned" if updated != current[path] else "unchanged"
+        current[path] = updated
+        results.append(
+            EntryResult(
+                entry=entry,
+                status=status,
+                path=path,
+                message=None if status == "planned" else "already in the target form",
+            )
+        )
+
+    edits = [
+        FileEdit(path=path, original=originals[path], updated=text)
+        for path, text in sorted(current.items())
+        if originals[path] != text
+    ]
+    return WritePlan(edits=edits, results=results)
+
+
+def _declared_in_meta(
+    models: dict[str, dict[str, Any]], config: RelationshipsConfig
+) -> list[StagedRelationship]:
+    """Every simple relationship the manifest carries as `fk_meta_keys`, in a stable order.
+
+    Read from the MANIFEST rather than by parsing YAML: the manifest is what the rest
+    of stitch already trusts for "what does this repo declare", and it has already
+    merged `config.meta` with legacy top-level `meta`.
+    """
+    table_key, field_key = config.fk_meta_keys[0], config.fk_meta_keys[1]
+    found: list[StagedRelationship] = []
+    for name in sorted(models):
+        node = models[name]
+        for column_name, column in sorted((node.get("columns") or {}).items()):
+            meta = _column_meta(column)
+            target = meta.get(table_key)
+            if not target:
+                continue
+            to_model = str(target).split(".")[-1]
+            to_column = str(meta.get(field_key) or column_name)
+            found.append(
+                StagedRelationship(
+                    id=f"migrate:{name}.{column_name}",
+                    from_model=str(node.get("name") or name),
+                    from_column=str(column_name),
+                    to_model=to_model,
+                    to_column=to_column,
+                    cardinality=str(meta.get(config.cardinality_meta_key) or "many-to-one"),
+                )
+            )
+    return found
+
+
+def _column_meta(column: dict[str, Any]) -> dict[str, Any]:
+    """`config.meta` merged over legacy top-level `meta`, the way the resolver reads it."""
+    merged: dict[str, Any] = {}
+    top = column.get("meta")
+    if isinstance(top, dict):
+        merged.update(top)
+    nested = (
+        (column.get("config") or {}).get("meta") if isinstance(column.get("config"), dict) else None
+    )
+    if isinstance(nested, dict):
+        merged.update(nested)
+    return merged
+
+
+def _migrate_entry(
+    text: str,
+    entry: StagedRelationship,
+    models: dict[str, dict[str, Any]],
+    config: RelationshipsConfig,
+    path: Path,
+) -> str:
+    """Write the declaration in the target form, then drop the meta keys it replaces."""
+    yaml = _yaml_for(text)
+    document = _load(text, yaml, path)
+    model_entry = _model_entry(document, entry.from_model)
+    if model_entry is None:
+        raise YamlWriteError(
+            f"model '{entry.from_model}' has no entry in its schema file -- nothing to migrate"
+        )
+    column = _ensure_column(model_entry, entry.from_column)
+    if config.write_to == "contract_constraint":
+        raise YamlWriteError(
+            "relationships.write_to: contract_constraint is not implemented yet -- "
+            "migrate with 'relationships_test' instead"
+        )
+    _write_relationships_test(column, document, entry, config)
+    _drop_fk_meta(column, config)
+    return _emit(text, document, yaml, path)
+
+
+def _drop_fk_meta(column: CommentedMap, config: RelationshipsConfig) -> None:
+    """Remove the two FK meta keys, and any mapping they leave empty behind them.
+
+    An empty `meta:` or `config:` left standing is exactly the kind of residue the
+    migration exists to remove, so the containers go too -- but only when nothing
+    else is in them. `cardinality_meta_key` counts as something else.
+    """
+    for holder in (
+        column,
+        column.get("config") if isinstance(column.get("config"), dict) else None,
+    ):
+        if not isinstance(holder, dict):
+            continue
+        meta = holder.get("meta")
+        if not isinstance(meta, dict):
+            continue
+        for key in config.fk_meta_keys:
+            meta.pop(key, None)
+        if not meta:
+            holder.pop("meta", None)
+    block = column.get("config")
+    if isinstance(block, dict) and not block:
+        column.pop("config", None)
 
 
 def plan_writes(

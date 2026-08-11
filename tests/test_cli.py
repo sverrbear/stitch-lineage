@@ -816,3 +816,29 @@ def test_impact_column_without_a_graph_points_at_build(tmp_path, monkeypatch):
     result = runner.invoke(app, ["impact", "--column", "fct_matches.match_intensity"])
     assert result.exit_code == 1
     assert "stitch build" in _plain(result.output)
+
+
+def test_migrate_relationships_is_registered_and_documented():
+    """#135: the command exists, and its help says what it will and will not touch."""
+    result = runner.invoke(app, ["migrate-relationships", "--help"])
+    assert result.exit_code == 0
+    for promise in ("--dry-run", "--force", "cardinality key stays"):
+        assert promise in result.stdout.replace("\n", " ").replace("  ", " ")
+
+
+def test_migrate_relationships_declines_when_the_target_form_is_meta(tmp_path):
+    """Migrating to the form you are already in is a no-op worth saying out loud."""
+    config = tmp_path / "stitch.yml"
+    config.write_text(
+        "metabase:\n"
+        "  url: https://mb.example.com\n"
+        "  api_key: ${STITCH_METABASE_API_KEY}\n"
+        "  databases:\n"
+        "    - metabase_name: Analytics\n"
+        "      dbt_database: ANALYTICS\n"
+        "relationships:\n"
+        "  write_to: meta\n"
+    )
+    result = runner.invoke(app, ["migrate-relationships", "--config", str(config)])
+    assert result.exit_code == 0
+    assert "nothing to migrate to" in result.stdout
