@@ -44,6 +44,7 @@ from stitch_lineage.write.yaml_writer import (
     WritePlan,
     apply_plan,
     model_writeability,
+    plan_migration,
     plan_writes,
 )
 
@@ -59,6 +60,7 @@ __all__ = [
     "build_plan",
     "execute",
     "is_dirty",
+    "migration_plan",
     "patch_graph",
     "paths_for",
     "read_changes",
@@ -233,6 +235,28 @@ def build_plan(config_path: Path, cfg: StitchConfig) -> ApplyPlan:
     manifest = load_manifest(config_path.parent / cfg.dbt.project_dir / cfg.dbt.target_path)
     plan = plan_writes(changes.all, manifest, paths.project_dir, cfg.relationships)
     return ApplyPlan(paths=paths, changes=changes, plan=plan, write_to=cfg.relationships.write_to)
+
+
+def migration_plan(config_path: Path, cfg: StitchConfig) -> ApplyPlan:
+    """Plan the rewrite of meta-form declarations into the configured form (#135).
+
+    Shaped as an ApplyPlan so the CLI's preview, dirty-file guard and confirmation
+    are the same code paths `stitch apply` uses -- a migration writes model YAML, so
+    it gets the same ceremony. Its `changes` are empty: nothing is staged, the
+    declarations being rewritten are already in the repo.
+
+    Raises:
+        StitchArtifactError: the dbt manifest is missing or unparseable.
+    """
+    paths = paths_for(config_path, cfg)
+    manifest = load_manifest(config_path.parent / cfg.dbt.project_dir / cfg.dbt.target_path)
+    plan = plan_migration(manifest, paths.project_dir, cfg.relationships)
+    return ApplyPlan(
+        paths=paths,
+        changes=StagedChanges(relationships=[], descriptions=[]),
+        plan=plan,
+        write_to=cfg.relationships.write_to,
+    )
 
 
 def is_dirty(path: Path) -> bool:

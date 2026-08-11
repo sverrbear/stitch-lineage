@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 
 import uvicorn
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from stitch_lineage import __version__
@@ -23,6 +24,18 @@ from stitch_lineage.io.graph_store import write_graph
 from stitch_lineage.io.layout_store import LAYOUT_FILENAME, add_dismissed
 
 runner = CliRunner()
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """Console output with Rich's colour and wrapping taken back out.
+
+    CI runs on a narrow terminal with colour forced on, so asserting on raw stdout
+    pins the renderer rather than the message.
+    """
+    return " ".join(_ANSI.sub("", text).split())
+
 
 VALID_CONFIG = """
 metabase:
@@ -816,3 +829,37 @@ def test_impact_column_without_a_graph_points_at_build(tmp_path, monkeypatch):
     result = runner.invoke(app, ["impact", "--column", "fct_matches.match_intensity"])
     assert result.exit_code == 1
     assert "stitch build" in _plain(result.output)
+
+
+def test_migrate_relationships_is_registered_and_documented():
+    """#135: the command exists, with the options and the caveat its help promises.
+
+    Asserted against the registered command rather than its RENDERED help: Rich wraps
+    to the terminal width and paints ANSI into it, so `--dry-run` is split across
+    lines on a narrow CI terminal and matches nothing. That is a property of the
+    renderer, not of the command, and it failed only in CI.
+    """
+    command = get_command(app).commands["migrate-relationships"]
+    options = {name for param in command.params for name in param.opts}
+    assert {"--dry-run", "--force", "--yes"} <= options
+    assert command.help is not None
+    # the one non-obvious decision a reader needs from the help: what is NOT removed
+    assert "cardinality key stays" in " ".join(command.help.split())
+
+
+def test_migrate_relationships_declines_when_the_target_form_is_meta(tmp_path):
+    """Migrating to the form you are already in is a no-op worth saying out loud."""
+    config = tmp_path / "stitch.yml"
+    config.write_text(
+        "metabase:\n"
+        "  url: https://mb.example.com\n"
+        "  api_key: ${STITCH_METABASE_API_KEY}\n"
+        "  databases:\n"
+        "    - metabase_name: Analytics\n"
+        "      dbt_database: ANALYTICS\n"
+        "relationships:\n"
+        "  write_to: meta\n"
+    )
+    result = runner.invoke(app, ["migrate-relationships", "--config", str(config)])
+    assert result.exit_code == 0
+    assert "nothing to migrate to" in _plain(result.stdout)

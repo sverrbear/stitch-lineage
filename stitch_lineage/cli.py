@@ -1581,6 +1581,104 @@ def apply(
         raise typer.Exit(code=1)
 
 
+@app.command(name="migrate-relationships")
+def migrate_relationships(
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Show the diff and stop without writing.")
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt.")] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Write even when a target schema file has uncommitted edits."),
+    ] = False,
+    config: ConfigOpt = None,
+) -> None:
+    """Rewrite `metabase.fk_*` relationship declarations in the configured write form.
+
+    For repos that declared relationships before the written form defaulted to a dbt
+    `relationships` test: each declaration is restated as a test and the two meta keys
+    it replaces are removed, so the FK fact lives in one place instead of two. The
+    cardinality key stays -- a test has no field for arity, so it is the only thing
+    remembering whether the join is many-to-one or one-to-one.
+
+    Nothing is redrawn and nothing is inferred: only declarations already in the repo
+    are rewritten. Composite and conceptual `stitch.relationships` entries are left
+    alone, having no test form to migrate into.
+
+    Same ceremony as `stitch apply`: one diff preview, one confirmation, files with
+    uncommitted changes refused, and any schema file stitch cannot reproduce
+    byte-for-byte reported rather than reformatted.
+
+    Exit codes: 0 migrated or nothing to do, 1 on any refusal or error.
+    """
+    config = _resolve_config(config)
+    cfg = _load_config_or_fail(config)
+    if cfg.relationships.write_to == "meta":
+        console.print(
+            "relationships.write_to is already 'meta' -- there is nothing to migrate to. "
+            "Set it to 'relationships_test' first.",
+            soft_wrap=True,
+        )
+        return
+    try:
+        plan = apply_service.migration_plan(config, cfg)
+    except StitchArtifactError as exc:
+        _fail(str(exc))
+    except NotImplementedError as exc:
+        _fail(str(exc))
+
+    if not plan.plan.results:
+        console.print(
+            "no meta-form relationship declarations found -- nothing to migrate",
+            soft_wrap=True,
+        )
+        return
+
+    planned = len(plan.plan.planned)
+    console.print(
+        f"{planned} meta declaration{'s' if planned != 1 else ''} -> {plan.write_to}",
+        soft_wrap=True,
+    )
+    root = plan.paths.project_dir.resolve()
+    _report_plan(plan.plan, root)
+
+    if dry_run:
+        console.print(
+            f"--dry-run: nothing written ({len(plan.edits)} file"
+            f"{'s' if len(plan.edits) != 1 else ''} would change)",
+            soft_wrap=True,
+        )
+        if plan.plan.failures:
+            raise typer.Exit(code=1)
+        return
+
+    refused = apply_service.refusals(plan, force=force)
+    for edit in refused:
+        console.print(
+            f"[red]refusing[/red] {edit.path} has uncommitted changes -- "
+            "commit or stash it, or re-run with --force",
+            soft_wrap=True,
+        )
+    writable = [edit for edit in plan.edits if edit not in refused]
+    if refused and not writable:
+        raise typer.Exit(code=1)
+    if not writable:
+        console.print("nothing to write -- every declaration is already in the target form")
+        return
+    if not yes and not typer.confirm(f"migrate {len(writable)} file(s)?", default=False):
+        console.print("aborted -- nothing written")
+        raise typer.Exit(code=1)
+
+    # No store to clear and no graph patch: the relationships already existed, this
+    # only changes the form they are written in. The next build re-reads them, now
+    # from the tests, and they come back validated instead of declared.
+    for path in apply_service.apply_plan(writable):
+        console.print(f"wrote {path}", soft_wrap=True)
+    console.print("run 'stitch build' to pick the rewritten declarations back up", soft_wrap=True)
+    if plan.plan.failures or refused:
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def init(
     force: Annotated[
