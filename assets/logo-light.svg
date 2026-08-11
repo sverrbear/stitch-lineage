@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 304 122" width="304" height="122" role="img" aria-label="stitch">
+  <title>stitch</title>
+  <!-- Wordmark: the app's own language — monochrome type, ONE accent, and the
+       dashed seam it draws for an inferred lineage edge. textLength pins the
+       width so the mark holds its proportions whichever mono font resolves. -->
+  <text x="4" y="76" font-family="ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace"
+        font-size="80" font-weight="600" letter-spacing="-1" fill="#14161a"
+        textLength="292" lengthAdjust="spacingAndGlyphs">stitch</text>
+  <g stroke="#3730c4" stroke-width="4" stroke-linecap="round">
+    <line x1="8" y1="102" x2="296" y2="102" stroke-dasharray="11 9" />
+  </g>
+  <circle cx="8" cy="102" r="6" fill="#3730c4" />
+  <circle cx="296" cy="102" r="6" fill="#3730c4" />
+</svg>
