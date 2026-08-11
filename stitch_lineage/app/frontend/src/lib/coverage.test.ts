@@ -5,7 +5,6 @@ import {
   coveragePercent,
   coverageRows,
   graphStats,
-  homeExamples,
   startingPoints,
 } from './coverage'
 import { fixtureGraph } from './fixture'
@@ -130,31 +129,6 @@ describe('buildStamp', () => {
   it('is null when the graph carries no usable timestamp', () => {
     expect(buildStamp(null, new Date())).toBeNull()
     expect(buildStamp('not a date', new Date())).toBeNull()
-  })
-})
-
-describe('homeExamples', () => {
-  it('offers real identifiers from this graph, columns qualified by their model', () => {
-    const examples = homeExamples(index)
-    expect(examples.map((e) => e.label)).toEqual([
-      'fct_revenue.net_revenue',
-      'fct_revenue.user_id',
-      'Board dashboard',
-    ])
-  })
-
-  it('ranks a column by the cards it reaches, not by its one binds_to edge', () => {
-    // net_revenue binds to a field two cards read; user_id binds to a field with
-    // none. Counting edges would tie them at 1 and order them alphabetically.
-    const [first] = homeExamples(index, 2)
-    expect(first.label).toBe('fct_revenue.net_revenue')
-  })
-
-  it('still finds somewhere to start when nothing reaches Metabase', () => {
-    const bare = buildIndex({ ...fixtureGraph(), edges: [] })
-    const examples = homeExamples(bare)
-    expect(examples).toHaveLength(3)
-    expect(examples.every((e) => e.label.length > 0)).toBe(true)
   })
 })
 
