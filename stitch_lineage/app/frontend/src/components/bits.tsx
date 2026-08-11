@@ -128,8 +128,13 @@ export function GraphLegend({
             </svg>
             declared relationship — hover or click it to light the columns it joins
           </span>
+          {/* Weight only reads against something, so the legend holds the pair: this
+              is the reference the lines on the canvas are compared to (#164). */}
           <span className="legend-item">
-            <span className="validated-badge">✓</span> validated (relationships test)
+            <svg width="26" height="8">
+              <line x1="0" y1="4" x2="26" y2="4" className="legend-line-strong" />
+            </svg>
+            heavier line — validated by a dbt <code>relationships</code> test
           </span>
           {staged && (
             <span className="legend-item">

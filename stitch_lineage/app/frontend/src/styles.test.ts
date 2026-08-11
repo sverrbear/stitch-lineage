@@ -154,3 +154,38 @@ describe('the working button lays out its spinner (#160)', () => {
     expect(stopped).toHaveLength(1)
   })
 })
+
+/** The classes a drawn relationship's <path> actually carries. */
+const EDGE_PATH = ['erd-edge', 'react-flow__edge-path']
+
+describe('a validated relationship reads off the line (#164)', () => {
+  it('draws validated heavier than a plain declared relationship', () => {
+    // the whole of the fix: the ✓ is gone, so if these two weights ever converge
+    // there is nothing left on the canvas that says "validated"
+    // the path class is part of both selectors, so it belongs in the element's classes
+    const plain = Number(
+      declaration(winning('stroke-width', EDGE_PATH)?.body ?? '', 'stroke-width'),
+    )
+    const validated = Number(
+      declaration(winning('stroke-width', [...EDGE_PATH, 'validated'])?.body ?? '', 'stroke-width'),
+    )
+    expect(plain).toBeGreaterThan(0)
+    expect(validated).toBeGreaterThan(plain)
+  })
+
+  it('is the .validated rule that wins the weight, not the base .erd-edge', () => {
+    expect(winning('stroke-width', [...EDGE_PATH, 'validated'])?.selector).toContain(
+      '.validated',
+    )
+  })
+
+  it('leaves nothing behind that draws a glyph on an edge', () => {
+    expect(CSS).not.toContain('.erd-edge-validated')
+  })
+
+  it('keeps the legend swatch heavier than the plain one, since weight is comparative', () => {
+    const solid = Number(declaration(winning('stroke-width', ['legend-line-solid'])?.body ?? '', 'stroke-width'))
+    const strong = Number(declaration(winning('stroke-width', ['legend-line-strong'])?.body ?? '', 'stroke-width'))
+    expect(strong).toBeGreaterThan(solid)
+  })
+})

@@ -203,24 +203,6 @@ export function polylineLength(points: readonly Point[]): number {
   return total
 }
 
-/** The point half way along a polyline — where an edge label belongs. */
-export function polylineMidpoint(points: readonly Point[]): Point {
-  if (points.length === 0) return { x: 0, y: 0 }
-  const half = polylineLength(points) / 2
-  let walked = 0
-  for (let i = 0; i < points.length - 1; i++) {
-    const a = points[i]
-    const b = points[i + 1]
-    const length = Math.hypot(b.x - a.x, b.y - a.y)
-    if (walked + length >= half && length > 0) {
-      const t = (half - walked) / length
-      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }
-    }
-    walked += length
-  }
-  return points[points.length - 1]
-}
-
 /** Drop repeated and collinear points, so the drawn path has only real corners. */
 export function simplify(points: readonly Point[]): Point[] {
   const out: Point[] = []
