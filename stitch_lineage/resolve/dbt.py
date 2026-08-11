@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Callable
+from enum import StrEnum
 from typing import Any
 
 import sqlglot
@@ -28,6 +29,74 @@ _REF_RE = re.compile(r"ref\(\s*(?:['\"][^'\"]+['\"]\s*,\s*)?['\"]([^'\"]+)['\"]"
 _FK_EXPRESSION_RE = re.compile(r"^\s*(?P<target>[^()]+?)\s*\(\s*(?P<column>[^()]+?)\s*\)\s*$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 _GENERATED_ALIAS_RE = re.compile(r"^_col_\d+$", re.IGNORECASE)
+
+# `defined_as.sql` is a label in a detail panel, not the evidence: the untruncated
+# expression already travels on every feeds edge's `evidence.sql`.
+_DEFINED_AS_SQL_LIMIT = 240
+
+
+class TraceReason(StrEnum):
+    """Why a model column has no `feeds` edge -- the SPEC section 7.3 failure taxonomy.
+
+    One member per failure mode the resolver actually distinguishes, because "untraced"
+    on its own is a dead end: the whole point of the list is that fixing one upstream
+    doc gap often rescues a subtree, and only the reason says which gap that is.
+    """
+
+    NO_COMPILED_CODE = "no_compiled_code"
+    UNPARSEABLE_SQL = "unparseable_sql"
+    COLUMN_NOT_IN_SQL = "column_not_in_sql"
+    STAR_NOT_EXPANDABLE = "star_not_expandable"
+    UPSTREAM_NOT_IN_SCHEMA_MAP = "upstream_not_in_schema_map"
+    UPSTREAM_NOT_IN_PROJECT = "upstream_not_in_project"
+    NO_UPSTREAM_COLUMNS = "no_upstream_columns"
+    LINEAGE_FAILED = "lineage_failed"
+
+
+# One line per reason, in the words of the thing to go and fix. The app carries its
+# own copy (frontend/src/lib/trace.ts) the same way types.ts mirrors graph/schema.py;
+# `stitch doctor --untraced` reads these.
+TRACE_REASON_LABELS: dict[str, str] = {
+    TraceReason.NO_COMPILED_CODE: "model has no compiled SQL",
+    TraceReason.UNPARSEABLE_SQL: "SQL could not be parsed",
+    TraceReason.COLUMN_NOT_IN_SQL: "documented but not in the SQL",
+    TraceReason.STAR_NOT_EXPANDABLE: "star not expandable",
+    TraceReason.UPSTREAM_NOT_IN_SCHEMA_MAP: "upstream absent from the schema map",
+    TraceReason.UPSTREAM_NOT_IN_PROJECT: "upstream not a dbt model or source",
+    TraceReason.NO_UPSTREAM_COLUMNS: "literal — nothing upstream",
+    TraceReason.LINEAGE_FAILED: "parser could not walk this column",
+}
+
+
+class DefinedAs(BaseModel):
+    """How a model column is defined, read off its projection in the compiled SQL.
+
+    kind is what the projection IS, which is also how it reads in the app:
+      expression  -- computed: `amount * fx_rate`, a CASE, an aggregate, a literal
+      passthrough -- the upstream column itself, renamed or not; `upstream` names it
+      star        -- arrived through `select *`; `upstream` names the relation
+
+    `upstream` is set only when it is unambiguous (exactly one upstream column for a
+    passthrough, exactly one upstream relation for a star) -- a guess here would read
+    as a fact. sql is truncated for display; see _DEFINED_AS_SQL_LIMIT.
+    """
+
+    kind: str
+    sql: str
+    upstream: str | None = None
+
+
+class ColumnTrace(BaseModel):
+    """Per-column output of the sqlglot pass, beyond the edges themselves.
+
+    reason is set exactly when the column produced no `feeds` edge; defined_as
+    whenever the compiled SQL says how the column is built. Either can be None:
+    an unparseable model has a reason and no definition, and a column can be
+    traced (definition known) with no reason at all.
+    """
+
+    defined_as: DefinedAs | None = None
+    reason: TraceReason | None = None
 
 
 class DbtResolution(BaseModel):
@@ -128,6 +197,12 @@ def resolve_dbt(
         test -> validated. Declarations that point at a missing model/column go to
         dangling_relationships (formatted "model.column -> target"), not the edge list.
 
+    Every model column also carries what the sqlglot pass learned about it --
+    `trace_status`, `trace_reason` when untraced, and `defined_as` when the compiled
+    SQL says how it is built (see _column_nodes). The projection used to be discarded
+    once its edges were emitted; keeping it is what lets the app say of every column
+    either how it is defined or why stitch could not tell (#147/#148).
+
     Coverage counts model columns only: source columns are lineage roots, so they are
     excluded from columns_total, columns_traced and untraced_columns. columns_total
     therefore counts the SQL-derived sets above, not the warehouse's: an undeployed
@@ -152,10 +227,15 @@ def resolve_dbt(
         models, sources, catalog, catalog_specs, schema_mapping, infer_types
     )
     entity_nodes = _entity_nodes(models, sources)
-    column_nodes = _column_nodes(models, sources, column_specs, _catalogued_relations(catalog))
     references, seed_snapshot_deps = _references_edges(models, sources, manifest_nodes)
-    feeds = _feeds_edges(
+    # before the column nodes: trace_status is "did a feeds edge reach this column",
+    # which is not knowable until the whole sqlglot pass has run
+    feeds, traces = _feeds_edges(
         models, sources, column_specs, schema_mapping, manifest_sourced, on_progress
+    )
+    fed = {edge.to for edge in feeds}
+    column_nodes = _column_nodes(
+        models, sources, column_specs, _catalogued_relations(catalog), traces, fed
     )
     relates, dangling = _relates_to_edges(
         manifest_nodes, models, column_specs, tuple(fk_meta_keys), cardinality_meta_key
@@ -166,7 +246,6 @@ def resolve_dbt(
         for uid in models
         for spec in column_specs.get(uid, {}).values()
     }
-    fed = {edge.to for edge in feeds}
     inferred_targets = {edge.to for edge in feeds if edge.confidence == Confidence.INFERRED}
     traced = model_column_ids & fed
 
@@ -370,17 +449,51 @@ def _inferred_types(qualified: exp.Expression, schema_mapping: MappingSchema) ->
     return types
 
 
-def _sql_output_spellings(parsed: exp.Expression) -> dict[str, str]:
-    """{lowercased output name: the spelling the compiled SQL uses}, explicit outputs only."""
+def _output_projections(parsed: exp.Expression) -> dict[str, exp.Expression]:
+    """{lowercased output name: its projection expression}, explicit outputs only.
+
+    The defining projection is what #148 renders and what #147's taxonomy is read
+    against, so it is taken from the *unnormalized* parse for the same reason the
+    spellings are: qualify would rewrite it into dialect-normalized SQL nobody wrote.
+    A star projection names itself "*" and is filtered out here -- it has no single
+    output name to key on; `_star_projection_sql` handles that case separately.
+    """
     select = parsed if isinstance(parsed, exp.Select) else parsed.find(exp.Select)
     if select is None:
         return {}
-    spellings: dict[str, str] = {}
+    projections: dict[str, exp.Expression] = {}
     for projection in select.expressions:
         name = projection.alias_or_name
         if _is_real_column(name):
-            spellings.setdefault(name.lower(), name)
-    return spellings
+            projections.setdefault(name.lower(), projection)
+    return projections
+
+
+def _sql_output_spellings(parsed: exp.Expression) -> dict[str, str]:
+    """{lowercased output name: the spelling the compiled SQL uses}, explicit outputs only."""
+    return {
+        lower: projection.alias_or_name for lower, projection in _output_projections(parsed).items()
+    }
+
+
+def _star_projection_sql(parsed: exp.Expression) -> str:
+    """The first star projection as written (`o.*`, `*`), or "*" if none is found."""
+    select = parsed if isinstance(parsed, exp.Select) else parsed.find(exp.Select)
+    if select is not None:
+        for projection in select.expressions:
+            if isinstance(projection, exp.Star) or (
+                isinstance(projection, exp.Column) and isinstance(projection.this, exp.Star)
+            ):
+                return projection.sql(dialect=_DIALECT)
+    return "*"
+
+
+def _truncate_sql(text: str) -> str:
+    """One line, capped at _DEFINED_AS_SQL_LIMIT -- a panel label, not the evidence."""
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= _DEFINED_AS_SQL_LIMIT:
+        return collapsed
+    return collapsed[: _DEFINED_AS_SQL_LIMIT - 1].rstrip() + "…"
 
 
 def _is_usable_output_name(name: str) -> bool:
@@ -596,6 +709,8 @@ def _column_nodes(
     sources: dict[str, Any],
     column_specs: dict[str, dict[str, dict[str, Any]]],
     catalogued: set[str] | None = None,
+    traces: dict[str, ColumnTrace] | None = None,
+    fed: set[str] | None = None,
 ) -> list[Node]:
     """Column nodes named the dbt way; `warehouse_name` carries the other spelling.
 
@@ -609,13 +724,26 @@ def _column_nodes(
       column_not_in_catalog   -- the model is built, this column is not in it yet
                                  (it exists in the SQL, so it is undeployed, not lost)
     Set only when there is no data type; its absence is never a claim.
+
+    Three more properties carry the sqlglot pass's own findings, so the app can say
+    of every column either how it is defined or why stitch could not tell (#147/#148):
+      trace_status  -- "traced" / "untraced", i.e. whether a feeds edge reached it
+      trace_reason  -- the TraceReason, on untraced columns only
+      defined_as    -- the defining projection {kind, sql, upstream}, when known
+    Model columns only. A source column is a lineage root -- warehouse-native, no SQL
+    behind it -- so all three stay absent rather than claiming it failed to trace.
+    Absence means "does not apply / not known", never "no": the same rule the two
+    properties above already follow.
     """
     entities = {**models, **sources}
     catalogued = catalogued if catalogued is not None else set()
+    traces = traces or {}
+    fed = fed or set()
     nodes = []
     for uid, entity_specs in column_specs.items():
         entity = entities[uid]
         for spec in entity_specs.values():
+            node_id = column_node_id(uid, spec["name"])
             warehouse_name = spec.get("warehouse_name")
             properties: dict[str, Any] = {}
             if warehouse_name and warehouse_name != spec["name"]:
@@ -624,9 +752,16 @@ def _column_nodes(
                 properties["unknown_type_reason"] = (
                     "column_not_in_catalog" if uid in catalogued else "relation_not_in_catalog"
                 )
+            if uid in models and _is_real_column(spec["name"]):
+                trace = traces.get(node_id)
+                properties["trace_status"] = "traced" if node_id in fed else "untraced"
+                if node_id not in fed and trace is not None and trace.reason is not None:
+                    properties["trace_reason"] = str(trace.reason)
+                if trace is not None and trace.defined_as is not None:
+                    properties["defined_as"] = trace.defined_as.model_dump()
             nodes.append(
                 Node(
-                    node_id=column_node_id(uid, spec["name"]),
+                    node_id=node_id,
                     node_type=NodeType.COLUMN,
                     name=spec["name"],
                     database=entity.get("database"),
@@ -792,7 +927,7 @@ def _is_real_column(name: str) -> bool:
 
 def _explicit_output_names(parsed: exp.Expression) -> set[str]:
     """Lowercased output names the query projects by name (i.e. not via a star)."""
-    return set(_sql_output_spellings(parsed))
+    return set(_output_projections(parsed))
 
 
 def _leaf_columns(root, relation_map: dict[tuple, str]) -> list[tuple[str, str]]:
@@ -815,6 +950,131 @@ def _leaf_columns(root, relation_map: dict[tuple, str]) -> list[tuple[str, str]]
     return leaves
 
 
+def _foreign_relations(parsed: exp.Expression, relation_map: dict[tuple, str]) -> bool:
+    """Does this query read a schema-qualified relation dbt does not own?
+
+    CTEs and bare table names are not counted: the first are internal to the query
+    and the second cannot be matched against a (database, schema, table) key with any
+    confidence. Only a relation the SQL names in full and the project does not have.
+    """
+    ctes = {cte.alias_or_name.lower() for cte in parsed.find_all(exp.CTE)}
+    for table in parsed.find_all(exp.Table):
+        if not table.db or table.name.lower() in ctes:
+            continue
+        key = (table.catalog.lower(), table.db.lower(), table.name.lower())
+        if key not in relation_map:
+            return True
+    return False
+
+
+def _no_leaf_reason(root, relation_map: dict[tuple, str], foreign_relations: bool) -> TraceReason:
+    """Why a lineage walk that succeeded still reached no upstream column.
+
+    sqlglot leaves say which gap it is, and they are different fixes:
+
+      a leaf named "*" over a relation the project owns  -- the star could not be
+        expanded, so document the upstream and the whole subtree resolves
+      a Table leaf whose relation is not a dbt model/source -- the SQL reads a table
+        dbt does not own; declare it as a source
+      a Placeholder leaf -- sqlglot could not resolve the upstream at all because it
+        is in neither the catalog nor schema.yml. The single biggest real-world
+        cluster: a dev catalog only holds what that developer built. When the query
+        also names a relation outside the project that is the more fundamental
+        finding, so it wins.
+      no leaf at all -- a literal or constant with genuinely nothing upstream, which
+        is a fact about the column rather than a gap in the build
+
+    The star case wins a tie: it is the one that unblocks other columns too.
+    """
+    saw_star = False
+    saw_foreign_table = False
+    saw_placeholder = False
+    for node in root.walk():
+        if node.downstream:
+            continue
+        if isinstance(node.source, exp.Placeholder):
+            saw_placeholder = True
+        elif isinstance(node.source, exp.Table):
+            table = node.source
+            key = (table.catalog.lower(), table.db.lower(), table.name.lower())
+            if relation_map.get(key) is None:
+                saw_foreign_table = True
+            elif not _is_real_column(node.name.rpartition(".")[2]):
+                saw_star = True
+    if saw_star:
+        return TraceReason.STAR_NOT_EXPANDABLE
+    if saw_foreign_table:
+        return TraceReason.UPSTREAM_NOT_IN_PROJECT
+    if saw_placeholder:
+        return (
+            TraceReason.UPSTREAM_NOT_IN_PROJECT
+            if foreign_relations
+            else TraceReason.UPSTREAM_NOT_IN_SCHEMA_MAP
+        )
+    return TraceReason.NO_UPSTREAM_COLUMNS
+
+
+def _entity_name(uid: str, models: dict[str, Any], sources: dict[str, Any]) -> str:
+    return str((models.get(uid) or sources.get(uid) or {}).get("name") or uid)
+
+
+def _upstream_column_label(
+    uid: str,
+    leaf_column: str,
+    models: dict[str, Any],
+    sources: dict[str, Any],
+    column_specs: dict[str, dict[str, dict[str, Any]]],
+) -> str:
+    """`stg_orders.order_id` -- the dbt spelling on both sides, never the parser's.
+
+    sqlglot hands back dialect-normalized leaf names (SCREAMING_CASE on Snowflake),
+    which is not how anyone refers to the column; the upstream's own resolved spec is.
+    """
+    spec = column_specs.get(uid, {}).get(leaf_column.lower())
+    name = spec["name"] if spec else leaf_column.lower()
+    return f"{_entity_name(uid, models, sources)}.{name}"
+
+
+def _defined_as(
+    lower: str,
+    projections: dict[str, exp.Expression],
+    star_sql: str,
+    has_star: bool,
+    leaves: list[tuple[str, str]],
+    models: dict[str, Any],
+    sources: dict[str, Any],
+    column_specs: dict[str, dict[str, dict[str, Any]]],
+) -> DefinedAs | None:
+    """The column's defining projection, or None when the SQL does not name it.
+
+    None means "this build cannot say", never "nothing" -- a column documented in
+    schema.yml but absent from the projection has no definition to show, and saying
+    so is the point of #148's shared surface with the untraced reason.
+    """
+    projection = projections.get(lower)
+    if projection is None:
+        if not has_star:
+            return None
+        upstreams = list(dict.fromkeys(uid for uid, _ in leaves))
+        return DefinedAs(
+            kind="star",
+            sql=star_sql,
+            upstream=_entity_name(upstreams[0], models, sources) if len(upstreams) == 1 else None,
+        )
+    inner = projection.unalias() if isinstance(projection, exp.Alias) else projection
+    if isinstance(inner, exp.Column) and not isinstance(inner.this, exp.Star):
+        distinct = list(dict.fromkeys(leaves))
+        upstream = (
+            _upstream_column_label(*distinct[0], models, sources, column_specs)
+            if len(distinct) == 1
+            else None
+        )
+        return DefinedAs(
+            kind="passthrough", sql=_truncate_sql(inner.sql(dialect=_DIALECT)), upstream=upstream
+        )
+    return DefinedAs(kind="expression", sql=_truncate_sql(inner.sql(dialect=_DIALECT)))
+
+
 def _feeds_edges(
     models: dict[str, Any],
     sources: dict[str, Any],
@@ -822,27 +1082,35 @@ def _feeds_edges(
     schema_mapping: MappingSchema,
     manifest_sourced: set[str],
     on_progress: Callable[[int, int], None] | None = None,
-) -> list[Edge]:
+) -> tuple[list[Edge], dict[str, ColumnTrace]]:
+    """(feeds edges, per-column-node-id trace metadata).
+
+    The traces are the by-product the sqlglot pass used to throw away: the reason a
+    column produced no edge (#147) and the projection that produced the ones it did
+    (#148). Keyed by column node id, model columns only -- a source column is a
+    lineage root with no SQL behind it.
+    """
     relation_map = _relation_map(models, sources)
     edges: list[Edge] = []
+    traces: dict[str, ColumnTrace] = {}
 
     model_ids = sorted(models)
     for done, uid in enumerate(model_ids, start=1):
-        edges.extend(
-            _model_feeds_edges(
-                uid,
-                models[uid],
-                models,
-                sources,
-                column_specs,
-                schema_mapping,
-                manifest_sourced,
-                relation_map,
-            )
+        model_edges, model_traces = _model_feeds_edges(
+            uid,
+            models[uid],
+            models,
+            sources,
+            column_specs,
+            schema_mapping,
+            manifest_sourced,
+            relation_map,
         )
+        edges.extend(model_edges)
+        traces.update(model_traces)
         if on_progress is not None:
             on_progress(done, len(model_ids))
-    return edges
+    return edges, traces
 
 
 def _model_feeds_edges(
@@ -854,17 +1122,28 @@ def _model_feeds_edges(
     schema_mapping: MappingSchema,
     manifest_sourced: set[str],
     relation_map: dict[tuple, str],
-) -> list[Edge]:
+) -> tuple[list[Edge], dict[str, ColumnTrace]]:
     specs = column_specs.get(uid, {})
+    real_specs = {lower: spec for lower, spec in specs.items() if _is_real_column(spec["name"])}
+
+    def all_untraced(reason: TraceReason) -> dict[str, ColumnTrace]:
+        return {
+            column_node_id(uid, spec["name"]): ColumnTrace(reason=reason)
+            for spec in real_specs.values()
+        }
+
     compiled = model.get("compiled_code") or model.get("compiled_sql") or ""
     if not compiled.strip():
-        return []
+        return [], all_untraced(TraceReason.NO_COMPILED_CODE)
     try:
         parsed = sqlglot.parse_one(compiled, dialect=_DIALECT)
     except SqlglotError:
-        return []
+        return [], all_untraced(TraceReason.UNPARSEABLE_SQL)
     has_star = _has_projection_star(parsed)
-    explicit_outputs = _explicit_output_names(parsed)
+    projections = _output_projections(parsed)
+    explicit_outputs = set(projections)
+    star_sql = _star_projection_sql(parsed) if has_star else "*"
+    foreign_relations = _foreign_relations(parsed, relation_map)
     deps = [
         dep
         for dep in dict.fromkeys((model.get("depends_on") or {}).get("nodes") or [])
@@ -872,21 +1151,50 @@ def _model_feeds_edges(
     ]
 
     edges: list[Edge] = []
-    for lower, spec in specs.items():
-        if not _is_real_column(spec["name"]):
-            continue
+    traces: dict[str, ColumnTrace] = {}
+    for lower, spec in real_specs.items():
         target_id = column_node_id(uid, spec["name"])
         try:
             root = _sqlglot_lineage(
                 spec["name"], parsed.copy(), schema=schema_mapping, dialect=_DIALECT
             )
         except SqlglotError:
-            if has_star:
-                edges.extend(_star_fallback_edges(lower, target_id, deps, column_specs))
+            fallback = (
+                _star_fallback_edges(lower, target_id, deps, column_specs) if has_star else []
+            )
+            edges.extend(fallback)
+            # An output the query names and sqlglot still cannot walk is a parser
+            # limit. One the query does NOT name is not a failure at all: it either
+            # arrives through a star that would not expand, or it exists only as a
+            # schema.yml claim about a column the SQL never projects.
+            traces[target_id] = ColumnTrace(
+                defined_as=_defined_as(
+                    lower, projections, star_sql, has_star, [], models, sources, column_specs
+                ),
+                reason=None
+                if fallback
+                else (
+                    TraceReason.LINEAGE_FAILED
+                    if lower in explicit_outputs
+                    else (
+                        TraceReason.STAR_NOT_EXPANDABLE
+                        if has_star
+                        else TraceReason.COLUMN_NOT_IN_SQL
+                    )
+                ),
+            )
             continue
         leaves = _leaf_columns(root, relation_map)
+        defined_as = _defined_as(
+            lower, projections, star_sql, has_star, leaves, models, sources, column_specs
+        )
         if not leaves:
+            traces[target_id] = ColumnTrace(
+                defined_as=defined_as,
+                reason=_no_leaf_reason(root, relation_map, foreign_relations),
+            )
             continue
+        traces[target_id] = ColumnTrace(defined_as=defined_as)
         confidence = Confidence.EXACT if _is_plain_projection(root) else Confidence.PARSED
         evidence = {
             "source": "sqlglot.lineage",
@@ -910,7 +1218,7 @@ def _model_feeds_edges(
                     evidence=edge_evidence,
                 )
             )
-    return edges
+    return edges, traces
 
 
 def _star_fallback_edges(

@@ -514,6 +514,185 @@ kbd {
   color: var(--text);
 }
 
+/* ---- untraced drill-down (#147) ----
+
+   A flat list of 742 ids is a dead end, so the list is clustered by WHY, biggest
+   first: one undocumented upstream takes its whole downstream subtree with it, and
+   the top row is usually one fix. Amber throughout, because untraced IS the risk
+   colour in this palette. */
+
+.untraced-controls {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 2px 14px;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.untraced-controls-summary {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.untraced-toggle {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+  padding: 3px 10px;
+}
+
+.untraced-toggle:hover {
+  background: var(--bg-hover);
+}
+
+.untraced-toggle.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.untraced-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.untraced-group {
+  border-top: 1px solid var(--border);
+  padding-top: 4px;
+}
+
+.untraced-group-head {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font: inherit;
+  padding: 9px 2px;
+  text-align: left;
+  width: 100%;
+}
+
+.untraced-group-head:hover {
+  background: var(--bg-hover);
+}
+
+.untraced-group-caret {
+  color: var(--text-muted);
+  font-size: 11px;
+  width: 10px;
+}
+
+.untraced-group-label {
+  font-weight: 500;
+}
+
+/* the cluster size is the finding, so it reads as a number, not as a label */
+.untraced-group-count {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--amber);
+}
+
+.untraced-group-hint,
+.untraced-group-link {
+  margin: 0 0 8px;
+  padding-left: 19px;
+  font-size: 13px;
+  max-width: 68ch;
+}
+
+.untraced-group-hint {
+  color: var(--text-muted);
+}
+
+.untraced-group .coverage-list {
+  padding-left: 19px;
+}
+
+.untraced-group .coverage-list > li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.untraced-reason {
+  color: var(--amber);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+/* ---- 'Defined as' (#148) ----
+
+   The expression IS the evidence for the upstream list underneath it, so it reads
+   as code: monospace, on the elevated surface, never wrapped into prose. An
+   untraced column shows the reason in the same slot — every column says either how
+   it is defined or why stitch could not tell. */
+
+.defined-as-summary {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+/* what the SQL says, under why stitch could not follow it: still shown, because
+   an untraced column's own projection is the first thing you need to read */
+.defined-as-body.is-secondary {
+  margin-top: 16px;
+}
+
+.defined-as-sql {
+  margin: 0;
+  padding: 11px 13px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+}
+
+.defined-as-sql code {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+  white-space: pre;
+}
+
+.defined-as-hint {
+  margin: 8px 0 0;
+  font-size: 13px;
+  max-width: 68ch;
+}
+
+.defined-as-hint code {
+  font-size: 12.5px;
+}
+
+.defined-as-untraced {
+  margin: 0;
+}
+
+.defined-as-reason {
+  display: inline-block;
+  padding: 3px 9px;
+  background: var(--amber-soft);
+  border-radius: var(--radius-sm);
+  color: var(--amber);
+  font-size: 13px;
+}
+
 /* ---- search ----
 
    Search IS the navigation (principle 04), so the field is the one control in

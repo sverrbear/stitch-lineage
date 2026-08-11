@@ -6,6 +6,7 @@ import {
   coverageRows,
   graphStats,
   startingPoints,
+  untracedGroups,
 } from './coverage'
 import { fixtureGraph } from './fixture'
 import { buildIndex } from './graph'
@@ -186,5 +187,88 @@ describe('coverageList', () => {
   it('is empty, not broken, when the coverage block has nothing to say', () => {
     const bare = buildIndex(fixtureGraph())
     expect(coverageList(bare, 'untraced-columns').entries).toEqual([])
+  })
+})
+
+describe('untracedGroups', () => {
+  // three reasons, uneven clusters: the point of the view is that the biggest one
+  // leads, because one undocumented upstream takes a whole subtree with it
+  const untracedGraph = {
+    ...graph,
+    nodes: graph.nodes.map((node) => {
+      if (node.node_id === 'model.demo.fct_revenue::net_revenue') {
+        return {
+          ...node,
+          properties: { ...node.properties, trace_status: 'untraced', trace_reason: 'star_not_expandable' },
+        }
+      }
+      if (node.node_id === 'model.demo.stg_payments::amount') {
+        return {
+          ...node,
+          properties: { ...node.properties, trace_status: 'untraced', trace_reason: 'upstream_not_in_schema_map' },
+        }
+      }
+      return node
+    }),
+    coverage: {
+      untraced_columns: [
+        'model.demo.stg_payments::amount',
+        'model.demo.fct_revenue::net_revenue',
+        'model.demo.gone::vanished',
+      ],
+    },
+  }
+  const untracedIndex = buildIndex(untracedGraph)
+
+  it('clusters by reason, biggest first', () => {
+    const groups = untracedGroups(untracedIndex, 'reason')
+    expect(groups.map((g) => g.key)).toEqual([
+      'star_not_expandable',
+      'unknown',
+      'upstream_not_in_schema_map',
+    ])
+    expect(groups.map((g) => g.entries.length)).toEqual([1, 1, 1])
+    // every cluster carries the instruction, not just the count
+    for (const group of groups) expect(group.hint).toBeTruthy()
+  })
+
+  it('sorts a bigger cluster ahead of a smaller one', () => {
+    const lopsided = buildIndex({
+      ...untracedGraph,
+      nodes: untracedGraph.nodes.map((node) =>
+        node.node_id === 'model.demo.stg_payments::amount'
+          ? { ...node, properties: { ...node.properties, trace_reason: 'star_not_expandable' } }
+          : node,
+      ),
+    })
+    const groups = untracedGroups(lopsided, 'reason')
+    expect(groups[0].key).toBe('star_not_expandable')
+    expect(groups[0].entries.length).toBe(2)
+  })
+
+  it('clusters by model, and each entry keeps its own reason', () => {
+    const groups = untracedGroups(untracedIndex, 'model')
+    expect(groups.map((g) => g.key)).toEqual([
+      'model.demo.fct_revenue',
+      'model.demo.gone',
+      'model.demo.stg_payments',
+    ])
+    const revenue = groups.find((g) => g.key === 'model.demo.fct_revenue')!
+    // the group heading links to the model, so 'address it' stays one click
+    expect(revenue.node?.node_id).toBe('model.demo.fct_revenue')
+    expect(revenue.entries[0].reason?.code).toBe('star_not_expandable')
+  })
+
+  it('keeps a column the graph has no node for, and says so with no reason', () => {
+    const groups = untracedGroups(untracedIndex, 'reason')
+    const unknown = groups.find((g) => g.key === 'unknown')!
+    expect(unknown.entries[0].nodeId).toBe('model.demo.gone::vanished')
+    expect(unknown.entries[0].node).toBeNull()
+    expect(unknown.entries[0].reason).toBeNull()
+  })
+
+  it('is empty when nothing is untraced', () => {
+    expect(untracedGroups(index, 'reason').map((g) => g.key)).toEqual(['unknown'])
+    expect(untracedGroups(buildIndex(graph), 'reason')).toEqual([])
   })
 })

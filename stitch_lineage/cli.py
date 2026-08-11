@@ -89,7 +89,7 @@ from stitch_lineage.mend.plan import build_plan as build_mend_plan
 from stitch_lineage.mend.render import format_plan, format_summary_slack, format_summary_text
 from stitch_lineage.payloads import MetabasePayload
 from stitch_lineage.resolve.bind import bind
-from stitch_lineage.resolve.dbt import resolve_dbt
+from stitch_lineage.resolve.dbt import TRACE_REASON_LABELS, resolve_dbt
 from stitch_lineage.resolve.metabase import resolve_metabase
 from stitch_lineage.resolve.types import TypeWaterfallResult, apply_type_waterfall
 from stitch_lineage.write.yaml_writer import WritePlan
@@ -1449,7 +1449,7 @@ def doctor(
         if unbound:
             _print_list("unbound models", graph.coverage.unbound_models)
         if untraced:
-            _print_list("untraced columns", graph.coverage.untraced_columns)
+            _print_untraced(graph)
         if unresolved_cards:
             _print_unresolved_cards(graph)
         if dead:
@@ -1510,6 +1510,59 @@ def _print_list(label: str, items: list[str]) -> None:
     console.print(f"{label} ({len(items)}):")
     for item in items:
         console.print(f"  {item}", soft_wrap=True)
+
+
+def _print_untraced(graph: Graph) -> None:
+    """The untraced columns, each with WHY, biggest cluster first (#147).
+
+    The bare list was a dead end: 742 ids say nothing about what to do next. Sorted
+    by cluster size because these gaps share causes -- one undocumented upstream
+    takes its whole downstream subtree with it, so the top row is usually one fix.
+    """
+    untraced = graph.coverage.untraced_columns
+    console.print(f"untraced columns ({len(untraced)}):")
+    if not untraced:
+        return
+
+    reasons = {
+        node.node_id: str(node.properties.get("trace_reason") or "")
+        for node in graph.nodes
+        if node.node_type == NodeType.COLUMN
+    }
+    # a graph built before #147 carries no reasons at all -- say so once rather than
+    # printing an empty column next to every row
+    grouped: dict[str, list[str]] = {}
+    for node_id in untraced:
+        grouped.setdefault(reasons.get(node_id, ""), []).append(node_id)
+    if set(grouped) == {""}:
+        console.print("  (this graph predates per-column reasons -- rebuild to get them)")
+        for node_id in untraced:
+            console.print(f"  {node_id}", soft_wrap=True)
+        return
+
+    clusters = sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0]))
+
+    # with one cluster the summary would only repeat the header count
+    if len(clusters) > 1:
+        summary = Table(title=None, show_edge=False, pad_edge=False)
+        summary.add_column("why")
+        summary.add_column("columns", justify="right")
+        for reason, ids in clusters:
+            summary.add_row(_trace_reason_label(reason), str(len(ids)))
+        console.print(summary)
+
+    detail = Table(title=None, show_edge=False, pad_edge=False)
+    detail.add_column("column", overflow="fold")
+    detail.add_column("why")
+    for reason, ids in clusters:
+        label = _trace_reason_label(reason)
+        for node_id in sorted(ids):
+            detail.add_row(node_id, label)
+    console.print(detail)
+
+
+def _trace_reason_label(reason: str) -> str:
+    return TRACE_REASON_LABELS.get(reason) or (reason or "reason not recorded")
 
 
 def _print_write_access(cfg: StitchConfig) -> None:

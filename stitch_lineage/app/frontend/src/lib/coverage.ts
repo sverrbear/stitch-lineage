@@ -3,8 +3,10 @@
 // staleness hint, and the build stamp every page carries. Pure TS, unit-tested.
 
 import type { Coverage, GraphNode, NodeType, StitchGraph } from '../types'
-import type { GraphIndex } from './graph'
+import { idTail, modelIdOfColumn, type GraphIndex } from './graph'
+import { displayName } from './present'
 import { rollUp } from './rollup'
+import { traceReason, type TraceReason } from './trace'
 
 export type CoverageListKind = 'unbound-models' | 'untraced-columns' | 'unresolved-cards'
 
@@ -284,4 +286,90 @@ export function coverageList(index: GraphIndex, kind: CoverageListKind): Coverag
     ...LIST_COPY[kind],
     entries: ids.map((nodeId) => ({ nodeId, node: index.nodesById.get(nodeId) ?? null })),
   }
+}
+
+// ---------------------------------------------------------------------------
+// The untraced list, grouped so it can be acted on (#147)
+
+export type UntracedGrouping = 'reason' | 'model'
+
+export interface UntracedEntry {
+  nodeId: string
+  node: GraphNode | null
+  /** Null on a graph built before #147, or on a node this graph does not carry. */
+  reason: TraceReason | null
+  /** The owning model, for the by-reason view where the group is not the model. */
+  model: GraphNode | null
+}
+
+export interface UntracedGroup {
+  /** Reason code or model node id — stable across renders, unlike the label. */
+  key: string
+  label: string
+  /** Explanation for the group, when there is one to give. */
+  hint: string | null
+  /** The model node, on a by-model group: the group heading links to it. */
+  node: GraphNode | null
+  entries: UntracedEntry[]
+}
+
+/**
+ * Every untraced column with its reason, clustered biggest-first.
+ *
+ * Biggest-first is the whole point rather than a nicety: these gaps share causes,
+ * so one undocumented upstream takes its entire downstream subtree untraced with
+ * it. The top cluster is usually one fix, and a flat alphabetical list of 742 ids
+ * hides that completely.
+ *
+ * Ties break on the key so the order is stable across builds.
+ */
+export function untracedGroups(index: GraphIndex, grouping: UntracedGrouping): UntracedGroup[] {
+  const entries: UntracedEntry[] = (index.graph.coverage?.untraced_columns ?? []).map((nodeId) => {
+    const node = index.nodesById.get(nodeId) ?? null
+    const modelId = modelIdOfColumn(nodeId)
+    return {
+      nodeId,
+      node,
+      reason: node ? traceReason(node) : null,
+      model: modelId ? (index.nodesById.get(modelId) ?? null) : null,
+    }
+  })
+
+  const groups = new Map<string, UntracedGroup>()
+  for (const entry of entries) {
+    const key =
+      grouping === 'reason'
+        ? (entry.reason?.code ?? 'unknown')
+        : (modelIdOfColumn(entry.nodeId) ?? entry.nodeId)
+    let group = groups.get(key)
+    if (!group) {
+      group =
+        grouping === 'reason'
+          ? {
+              key,
+              label: entry.reason?.label ?? 'Reason not recorded',
+              hint:
+                entry.reason?.hint ??
+                'This graph was built before stitch recorded per-column reasons — rebuild to get them.',
+              node: null,
+              entries: [],
+            }
+          : {
+              key,
+              label: entry.model ? displayName(entry.model) : idTail(key),
+              hint: null,
+              node: entry.model,
+              entries: [],
+            }
+      groups.set(key, group)
+    }
+    group.entries.push(entry)
+  }
+
+  for (const group of groups.values()) {
+    group.entries.sort((a, b) => a.nodeId.localeCompare(b.nodeId))
+  }
+  return [...groups.values()].sort(
+    (a, b) => b.entries.length - a.entries.length || a.key.localeCompare(b.key),
+  )
 }

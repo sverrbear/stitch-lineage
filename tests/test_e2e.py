@@ -686,6 +686,10 @@ def test_doctor_unbound_and_untraced_without_env(project, monkeypatch):
     untraced = runner.invoke(app, ["doctor", "--untraced"])
     assert untraced.exit_code == 0, untraced.output
     assert "model.demo.mart_pivot::pivot_a" in untraced.output
+    # every row says WHY, not just which: the list is only actionable with the
+    # reason on it (#147), and CLI parity with the in-app drill-down
+    assert "why" in untraced.output
+    assert "SQL could not be parsed" in untraced.output
 
 
 def test_doctor_list_databases(project):

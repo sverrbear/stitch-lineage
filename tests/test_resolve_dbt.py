@@ -1143,6 +1143,227 @@ def test_column_missing_from_a_built_relation_says_so_instead():
     assert _unknown_reason(resolution, "model.demo.built", "id") is None
 
 
+# --- trace status, the untraced-reason taxonomy and defined_as (#147, #148) ---
+
+
+def _trace(resolution, uid, column):
+    return _node(resolution, column_node_id(uid, column)).properties
+
+
+def _reason(resolution, uid, column):
+    return _trace(resolution, uid, column).get("trace_reason")
+
+
+def _defined_as(resolution, uid, column):
+    return _trace(resolution, uid, column).get("defined_as")
+
+
+def _traced_manifest(*models):
+    return {"metadata": {}, "nodes": {model["unique_id"]: model for model in models}, "sources": {}}
+
+
+def test_every_model_column_declares_a_trace_status(resolution):
+    for node in resolution.nodes:
+        if node.node_type != NodeType.COLUMN:
+            continue
+        owner = node.node_id.split("::")[0]
+        if owner.startswith("source."):
+            # a source column is a lineage root: warehouse-native, no SQL behind it,
+            # so claiming it "failed to trace" would be a lie (#148 point 4)
+            assert "trace_status" not in node.properties
+            assert "defined_as" not in node.properties
+        else:
+            assert node.properties["trace_status"] in {"traced", "untraced"}
+
+
+def test_trace_status_agrees_with_the_untraced_coverage_list(resolution):
+    untraced = {
+        node.node_id
+        for node in resolution.nodes
+        if node.properties.get("trace_status") == "untraced"
+    }
+    assert untraced == set(resolution.untraced_columns)
+
+
+def test_untraced_columns_all_carry_a_reason(resolution):
+    for node_id in resolution.untraced_columns:
+        assert _node(resolution, node_id).properties.get("trace_reason")
+
+
+def test_traced_columns_carry_no_reason(resolution):
+    for node in resolution.nodes:
+        if node.properties.get("trace_status") == "traced":
+            assert "trace_reason" not in node.properties
+
+
+def test_defined_as_passthrough_names_the_upstream_column(resolution):
+    # dim_users.user_id comes through a CTE off stg_users -- a plain projection
+    defined = _defined_as(resolution, DIM_USERS, "user_id")
+    assert defined["kind"] == "passthrough"
+    assert defined["sql"] == "user_id"
+    assert defined["upstream"] == "stg_users.user_id"
+
+
+def test_defined_as_expression_keeps_the_computed_sql(resolution):
+    defined = _defined_as(resolution, INT_USER_FLAGS, "is_iceland")
+    assert defined["kind"] == "expression"
+    assert defined["sql"] == "CASE WHEN country_code = 'IS' THEN 1 ELSE 0 END"
+    # an expression has more than one possible upstream, so it names none
+    assert defined["upstream"] is None
+
+
+def test_defined_as_renamed_passthrough_is_still_a_passthrough():
+    upstream = _model(
+        "stg_o",
+        schema="staging",
+        compiled="select 1 as amount",
+        columns={"amount": _column("amount")},
+    )
+    downstream = _model(
+        "fct_o",
+        compiled="select o.amount as gross_amount from analytics.staging.stg_o o",
+        deps=["model.demo.stg_o"],
+    )
+    result = resolve_dbt(_traced_manifest(upstream, downstream), {})
+    defined = _defined_as(result, "model.demo.fct_o", "gross_amount")
+    assert defined == {"kind": "passthrough", "sql": "o.amount", "upstream": "stg_o.amount"}
+
+
+def test_defined_as_star_names_the_upstream_relation():
+    upstream = _model(
+        "stg_u",
+        schema="staging",
+        compiled="select 1 as user_id",
+        columns={"user_id": _column("user_id")},
+    )
+    downstream = _model(
+        "dim_u",
+        compiled="select * from analytics.staging.stg_u",
+        deps=["model.demo.stg_u"],
+        columns={"user_id": _column("user_id")},
+    )
+    result = resolve_dbt(_traced_manifest(upstream, downstream), {})
+    defined = _defined_as(result, "model.demo.dim_u", "user_id")
+    assert defined == {"kind": "star", "sql": "*", "upstream": "stg_u"}
+    assert _trace(result, "model.demo.dim_u", "user_id")["trace_status"] == "traced"
+
+
+def test_defined_as_upstream_takes_the_dbt_spelling_not_the_parsers():
+    # the catalog spells it SCREAMING_CASE; nobody refers to it that way (#44)
+    upstream = _model("stg_u", schema="staging", compiled="select 1 as user_id")
+    downstream = _model(
+        "dim_u",
+        compiled="select u.user_id from analytics.staging.stg_u u",
+        deps=["model.demo.stg_u"],
+    )
+    catalog = {
+        "nodes": {
+            "model.demo.stg_u": {
+                "metadata": {"database": "analytics", "schema": "staging", "name": "stg_u"},
+                "columns": {"USER_ID": {"name": "USER_ID", "type": "NUMBER"}},
+            }
+        },
+        "sources": {},
+    }
+    result = resolve_dbt(_traced_manifest(upstream, downstream), catalog)
+    assert _defined_as(result, "model.demo.dim_u", "user_id")["upstream"] == "stg_u.user_id"
+
+
+def test_defined_as_sql_is_truncated_for_display():
+    long_expression = " || ".join(f"cast(part_{i} as varchar)" for i in range(60))
+    model = _model(
+        "wide", compiled=f"select {long_expression} as joined from analytics.marts.other"
+    )
+    defined = _defined_as(resolve_dbt(_traced_manifest(model), {}), "model.demo.wide", "joined")
+    assert defined["kind"] == "expression"
+    assert len(defined["sql"]) == 240
+    assert defined["sql"].endswith("…")
+
+
+def test_reason_no_compiled_code():
+    model = _model("fct_a", columns={"user_id": _column("user_id")})
+    result = resolve_dbt(_traced_manifest(model), {})
+    assert _reason(result, "model.demo.fct_a", "user_id") == "no_compiled_code"
+    # nothing was parsed, so there is no definition to claim either
+    assert _defined_as(result, "model.demo.fct_a", "user_id") is None
+
+
+def test_reason_unparseable_sql():
+    # one exotic PIVOT must not blank the graph (SPEC 7.3) -- it must say why instead
+    model = _model(
+        "mart_exotic",
+        compiled="select payment_id sum(amount_usd) pivot for in (,,) from",
+        columns={"payment_id": _column("payment_id")},
+    )
+    result = resolve_dbt(_traced_manifest(model), {})
+    assert _reason(result, "model.demo.mart_exotic", "payment_id") == "unparseable_sql"
+    assert _defined_as(result, "model.demo.mart_exotic", "payment_id") is None
+
+
+def test_reason_column_not_in_sql():
+    model = _model(
+        "fct_b",
+        compiled="select 1 as a",
+        columns={"a": _column("a"), "documented_only": _column("documented_only")},
+    )
+    result = resolve_dbt(_traced_manifest(model), {})
+    assert _reason(result, "model.demo.fct_b", "documented_only") == "column_not_in_sql"
+    # a schema.yml claim the SQL never projects has no definition to show
+    assert _defined_as(result, "model.demo.fct_b", "documented_only") is None
+
+
+def test_reason_star_not_expandable():
+    # upstream in neither catalog nor schema.yml: the star has nothing to expand against
+    upstream = _model("up", schema="staging", compiled="select 1")
+    downstream = _model(
+        "viz",
+        compiled="select * from analytics.staging.up",
+        deps=["model.demo.up"],
+        columns={"revenue_usd": _column("revenue_usd")},
+    )
+    result = resolve_dbt(_traced_manifest(upstream, downstream), {})
+    assert _reason(result, "model.demo.viz", "revenue_usd") == "star_not_expandable"
+    # the reason and the definition share the panel slot: the star is still WHY
+    assert _defined_as(result, "model.demo.viz", "revenue_usd") == {
+        "kind": "star",
+        "sql": "*",
+        "upstream": None,
+    }
+
+
+def test_reason_upstream_not_in_schema_map():
+    # every relation is a dbt model, but the upstream is documented nowhere -- the
+    # dev-catalog case that takes whole subtrees untraced with it
+    upstream = _model("undoc", schema="staging")
+    downstream = _model(
+        "fct_c",
+        compiled="select user_id from analytics.staging.undoc",
+        deps=["model.demo.undoc"],
+        columns={"user_id": _column("user_id")},
+    )
+    result = resolve_dbt(_traced_manifest(upstream, downstream), {})
+    assert _reason(result, "model.demo.fct_c", "user_id") == "upstream_not_in_schema_map"
+
+
+def test_reason_upstream_not_in_project():
+    model = _model("fct_d", compiled="select id from analytics.raw.not_a_dbt_relation")
+    result = resolve_dbt(_traced_manifest(model), {})
+    assert _reason(result, "model.demo.fct_d", "id") == "upstream_not_in_project"
+
+
+def test_reason_no_upstream_columns():
+    model = _model("fct_e", compiled="select current_timestamp() as loaded_at, 'v1' as version")
+    result = resolve_dbt(_traced_manifest(model), {})
+    assert _reason(result, "model.demo.fct_e", "loaded_at") == "no_upstream_columns"
+    assert _reason(result, "model.demo.fct_e", "version") == "no_upstream_columns"
+    # a constant genuinely has nothing upstream -- the definition says so
+    assert _defined_as(result, "model.demo.fct_e", "version") == {
+        "kind": "expression",
+        "sql": "'v1'",
+        "upstream": None,
+    }
+
+
 # --- the type waterfall's first step, and the catalog join it rests on (issue #149) ---
 
 
