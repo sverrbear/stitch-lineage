@@ -8,17 +8,36 @@ version = "0.2.1"
 description = "dbt <-> Metabase column lineage and interactive ERD"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "Sverrir", email = "sverrir@smitten.fun" }]
+keywords = [
+    "dbt",
+    "metabase",
+    "lineage",
+    "column-lineage",
+    "erd",
+    "data-catalog",
+    "analytics-engineering",
+]
+# No "License :: OSI Approved :: ..." classifier here, deliberately: `license = "MIT"` emits a
+# PEP 639 License-Expression, and PyPI rejects any upload carrying both. The license still
+# shows on the project page -- it comes from the expression now, not from a classifier.
 classifiers = [
     "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: Web Environment",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Information Technology",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Database",
+    "Topic :: Software Development :: Documentation",
     "Topic :: Utilities",
+    "Typing :: Typed",
 ]
 dependencies = [
     "typer>=0.12",
@@ -45,8 +64,10 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/sverrbear/stitch-lineage"
+Documentation = "https://github.com/sverrbear/stitch-lineage#readme"
 Repository = "https://github.com/sverrbear/stitch-lineage"
 Issues = "https://github.com/sverrbear/stitch-lineage/issues"
+Changelog = "https://github.com/sverrbear/stitch-lineage/releases"
 
 [project.scripts]
 stitch = "stitch_lineage.cli:app"

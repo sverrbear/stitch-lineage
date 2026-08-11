@@ -3,6 +3,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
+import { buildConsequenceIndex, type ConsequenceIndex } from './lib/consequence'
 import { buildIndex, type GraphIndex } from './lib/graph'
 import { loadData, type LoadedData } from './lib/load'
 import { setStripModelPrefixes, setTablePrefixes } from './lib/present'
@@ -12,6 +13,8 @@ import type { StitchMeta } from './types'
 export interface StitchData {
   index: GraphIndex
   search: GraphSearch
+  /** Exact downstream card/dashboard counts, one pass at load (#115). */
+  consequence: ConsequenceIndex
   meta: StitchMeta
   origin: LoadedData['origin']
   /**
@@ -80,6 +83,7 @@ export function DataProvider({
     return {
       index,
       search: new GraphSearch(index),
+      consequence: buildConsequenceIndex(index),
       meta: state.data.meta,
       origin: state.data.origin,
       reload,

@@ -2,7 +2,7 @@
 
 **Working name:** `stitch` (placeholder)
 **License:** MIT
-**Distribution:** `pip install git+https://github.com/sverrbear/stitch-lineage.git` (PyPI deliberately skipped). Local-first: no server, no warehouse backend, no hosted anything. The dbt repo is the database.
+**Distribution:** `pip install stitch-lineage` from PyPI (tagged releases), or `pip install git+https://github.com/sverrbear/stitch-lineage.git` to ride `main`. Local-first: no server, no warehouse backend, no hosted anything. The dbt repo is the database.
 **Status:** v0.5 — supersedes v0.4. Deltas from v0.4, decided during real-world rollout:
 
 - **The graph is a purely local artifact.** `.stitch/` is gitignored in consumer repos; nothing generated is committed. The committed-baseline design (§3, §5, §10) remains documented but optional — teams that want git history of the graph can commit it, nothing requires it.
@@ -10,6 +10,7 @@
 - **Phase 2 is a plan/apply model, not direct write-back** — §8.2 below. Drawings stage locally; an explicit `stitch apply` writes dbt `relationships` tests.
 - **Phases 0 and 1 are shipped**, including `stitch build --docs/auto_docs`, per-database `table_prefix` (dev artifacts bind to a prod-pointed BI database), manifest-columns fallback for the sqlglot schema map, and system badges (Snowflake/Metabase marks) on every node in the app.
 - **Amended 2026-08-10** (product review): the order of work and the boundaries of the product are written down — §12.1 priority order, §12.2 scope guardrails. Phases are unchanged.
+- **Amended 2026-08-11** (distribution): **the "PyPI deliberately skipped" decision is reversed.** stitch publishes to PyPI as `stitch-lineage`, and `pip install stitch-lineage` is the primary install. The original reasoning — that installing from a ref you chose keeps you in control of when the tool changes — argues for pinning, not against a registry: a tagged release is just as pinnable and far easier to install, and git-install remains documented for riding `main`. Releases are tag-triggered: pushing a `v*` tag runs `.github/workflows/publish.yml`, which refuses to build unless the tag matches the version in `pyproject.toml`, refuses to publish a wheel that does not contain the built frontend (`app/frontend/dist/`), and uploads through PyPI Trusted Publishing (OIDC, `environment: pypi`) with no API token stored anywhere. Nothing else in the spec changes: distribution is a delivery channel, and local-first is unaffected.
 - **Amended 2026-08-11** (status reconciliation): §12's table is brought current. Phase 2 shipped — staged relationships and `stitch apply` (#24/#27), staged descriptions and apply from the app (#70/#71/#72), the suggestion layer (#30) — except `layout.yml` saved views and node positions (#31), which are not built; phase 3's native SQL (#32) and MBQL 5 (#22) shipped, leaving #33/#34/#35. §12.1's three priorities are all delivered. Scope, phase boundaries and §12.2's guardrails are unchanged: this records what shipped, it decides nothing new.
 
 ---
