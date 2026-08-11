@@ -2458,16 +2458,32 @@ kbd {
   text-decoration: underline;
 }
 
-/* the two rows a hovered relationship joins, so you can see what it connects
-   without a permanent label floating over the canvas (#65) */
-.erd-column.lit {
+/* The two rows a relationship joins, lit while it is hovered and kept lit while it
+   is the picked one. This is the whole of what an edge says now — there is no label
+   on the line to read instead (#65, #118) — so it has to hold its own against the
+   row's own hover tint in both themes. */
+.erd-column.lit,
+.erd-column.lit:hover,
+.erd-column.lit:focus-visible {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
-  box-shadow: inset 2px 0 0 var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
-/* the edge under the pointer takes the accent, so "which line am I on" and "which
-   two rows does it join" are the same answer */
-.erd-edge.hovered .react-flow__edge-path {
+/* selection on this canvas is stitch's own (`picked`), so React Flow's default
+   selected stroke must not paint a second, greyer state underneath it */
+.erd-edge.selected .react-flow__edge-path {
+  stroke: var(--edge-strong);
+}
+
+/* the edge you point at — or the one you clicked — takes the accent, so "which line
+   am I on" and "which two rows does it join" are the same answer. A relationship is
+   clickable now, and looks it. */
+.erd-edge {
+  cursor: pointer;
+}
+
+.erd-edge.hovered .react-flow__edge-path,
+.erd-edge.picked .react-flow__edge-path {
   stroke: var(--accent);
   stroke-width: 4;
   opacity: 1;
@@ -2531,13 +2547,15 @@ kbd {
   opacity: 0.75;
 }
 
-.erd-edge .react-flow__edge-text {
+/* The only mark left on a relationship: ✓ for one a dbt `relationships` test proves.
+   Everything the line used to spell out — the column pair, `staged`, `suggested` —
+   is read off the cards and the dash pattern instead (#118). */
+.erd-edge-validated {
   fill: var(--ok);
+  font-size: 11px;
   font-weight: 700;
-}
-
-.erd-edge .react-flow__edge-textbg {
-  fill: var(--bg-elev);
+  pointer-events: none;
+  user-select: none;
 }
 
 /* scope selector */
