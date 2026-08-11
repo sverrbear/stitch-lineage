@@ -119,3 +119,38 @@ describe('the apply dialog sizing survives the cascade', () => {
     expect(declaration(rule?.body ?? '', 'scrollbar-width')).toBe('thin')
   })
 })
+
+describe('the working button lays out its spinner (#160)', () => {
+  it('is .button.is-working that sets display, not the plain .button under it', () => {
+    // .button is inline-block on purpose everywhere else, and it is declared ~2000
+    // lines earlier: only the extra class makes the flex row win
+    const rule = winning('display', ['button', 'is-working'])
+    expect(rule?.selector).toContain('is-working')
+    expect(declaration(rule?.body ?? '', 'display')).toBe('inline-flex')
+  })
+
+  it('leaves every other button inline-block', () => {
+    expect(declaration(winning('display', ['button'])?.body ?? '', 'display')).toBe('inline-block')
+  })
+
+  it('gives the spinner a gap, so the ring is not against the label', () => {
+    expect(declaration(winning('gap', ['button', 'is-working'])?.body ?? '', 'gap')).toBeTruthy()
+  })
+
+  it('stops turning under prefers-reduced-motion', () => {
+    // no runtime signal for a missing media query either: the animation just keeps
+    // running for a reader who asked it not to
+    const bodies: string[] = []
+    const marker = /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{/g
+    for (let hit = marker.exec(CSS); hit !== null; hit = marker.exec(CSS)) {
+      const open = hit.index + hit[0].length - 1
+      bodies.push(CSS.slice(open + 1, matchingBrace(CSS, open)))
+    }
+    expect(bodies.length).toBeGreaterThan(0)
+    // inside such a block, not merely somewhere after one
+    const stopped = bodies
+      .flatMap((body) => body.match(/\.spinner\s*\{[^}]*\}/g) ?? [])
+      .filter((rule) => /animation\s*:\s*none/.test(rule))
+    expect(stopped).toHaveLength(1)
+  })
+})
