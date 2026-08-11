@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from ruamel.yaml import YAML
 
-from stitch_lineage.config import RelationshipsConfig
+from stitch_lineage.config import RelationshipsConfig, WriteConfig
 from stitch_lineage.io.staged_store import StagedDescription, StagedRelationship
 from stitch_lineage.write.yaml_writer import (
     apply_plan,
@@ -25,6 +25,7 @@ from stitch_lineage.write.yaml_writer import (
 FIXTURES = Path(__file__).parent / "fixtures" / "dbt_repo"
 MARTS = "models/marts/_schema.yml"
 EVENTS = "models/events/_schema.yml"
+VIZ = "models/viz/_schema.yml"
 
 
 def _node(name, schema="marts", patch=MARTS):
@@ -46,6 +47,11 @@ MANIFEST = {
         "model.demo.dim_stores": _node("dim_stores", patch=None),
         # patch_path points at a file that is not in the repo
         "model.demo.dim_regions": _node("dim_regions", patch="models/gone/_schema.yml"),
+        # the presentation layer Metabase actually sees: views over the marts above
+        "model.demo.viz_fct_orders": _node("viz_fct_orders", "viz", VIZ),
+        "model.demo.viz_dim_customers": _node("viz_dim_customers", "viz", VIZ),
+        # starts with the prefix but strips to nothing that exists -- it owns itself
+        "model.demo.viz_only_report": _node("viz_only_report", "viz", VIZ),
         "seed.demo.country_codes": {"resource_type": "seed", "name": "country_codes"},
     }
 }
@@ -73,8 +79,14 @@ def _entry(
     )
 
 
-def _plan(repo, entries, write_to="relationships_test", **config):
-    return plan_writes(entries, MANIFEST, repo, RelationshipsConfig(write_to=write_to, **config))
+def _plan(repo, entries, write_to="relationships_test", strip_prefixes=(), **config):
+    return plan_writes(
+        entries,
+        MANIFEST,
+        repo,
+        RelationshipsConfig(write_to=write_to, **config),
+        WriteConfig(strip_model_prefixes=list(strip_prefixes)),
+    )
 
 
 def _added(edit):
@@ -867,3 +879,172 @@ def test_migrating_twice_is_a_no_op(repo):
     # so this is the worst case: the migration must not write the test twice
     second = _migrate(repo, write_to="relationships_test")
     assert second.edits == []
+
+
+# --- routing a write through a presentation view (write.strip_model_prefixes) -----------
+
+
+def _viz_entry(**kwargs):
+    return _entry(from_model="viz_fct_orders", to_model="viz_dim_customers", **kwargs)
+
+
+def test_a_relationship_drawn_on_a_view_is_written_onto_the_model_underneath(repo):
+    """Metabase only sees viz_*; the marts file is what the repo maintains."""
+    (edit,) = _plan(repo, [_viz_entry()], strip_prefixes=["viz_"]).edits
+    assert edit.path.parent.name == "marts"
+    test = _column_of(edit, "fct_orders", "customer_id")["data_tests"][0]["relationships"]
+    assert test["to"] == "ref('dim_customers')"
+
+
+def test_routing_leaves_the_view_yaml_untouched(repo):
+    """The generated layer is regenerated; a write into it is lost by the next run."""
+    plan = _plan(repo, [_viz_entry()], strip_prefixes=["viz_"])
+    assert [edit.path.parent.name for edit in plan.edits] == ["marts"]
+    assert (repo / VIZ).read_text() == (FIXTURES / VIZ).read_text()
+
+
+def test_without_the_config_the_write_still_lands_on_the_view(repo):
+    """Routing is opt-in: nobody's existing repo changes shape on upgrade."""
+    (edit,) = _plan(repo, [_viz_entry()]).edits
+    assert edit.path.parent.name == "viz"
+    test = _column_of(edit, "viz_fct_orders", "customer_id")["data_tests"][0]["relationships"]
+    assert test["to"] == "ref('viz_dim_customers')"
+
+
+def test_a_model_that_merely_starts_with_the_prefix_is_not_routed(repo):
+    """viz_only_report strips to a model nobody has, so it owns its own declaration."""
+    entry = _entry(from_model="viz_only_report", to_model="viz_dim_customers")
+    (edit,) = _plan(repo, [entry], strip_prefixes=["viz_"]).edits
+    assert edit.path.parent.name == "viz"
+    test = _column_of(edit, "viz_only_report", "customer_id")["data_tests"][0]["relationships"]
+    # the target still routes -- the two endpoints are decided independently
+    assert test["to"] == "ref('dim_customers')"
+
+
+def test_routing_applies_to_staged_descriptions_too(repo):
+    """Same owner question, same answer -- or the app documents a file nobody keeps."""
+    entry = _description(entity="viz_fct_orders", column="order_id", text="The order key")
+    (edit,) = _plan(repo, [entry], strip_prefixes=["viz_"]).edits
+    assert edit.path.parent.name == "marts"
+    assert _column_of(edit, "fct_orders", "order_id")["description"] == "The order key"
+
+
+def test_routing_writes_the_meta_form_at_the_routed_target(repo):
+    entry = _viz_entry()
+    (edit,) = _plan(repo, [entry], write_to="meta", strip_prefixes=["viz_"]).edits
+    meta = _column_of(edit, "fct_orders", "customer_id")["config"]["meta"]
+    assert meta["metabase.fk_target_table"] == "marts.dim_customers"
+
+
+def test_a_routed_relationship_dedupes_against_the_model_it_lands_on(repo):
+    """Applying twice must not append the same test to the marts file again."""
+    first = _plan(repo, [_viz_entry()], strip_prefixes=["viz_"])
+    apply_plan(first.edits)
+    assert _plan(repo, [_viz_entry()], strip_prefixes=["viz_"]).edits == []
+
+
+def test_model_writeability_judges_the_file_a_routed_write_lands_in(repo):
+    entries = model_writeability(MANIFEST, repo, WriteConfig(strip_model_prefixes=["viz_"]))
+    assert entries["viz_fct_orders"].path == MARTS
+    assert entries["viz_fct_orders"].writable
+
+
+# --- dbt 1.10's `arguments:` nesting (relationships.test_argument_style) ----------------
+
+
+ARGUMENTS_FORM = """version: 2
+
+models:
+  - name: fct_orders
+    columns:
+      - name: order_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_customers')
+                field: order_id
+      - name: customer_id
+        description: 'Who placed the order'
+"""
+
+
+def test_flat_is_the_form_when_the_file_shows_no_preference(repo):
+    """Every dbt version reads it; `arguments:` needs 1.10 and would break older repos."""
+    (edit,) = _plan(repo, [_entry()]).edits
+    test = _column_of(edit, "fct_orders", "customer_id")["data_tests"][0]["relationships"]
+    assert set(test) == {"to", "field", "config"}
+
+
+def test_the_form_is_read_off_a_file_that_already_uses_arguments(repo):
+    (repo / MARTS).write_text(ARGUMENTS_FORM)
+    (edit,) = _plan(repo, [_entry()]).edits
+    test = _column_of(edit, "fct_orders", "customer_id")["data_tests"][0]["relationships"]
+    assert test["arguments"] == {"to": "ref('dim_customers')", "field": "customer_id"}
+    # severity configures the test, so it stays a sibling of the arguments, not one of them
+    assert test["config"] == {"severity": "warn"}
+
+
+def test_the_form_can_be_pinned_against_what_the_file_does(repo):
+    (edit,) = _plan(repo, [_entry()], test_argument_style="arguments").edits
+    test = _column_of(edit, "fct_orders", "customer_id")["data_tests"][0]["relationships"]
+    assert test["arguments"]["field"] == "customer_id"
+
+
+def test_flat_can_be_pinned_on_a_file_that_uses_arguments(repo):
+    (repo / MARTS).write_text(ARGUMENTS_FORM)
+    (edit,) = _plan(repo, [_entry()], test_argument_style="flat").edits
+    test = _column_of(edit, "fct_orders", "customer_id")["data_tests"][0]["relationships"]
+    assert "arguments" not in test
+    assert test["to"] == "ref('dim_customers')"
+
+
+def test_a_test_already_declared_in_the_arguments_form_is_not_duplicated(repo):
+    """The dedupe reads both spellings, or a 1.10 repo grows a second identical test."""
+    (repo / MARTS).write_text(ARGUMENTS_FORM)
+    entry = _entry(from_column="order_id", to_column="order_id")
+    assert _plan(repo, [entry]).edits == []
+
+
+OTHER_TEST_USES_ARGUMENTS = """version: 2
+
+models:
+  - name: fct_orders
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [order_id, customer_id]
+    columns:
+      - name: customer_id
+        description: 'Who placed the order'
+"""
+
+ONLY_BARE_AND_CONFIG_TESTS = """version: 2
+
+models:
+  - name: fct_orders
+    columns:
+      - name: order_id
+        data_tests:
+          - not_null
+          - unique:
+              config:
+                severity: warn
+      - name: customer_id
+        description: 'Who placed the order'
+"""
+
+
+def test_any_test_using_arguments_settles_the_form(repo):
+    """A file declares its first uniqueness test long before its first relationship."""
+    (repo / MARTS).write_text(OTHER_TEST_USES_ARGUMENTS)
+    (edit,) = _plan(repo, [_entry()]).edits
+    test = _column_of(edit, "fct_orders", "customer_id")["data_tests"][0]["relationships"]
+    assert test["arguments"]["to"] == "ref('dim_customers')"
+
+
+def test_tests_that_spell_no_arguments_leave_the_form_undecided(repo):
+    """`- not_null` and a config-only test say nothing about dbt's version."""
+    (repo / MARTS).write_text(ONLY_BARE_AND_CONFIG_TESTS)
+    (edit,) = _plan(repo, [_entry()]).edits
+    test = _column_of(edit, "fct_orders", "customer_id")["data_tests"][0]["relationships"]
+    assert "arguments" not in test

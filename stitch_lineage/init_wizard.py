@@ -451,6 +451,10 @@ def render_stitch_yml(
         '["metabase.fk_target_table", "metabase.fk_target_field"]  # dbt-metabase interop',
         "  cardinality_meta_key: relationship_type  # dbterd interop",
         "  validated_test_severity: warn",
+        "  test_argument_style: auto  # | flat | arguments (dbt 1.10+ nesting)",
+        "",
+        "write:",
+        '  strip_model_prefixes: []  # e.g. ["viz_"]: write onto the model under the view',
         "",
         "serve:",
     ]

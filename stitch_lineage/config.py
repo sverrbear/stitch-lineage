@@ -137,6 +137,23 @@ class RelationshipsConfig(BaseModel):
     )
     cardinality_meta_key: str = "relationship_type"
     validated_test_severity: str = "warn"
+    # Where `to`/`field` sit under `relationships:`. dbt 1.10 moved test arguments into
+    # an `arguments:` mapping and a repo on an older dbt cannot read that spelling, so
+    # "auto" reuses whichever form the column -- then the file -- already uses and falls
+    # back to flat, exactly how the `data_tests`/`tests` key is decided.
+    test_argument_style: Literal["auto", "flat", "arguments"] = "auto"
+
+
+class WriteConfig(BaseModel):
+    """Which model owns a declaration, when it was drawn on a view of another model."""
+
+    # Presentation-layer prefixes, e.g. ["viz_"]. A relationship or description staged
+    # against `viz_dim_users` is WRITTEN onto `dim_users`, when a model by that name is
+    # in the manifest. Metabase sees the view, so that is the only name stitch can bind
+    # to; the model underneath is the one a repo maintains -- and where the viz layer's
+    # YAML is generated, a write to the view is regenerated away the same day.
+    # Distinct from serve.strip_model_prefixes, which only hides the prefix on screen.
+    strip_model_prefixes: list[str] = Field(default_factory=list)
 
 
 class OutputConfig(BaseModel):
@@ -179,6 +196,7 @@ class StitchConfig(BaseModel):
     dbt: DbtConfig = Field(default_factory=DbtConfig)
     metabase: MetabaseConfig
     relationships: RelationshipsConfig = Field(default_factory=RelationshipsConfig)
+    write: WriteConfig = Field(default_factory=WriteConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     serve: ServeConfig = Field(default_factory=ServeConfig)
     mend: MendConfig = Field(default_factory=MendConfig)
