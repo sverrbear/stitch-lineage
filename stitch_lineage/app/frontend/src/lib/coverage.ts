@@ -1,11 +1,9 @@
 // What the home page needs to be a way in rather than a dashboard (#48, #108):
 // the coverage block as rows that link to their own gaps, graph stats with a
-// staleness hint, the build stamp every page carries, and real identifiers out
-// of this graph to start from. Pure TS, unit-tested.
+// staleness hint, and the build stamp every page carries. Pure TS, unit-tested.
 
 import type { Coverage, GraphNode, NodeType, StitchGraph } from '../types'
 import type { GraphIndex } from './graph'
-import { displayName, ownerName } from './present'
 import { rollUp } from './rollup'
 
 export type CoverageListKind = 'unbound-models' | 'untraced-columns' | 'unresolved-cards'
@@ -243,73 +241,7 @@ export function startingPoints(index: GraphIndex, limit = 6): StartingPoints {
   }
 }
 
-export interface HomeExample {
-  node: GraphNode
-  /** Fully qualified, the way it would be pasted into a PR: `dim_users.user_id`. */
-  label: string
-}
 
-/**
- * The identifiers under the home search field. They are real names out of THIS
- * graph, not illustrations (principle 05): the columns the BI layer leans on
- * hardest, then the dashboard with the most on it — the things most likely to be
- * what the reader came to type.
- */
-export function homeExamples(index: GraphIndex, limit = 3): HomeExample[] {
-  // A column binds to ONE Metabase field, so counting its edges ranks nothing —
-  // every column ties at 1. What separates them is what the field feeds, so the
-  // score is the cards a column reaches, which is also the consequence of
-  // changing it (principle 01).
-  const cardsPerField = new Map<string, number>()
-  const dashboardCards = new Map<string, number>()
-  for (const edge of index.graph.edges) {
-    const from = index.nodesById.get(edge.from)
-    const to = index.nodesById.get(edge.to)
-    if (!from || !to) continue
-    if (from.node_type === 'mb_field' && to.node_type === 'mb_card') {
-      cardsPerField.set(edge.from, (cardsPerField.get(edge.from) ?? 0) + 1)
-    } else if (from.node_type === 'mb_card' && to.node_type === 'mb_dashboard') {
-      dashboardCards.set(edge.to, (dashboardCards.get(edge.to) ?? 0) + 1)
-    }
-  }
-
-  const columnCards = new Map<string, number>()
-  for (const edge of index.graph.edges) {
-    const from = index.nodesById.get(edge.from)
-    const to = index.nodesById.get(edge.to)
-    if (!from || !to || from.node_type !== 'column') continue
-    if (to.node_type === 'mb_field') {
-      columnCards.set(edge.from, (columnCards.get(edge.from) ?? 0) + (cardsPerField.get(edge.to) ?? 0))
-    } else if (to.node_type === 'mb_card') {
-      columnCards.set(edge.from, (columnCards.get(edge.from) ?? 0) + 1)
-    }
-  }
-
-  const busiest = (counts: Map<string, number>, take: number): GraphNode[] =>
-    [...counts.entries()]
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .flatMap(([nodeId]) => {
-        const node = index.nodesById.get(nodeId)
-        return node ? [node] : []
-      })
-      .slice(0, take)
-
-  const columnSlots = Math.max(1, limit - 1)
-  const picked = [...busiest(columnCards, columnSlots), ...busiest(dashboardCards, limit)]
-  // A graph with no BI edges yet still deserves somewhere to start.
-  if (picked.length < limit) {
-    for (const node of index.nodes) {
-      if (picked.length >= limit) break
-      if (node.node_type !== 'column' && node.node_type !== 'model') continue
-      if (!picked.some((seen) => seen.node_id === node.node_id)) picked.push(node)
-    }
-  }
-
-  return picked.slice(0, limit).map((node) => {
-    const owner = node.node_type === 'column' ? ownerName(index, node) : null
-    return { node, label: owner ? `${owner}.${displayName(node)}` : displayName(node) }
-  })
-}
 
 // ---------------------------------------------------------------------------
 // The lists behind the rows
