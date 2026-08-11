@@ -136,7 +136,24 @@ def test_writes_a_relationships_test_on_the_fk_column(repo):
         "              field: customer_id",
         "              config:",
         "                severity: warn",
+        # the arity has nowhere to live inside a relationships test, so it keeps the
+        # one meta key it already had (#134) -- and only that key
+        "        config:",
+        "          meta:",
+        "            relationship_type: many-to-one",
     ]
+
+
+def test_the_test_form_writes_no_metabase_fk_keys(repo):
+    """The test IS the declaration now; duplicating it in meta is what #135 cleans up."""
+    (edit,) = _plan(repo, [_entry()]).edits
+    assert not any("metabase.fk_" in line for line in _added(edit))
+
+
+def test_severity_is_always_written_so_a_drawn_join_cannot_fail_a_pipeline(repo):
+    """#134's non-negotiable: a relationship stitch wrote never turns a CI run red."""
+    (edit,) = _plan(repo, [_entry()]).edits
+    assert "                severity: warn" in _added(edit)
 
 
 def test_the_test_lands_on_the_declaring_column(repo):
@@ -159,6 +176,9 @@ def test_no_severity_config_writes_a_bare_test(repo):
         "          - relationships:",
         "              to: ref('dim_customers')",
         "              field: customer_id",
+        "        config:",
+        "          meta:",
+        "            relationship_type: many-to-one",
     ]
 
 
@@ -702,3 +722,36 @@ def test_writeability_proves_each_file_once(repo, monkeypatch):
     )
     model_writeability(MANIFEST, repo)
     assert len(seen) == len(set(seen))
+
+
+# --- the test form is the default, and the round trip holds (#134) ----------------------
+
+
+def test_the_default_form_is_a_relationships_test(repo):
+    """No `write_to` in stitch.yml: what lands is a dbt test, not metabase meta keys."""
+    plan = plan_writes([_entry()], MANIFEST, repo, RelationshipsConfig())
+    (edit,) = plan.edits
+    added = _added(edit)
+    assert any("- relationships:" in line for line in added)
+    assert not any("metabase.fk_" in line for line in added)
+
+
+def test_the_cardinality_a_user_drew_survives_the_write(repo):
+    """A relationships test cannot express arity, so it must not be where arity lives.
+
+    Before #134 this was the round trip that lost: draw one-to-one, apply, rebuild,
+    and the ERD hands back many-to-one because nothing on disk remembered otherwise.
+    """
+    for cardinality in ("many-to-one", "one-to-one", "one-to-many"):
+        fresh = repo / MARTS
+        shutil.copytree(FIXTURES, repo.parent / f"clean-{cardinality}")
+        fresh.write_text((repo.parent / f"clean-{cardinality}" / MARTS).read_text())
+        (edit,) = _plan(repo, [_entry(cardinality=cardinality)]).edits
+        column = _column_of(edit, "fct_orders", "customer_id")
+        assert column["config"]["meta"]["relationship_type"] == cardinality
+
+
+def test_the_arity_key_is_the_only_meta_the_test_form_writes(repo):
+    (edit,) = _plan(repo, [_entry()]).edits
+    meta = _column_of(edit, "fct_orders", "customer_id")["config"]["meta"]
+    assert list(meta) == ["relationship_type"]

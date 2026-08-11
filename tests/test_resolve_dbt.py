@@ -456,7 +456,13 @@ def test_relationships_test_without_meta_emits_validated_edge():
     assert edge.from_ == column_node_id("model.demo.fct_a", "user_id")
     assert edge.to == column_node_id("model.demo.dim_b", "user_id")
     assert edge.confidence == Confidence.VALIDATED
-    assert edge.evidence == {"source": "relationships_test", "test": "test.demo.rel"}
+    # no cardinality meta on the column, so the arity is simply unknown -- the edge
+    # still exists and is still validated (#134)
+    assert edge.evidence == {
+        "source": "relationships_test",
+        "test": "test.demo.rel",
+        "relationship_type": None,
+    }
 
 
 def test_contract_constraint_expression_form():
@@ -1134,3 +1140,46 @@ def test_column_missing_from_a_built_relation_says_so_instead():
     assert _unknown_reason(resolution, "model.demo.built", "brand_new") == "column_not_in_catalog"
     # a column the catalog typed makes no claim at all
     assert _unknown_reason(resolution, "model.demo.built", "id") is None
+
+
+def test_a_relationships_test_carries_the_arity_written_beside_it():
+    """#134's round trip: the test states the join, the meta key states the arity.
+
+    dbt has no field for cardinality on a relationships test, so `stitch apply`
+    writes it to the column's meta. If the resolver did not read it back, drawing a
+    one-to-one and rebuilding would hand back a many-to-one.
+    """
+    for cardinality in ("one-to-one", "many-to-one", "one-to-many"):
+        manifest = {
+            "metadata": {},
+            "nodes": {
+                "model.demo.fct_a": _model(
+                    "fct_a",
+                    columns={
+                        "user_id": {
+                            **_column("user_id"),
+                            "meta": {"relationship_type": cardinality},
+                        }
+                    },
+                ),
+                "model.demo.dim_b": _model(
+                    "dim_b", schema="dims", columns={"user_id": _column("user_id")}
+                ),
+                "test.demo.rel": {
+                    "unique_id": "test.demo.rel",
+                    "resource_type": "test",
+                    "name": "rel",
+                    "attached_node": "model.demo.fct_a",
+                    "column_name": "user_id",
+                    "test_metadata": {
+                        "name": "relationships",
+                        "kwargs": {"to": "ref('dim_b')", "field": "user_id"},
+                    },
+                    "depends_on": {"nodes": ["model.demo.dim_b", "model.demo.fct_a"]},
+                },
+            },
+            "sources": {},
+        }
+        (edge,) = _edges(resolve_dbt(manifest, {}), EdgeType.RELATES_TO)
+        assert edge.confidence == Confidence.VALIDATED
+        assert edge.evidence["relationship_type"] == cardinality

@@ -42,7 +42,9 @@ def test_load_valid_config(tmp_path, monkeypatch):
     assert cfg.dbt.project_dir == "."
     assert cfg.dbt.auto_docs is False
     assert cfg.dbt.docs_args == []
-    assert cfg.relationships.write_to == "meta"
+    # #134: a drawn relationship is a dbt relationships test unless asked otherwise
+    assert cfg.relationships.write_to == "relationships_test"
+    assert cfg.relationships.validated_test_severity == "warn"
     assert cfg.relationships.fk_meta_keys == [
         "metabase.fk_target_table",
         "metabase.fk_target_field",
