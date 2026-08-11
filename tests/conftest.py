@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from stitch_lineage.graph.schema import (
@@ -12,6 +14,20 @@ from stitch_lineage.graph.schema import (
     mb_card_node_id,
     mb_field_node_id,
 )
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def plain(output: str) -> str:
+    """Console output with Rich's colour and line wrapping taken back out.
+
+    Rich treats `GITHUB_ACTIONS` as a tty, so CI renders styled and wrapped to the
+    runner's width: a substring assertion over raw stdout pins the terminal the test
+    ran in rather than the message it was meant to check. Strip the escapes, collapse
+    every run of whitespace, and what is left is the text.
+    """
+    return " ".join(_ANSI.sub("", output).split())
+
 
 MODEL_ID = "model.smitten.fct_matches"
 COLUMN_ID = column_node_id(MODEL_ID, "match_intensity")

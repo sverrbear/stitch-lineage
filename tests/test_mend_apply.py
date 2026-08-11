@@ -380,3 +380,40 @@ def test_an_empty_plan_produces_an_empty_outcome():
     outcome = apply_plan(MendPlan(), FakeMetabase())
     assert outcome.cards == []
     assert outcome.failures == []
+
+
+# --------------------------------------------------------------------------------------
+# on_progress: what the CLI's loading state is driven from (issue #161)
+# --------------------------------------------------------------------------------------
+
+
+def test_on_progress_reports_one_step_per_card_against_a_stable_total():
+    seen: list[tuple[int, int]] = []
+    plan = plan_of(strip_card(), strip_card(card_id=404, name="other"))
+    apply_plan(plan, FakeMetabase(), on_progress=lambda done, total: seen.append((done, total)))
+    assert seen == [(1, 2), (2, 2)]
+
+
+def test_on_progress_counts_notify_entries_too_so_the_total_matches_the_plan():
+    """The operator was shown a plan of N cards; a bar that silently dropped the notify
+    entries would stop short of its own total for a reason nothing on screen explains."""
+    seen: list[tuple[int, int]] = []
+    plan = plan_of(
+        strip_card(),
+        CardPlan(card_id=405, name="Scratch", action=MendAction.NOTIFY, reason="personal"),
+    )
+    outcome = apply_plan(
+        plan, FakeMetabase(), on_progress=lambda done, total: seen.append((done, total))
+    )
+    assert [entry.status for entry in outcome.cards] == ["applied", "notify"]
+    assert seen == [(1, 2), (2, 2)]
+
+
+def test_watching_the_apply_loop_does_not_change_what_it_writes():
+    """on_progress is observation only: omitting it must not alter a single write."""
+    watched, unwatched = FakeMetabase(), FakeMetabase()
+    plan = plan_of(strip_card(), strip_card(card_id=404, name="other"))
+    with_progress = apply_plan(plan, watched, on_progress=lambda done, total: None)
+    without = apply_plan(plan, unwatched)
+    assert with_progress == without
+    assert watched.writes == unwatched.writes

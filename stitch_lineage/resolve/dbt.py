@@ -160,6 +160,12 @@ class DbtResolution(BaseModel):
     columns_total: int = 0
     columns_inferred: int = 0
     seed_snapshot_dependencies: int = 0
+    # the sqlglot pass's input, split so the build can say which it had: a model with no
+    # compiled SQL in the manifest is untraceable before any parsing happens, and a whole
+    # manifest of them reports as `0/2385 columns traced` -- indistinguishable from SQL
+    # stitch failed to parse unless the counts are carried out (#97).
+    models_compiled: int = 0
+    models_uncompiled: int = 0
     untraced_columns: list[str] = Field(default_factory=list)
     dangling_relationships: list[str] = Field(default_factory=list)
 
@@ -288,6 +294,7 @@ def resolve_dbt(
     }
     inferred_targets = {edge.to for edge in feeds if edge.confidence == Confidence.INFERRED}
     traced = model_column_ids & fed
+    models_compiled, models_uncompiled = compiled_model_counts(manifest)
 
     # candidates for columns the artifacts could not type -- the waterfall decides
     inferred_types = {
@@ -305,9 +312,36 @@ def resolve_dbt(
         columns_total=len(model_column_ids),
         columns_inferred=len(model_column_ids & inferred_targets),
         seed_snapshot_dependencies=seed_snapshot_deps,
+        models_compiled=models_compiled,
+        models_uncompiled=models_uncompiled,
         untraced_columns=sorted(model_column_ids - fed),
         dangling_relationships=dangling,
     )
+
+
+def _compiled_sql(model: dict[str, Any]) -> str:
+    """A model's compiled SQL, or "" when the manifest carries none.
+
+    dbt writes `compiled_code`; manifests from older schema versions wrote `compiled_sql`.
+    Blank and absent are the same state -- there is nothing to trace either way.
+    """
+    return (model.get("compiled_code") or model.get("compiled_sql") or "").strip()
+
+
+def compiled_model_counts(manifest: dict[str, Any]) -> tuple[int, int]:
+    """(models with compiled SQL, models without) for a parsed manifest.
+
+    `stitch doctor` asks the manifest the question the resolver already answers during a
+    build, so the diagnosis and the build's warning cannot drift apart (#97). Pure: reads
+    the same dict resolve_dbt does, runs no sqlglot.
+    """
+    models = [
+        node
+        for node in (manifest.get("nodes") or {}).values()
+        if isinstance(node, dict) and node.get("resource_type") == "model"
+    ]
+    compiled = sum(1 for model in models if _compiled_sql(model))
+    return compiled, len(models) - compiled
 
 
 def _merged_meta(entity: dict[str, Any]) -> dict[str, Any]:
@@ -644,8 +678,7 @@ def _column_specs(
     inferred_by_uid: dict[str, dict[str, str]] = {}
     for uid in _model_order(models):
         model = models[uid]
-        compiled = model.get("compiled_code") or model.get("compiled_sql") or ""
-        projection = _projected_columns(compiled, schema_mapping, infer_types)
+        projection = _projected_columns(_compiled_sql(model), schema_mapping, infer_types)
         if projection is None:
             specs[uid] = catalog_specs.get(uid, {})
             continue
@@ -1274,8 +1307,8 @@ def _model_feeds_edges(
             for spec in real_specs.values()
         }
 
-    compiled = model.get("compiled_code") or model.get("compiled_sql") or ""
-    if not compiled.strip():
+    compiled = _compiled_sql(model)
+    if not compiled:
         return [], all_untraced(TraceReason.NO_COMPILED_CODE)
     try:
         parsed = sqlglot.parse_one(compiled, dialect=_DIALECT)
