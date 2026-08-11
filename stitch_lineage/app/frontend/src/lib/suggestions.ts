@@ -120,6 +120,34 @@ export function filterBySource(suggestions: Suggestion[], filter: SourceFilter):
   return filter === 'all' ? suggestions : suggestions.filter((entry) => entry.source === filter)
 }
 
+/** Strongest evidence first — the order the tabs are offered in. */
+const SOURCE_ORDER: SuggestionSource[] = ['implicit_join', 'naming']
+
+/**
+ * Which tab the panel opens on. `implicit_join` still leads whenever it holds
+ * anything, for the reason above — but an empty tab in front of a full one is
+ * the first thing the reader sees, and it reads as "stitch found nothing" (#121).
+ * So the lead is a preference, not a rule: the opening tab is the first one with
+ * content. Only a genuinely empty panel opens on an empty tab.
+ */
+export function defaultSourceFilter(counts: SourceCounts): SourceFilter {
+  return SOURCE_ORDER.find((source) => counts[source] > 0) ?? 'implicit_join'
+}
+
+/** Which candidates the panel lists: the ones this ERD can draw, or every one. */
+export type SuggestionScopeFilter = 'scope' | 'all'
+
+/**
+ * Where the panel starts. A scope whose own candidates are all cross-scope shows
+ * 0 of 271 and a sentence explaining why — which is a dead end at exactly the
+ * moment the tool is meant to be useful (the SPEC's "an hour of accepting
+ * suggestions"). When the scope has nothing of its own and the graph does, open
+ * on everything instead; the reader can always narrow back.
+ */
+export function defaultScopeFilter(inScope: number, total: number): SuggestionScopeFilter {
+  return inScope === 0 && total > 0 ? 'all' : 'scope'
+}
+
 /** Strongest first, then stable by id so the panel never reshuffles on refresh. */
 export function rankSuggestions(suggestions: Suggestion[]): Suggestion[] {
   return [...suggestions].sort(
