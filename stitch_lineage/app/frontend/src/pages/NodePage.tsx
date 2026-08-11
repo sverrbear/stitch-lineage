@@ -53,16 +53,13 @@ import {
 } from '../lib/trace'
 import { lineageHref } from '../router'
 import type { GraphNode } from '../types'
+import { copy, plural } from '../copy'
 
 // React Flow is the heavy chunk and a detail panel must stay light: the mini star
 // loads with the section, not with the page (same reasoning as App's canvases).
 const ModelStar = lazy(() =>
   import('../components/ModelStar').then((m) => ({ default: m.ModelStar })),
 )
-
-function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? '' : 's'}`
-}
 
 /**
  * The staged declarations this build can see, resolved onto the graph. Empty on a
@@ -175,17 +172,15 @@ function PanelHeader({
       {shown && <p className="panel-subtitle">{shown}</p>}
       {description ?? (node.description && <p className="panel-description">{node.description}</p>)}
       {isPlaceholder(node) && (
-        <p className="muted panel-placeholder">
-          Only referenced by an edge — this build never resolved a definition for it.
-        </p>
+        <p className="muted panel-placeholder">{copy.node.placeholder}</p>
       )}
       <div className="panel-actions">
         <a className="button" href={lineageHref(node.node_id)}>
-          View lineage →
+          {copy.node.viewLineage}
         </a>
         {link && (
           <a className="button" href={link} target="_blank" rel="noreferrer">
-            Open in Metabase ↗
+            {copy.node.openInMetabase}
           </a>
         )}
       </div>
@@ -214,7 +209,7 @@ function DefinedAsBlock({ node }: { node: GraphNode }) {
   if (!info) return null
   const origin = info.definition?.origin
   return (
-    <Section title="Defined as">
+    <Section title={copy.node.definedAs}>
       {/* the reason leads: on an untraced column it IS the finding */}
       {info.reason && (
         <>
@@ -307,7 +302,12 @@ function ColumnPanel({ nodeId }: { nodeId: string }) {
 
       <DefinedAsBlock node={node} />
 
-      <Section title={`Upstream — ${plural(detail.upstreamColumns.length, 'column')}, ${plural(detail.upstreamSources.length, 'source')}`}>
+      <Section
+        title={copy.node.upstream(
+          plural(detail.upstreamColumns.length, 'column'),
+          plural(detail.upstreamSources.length, 'source'),
+        )}
+      >
         {detail.upstreamSources.length > 0 && (
           <>
             <h4 className="subhead">sources</h4>
@@ -318,8 +318,8 @@ function ColumnPanel({ nodeId }: { nodeId: string }) {
         {reachChips(detail.upstreamColumns)}
       </Section>
 
-      <Section title={`Downstream — ${headline}`}>
-        {detail.truncated && <p className="muted">(fan-out truncated for display)</p>}
+      <Section title={copy.node.downstream(headline)}>
+        {detail.truncated && <p className="muted">{copy.node.fanoutTruncated}</p>}
         <h4 className="subhead">{plural(detail.downstreamModels.length, 'model')}</h4>
         <ChipList nodes={detail.downstreamModels.map((node) => ({ node }))} />
         <h4 className="subhead">{plural(detail.fields.length, 'Metabase field')}</h4>
@@ -331,7 +331,7 @@ function ColumnPanel({ nodeId }: { nodeId: string }) {
       </Section>
 
       {detail.relationships.length > 0 && (
-        <Section title="Declared relationships">
+        <Section title={copy.node.declaredRelationships}>
           <RelationshipList relationships={detail.relationships} />
         </Section>
       )}
@@ -370,13 +370,7 @@ function CardFacts({ node }: { node: GraphNode }) {
 
 /** The two ways a `binds_to` hop goes missing, and the command that lists them. */
 function UnboundWhy() {
-  return (
-    <>
-      Either the Metabase table is not bound to a dbt model in this build, or the column is absent
-      from the dbt artifacts this graph was built from. <code>stitch doctor --unbound</code> lists
-      the models with no bound Metabase table.
-    </>
-  )
+  return copy.node.unboundWhy()
 }
 
 /**
@@ -389,34 +383,19 @@ function ChainGapNote({ gap, node, fieldCount }: { gap: ChainGap; node: GraphNod
   return (
     <p className="chain-gap">
       {gap === 'fields-unbound' && (
-        <>
-          No dbt column binds to the {plural(fieldCount, 'Metabase field')} this {type} queries, so
-          the chain stops at Metabase. <UnboundWhy />
-        </>
+        copy.node.gapFieldsUnbound(plural(fieldCount, 'Metabase field'), type, <UnboundWhy />)
       )}
       {gap === 'field-unbound' && (
-        <>
-          No dbt column binds to this field. <UnboundWhy />
-        </>
+        copy.node.gapFieldUnbound(<UnboundWhy />)
       )}
       {gap === 'native-unresolved' && (
-        <>
-          This card is native SQL, and native cards are not resolved into column lineage in this
-          build — the chain is unknown, not empty. Coverage counts them separately.
-        </>
+        copy.node.gapNativeUnresolved
       )}
       {gap === 'query-unresolved' && (
-        <>
-          No Metabase field reference resolved out of this card&rsquo;s query, so there is no chain
-          to walk. <code>stitch doctor --unresolved-cards</code> lists the refs and why each one
-          failed.
-        </>
+        copy.node.gapQueryUnresolved()
       )}
       {gap === 'dashboard-unresolved' && (
-        <>
-          None of the cards on this dashboard resolved to a Metabase field, so there is no chain to
-          walk down into dbt.
-        </>
+        copy.node.gapDashboardUnresolved
       )}
     </p>
   )
@@ -439,17 +418,21 @@ function BiPanel({ nodeId }: { nodeId: string }) {
       {isField ? <FieldFacts node={node} /> : <CardFacts node={node} />}
 
       {isDashboard ? (
-        <Section title={`Cards on this dashboard — ${detail.cards.length}`}>{reachChips(detail.cards)}</Section>
+        <Section title={copy.node.cardsOnDashboard(String(detail.cards.length))}>
+          {reachChips(detail.cards)}
+        </Section>
       ) : (
         detail.dashboards.length > 0 && (
-          <Section title={`Appears on ${plural(detail.dashboards.length, 'dashboard')}`}>
+          <Section title={copy.node.appearsOn(plural(detail.dashboards.length, 'dashboard'))}>
             {reachChips(detail.dashboards)}
           </Section>
         )
       )}
 
       {isField && detail.cards.length > 0 && (
-        <Section title={`Consumed by ${plural(detail.cards.length, 'card')}`}>{reachChips(detail.cards)}</Section>
+        <Section title={copy.node.consumedBy(plural(detail.cards.length, 'card'))}>
+          {reachChips(detail.cards)}
+        </Section>
       )}
 
       <Section title={dependsTitle}>
@@ -460,18 +443,16 @@ function BiPanel({ nodeId }: { nodeId: string }) {
               <>
                 {/* the half of the chain stitch did resolve: without it a card
                     whose tables are unbound looks like one that never parsed */}
-                <h4 className="subhead">{plural(detail.fields.length, 'Metabase field')} it queries</h4>
+                <h4 className="subhead">
+                  {copy.node.fieldsItQueries(plural(detail.fields.length, 'Metabase field'))}
+                </h4>
                 {reachChips(detail.fields)}
               </>
             )}
           </>
         ) : (
           <>
-            <p className="muted">
-              The reverse view: every dbt column this {NODE_TYPE_NAME[node.node_type]} ultimately
-              depends on, named the dbt way with the model it comes from. Non-exact chains carry
-              their weakest hop — hover it for what that means.
-            </p>
+            <p className="muted">{copy.node.reverseView(NODE_TYPE_NAME[node.node_type])}</p>
             <h4 className="subhead">models</h4>
             <ChipList nodes={detail.dependsOnModels.map((node) => ({ node }))} />
             <h4 className="subhead">columns</h4>
@@ -479,12 +460,11 @@ function BiPanel({ nodeId }: { nodeId: string }) {
             {detail.unboundFields.length > 0 && (
               <>
                 <h4 className="subhead">
-                  {plural(detail.unboundFields.length, 'Metabase field')} with no dbt column
+                  {copy.node.fieldsWithNoColumn(
+                    plural(detail.unboundFields.length, 'Metabase field'),
+                  )}
                 </h4>
-                <p className="chain-gap">
-                  The chain stops at Metabase for these, so whatever they contribute is missing from
-                  the columns above. <UnboundWhy />
-                </p>
+                <p className="chain-gap">{copy.node.unboundFieldsNote(<UnboundWhy />)}</p>
                 {reachChips(detail.unboundFields)}
               </>
             )}
@@ -559,7 +539,7 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
       )}
 
       {/* Relationships get the canvas, dependencies get the lists below (#81/#82). */}
-      <Section title={`Relationships — ${star?.joinCount ?? 0}`}>
+      <Section title={copy.node.relationships(star?.joinCount ?? 0)}>
         <Suspense fallback={<div className="star-canvas" />}>
           <ModelStar star={star} />
         </Suspense>
@@ -569,31 +549,37 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
       </Section>
 
       <Section
-        title={`Dependencies — ${plural(detail.upstream.length, 'model')} upstream, ${plural(detail.downstream.length, 'model')} downstream`}
+        title={copy.node.dependencies(
+          plural(detail.upstream.length, 'model'),
+          plural(detail.downstream.length, 'model'),
+        )}
       >
         <h4 className="subhead">upstream</h4>
         <LayerGroups
           groups={upstreamGroups}
           empty={
             node.node_type === 'source'
-              ? 'nothing upstream — this is where the data enters'
-              : 'nothing upstream in this graph'
+              ? copy.node.nothingUpstreamSource
+              : copy.node.nothingUpstream
           }
         />
         <h4 className="subhead">downstream</h4>
-        <LayerGroups groups={downstreamGroups} empty="nothing downstream — this is a leaf" />
+        <LayerGroups groups={downstreamGroups} empty={copy.node.nothingDownstream} />
       </Section>
 
       <Section
-        title={`BI usage — ${plural(detail.cards.length, 'card')} on ${plural(dashboardCount(biGroups), 'dashboard')}`}
+        title={copy.node.biUsage(
+          plural(detail.cards.length, 'card'),
+          plural(dashboardCount(biGroups), 'dashboard'),
+        )}
       >
         <DashboardGroups
           groups={biGroups}
-          empty="no Metabase card reads this table in this graph"
+          empty={copy.node.noBiUsage}
         />
       </Section>
 
-      <Section title={`Columns — ${detail.columns.length}`}>
+      <Section title={copy.node.columns(detail.columns.length)}>
         <table className="columns-table">
           <thead>
             <tr>
@@ -638,12 +624,12 @@ function RelationshipList({ relationships }: { relationships: RelationshipRef[] 
         return (
           <li key={i}>
             <span className="rel-own">{ownLabel}</span>
-            <span className="rel-arrow" title={rel.direction === 'outgoing' ? 'references' : 'referenced by'}>
+            <span className="rel-arrow" title={rel.direction === 'outgoing' ? copy.node.references : copy.node.referencedBy}>
               {rel.direction === 'outgoing' ? '→' : '←'}
             </span>
             {rel.other ? <NodeChip node={rel.other} /> : <code>{rel.edge.to}</code>}
             {rel.validated ? (
-              <span className="validated-badge" title="validated by a dbt relationships test">
+              <span className="validated-badge" title={copy.node.validated}>
                 ✓
               </span>
             ) : (
@@ -659,10 +645,10 @@ function RelationshipList({ relationships }: { relationships: RelationshipRef[] 
 function NotFound({ nodeId }: { nodeId: string }) {
   return (
     <article className="panel">
-      <h2>Node not found</h2>
+      <h2>{copy.node.notFound}</h2>
       <p className="muted">
-        <code>{nodeId}</code> is not in the loaded graph. It may have been removed in a newer
-        build.
+        <code>{nodeId}</code>
+        {copy.node.notFoundDetail()}
       </p>
     </article>
   )

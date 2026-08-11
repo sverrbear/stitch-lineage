@@ -2,6 +2,7 @@ import { useStitch } from '../data'
 import { buildStamp } from '../lib/coverage'
 import { useRoute } from '../router'
 import { useTheme } from '../theme'
+import { copy } from '../copy'
 
 /** Which nav entry owns the page you are on — the detail routes belong to Home. */
 function currentNav(page: string): 'home' | 'erd' {
@@ -27,10 +28,10 @@ export function Header({ onOpenPalette }: { onOpenPalette: () => void }) {
       {/* Existing routes only — the nav never offers a page that isn't there. */}
       <nav className="app-nav">
         <a className={current === 'home' ? 'current' : undefined} href="#/">
-          Home
+          {copy.header.home}
         </a>
         <a className={current === 'erd' ? 'current' : undefined} href="#/erd">
-          ERD
+          {copy.header.erd}
         </a>
       </nav>
       <div className="app-header-right">
@@ -38,7 +39,7 @@ export function Header({ onOpenPalette }: { onOpenPalette: () => void }) {
           type="button"
           className="header-action"
           onClick={onOpenPalette}
-          title="Search (Cmd/Ctrl+K)"
+          title={copy.header.search}
         >
           ⌘K
         </button>
@@ -46,18 +47,14 @@ export function Header({ onOpenPalette }: { onOpenPalette: () => void }) {
           type="button"
           className="header-action"
           onClick={toggleTheme}
-          title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
+          title={copy.header.themeToggle(theme === 'dark' ? 'light' : 'dark')}
         >
           {theme === 'dark' ? '☀' : '☾'}
         </button>
         {built && (
           <span
             className={`app-meta${built.stale ? ' stale' : ''}`}
-            title={
-              built.stale
-                ? `${meta.generated_at} · data source: ${origin} — run \`stitch build\` to refresh`
-                : `${meta.generated_at} · data source: ${origin}`
-            }
+            title={copy.header.builtAt(meta.generated_at, origin, built.stale)}
           >
             {built.text}
           </span>

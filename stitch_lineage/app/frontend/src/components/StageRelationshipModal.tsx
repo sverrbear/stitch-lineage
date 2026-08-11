@@ -9,6 +9,7 @@
 import { useEffect, useState } from 'react'
 import { displayModelName } from '../lib/present'
 import { CARDINALITIES, cardinalitySentence, type Cardinality } from '../lib/staging'
+import { copy } from '../copy'
 
 export interface StageTarget {
   /**
@@ -67,10 +68,10 @@ export function StageRelationshipModal({
       >
         <h2 id="stage-modal-title">
           {target.id
-            ? 'Edit this staged relationship'
+            ? copy.stage.titleEdit
             : target.provenance
-              ? 'Accept this relationship'
-              : 'Stage a relationship'}
+              ? copy.stage.titleAccept
+              : copy.stage.titleStage}
         </h2>
         <p className="modal-endpoints">
           <code>
@@ -85,7 +86,7 @@ export function StageRelationshipModal({
         {target.provenance && <p className="modal-provenance">{target.provenance}</p>}
 
         <label className="modal-field" htmlFor="stage-cardinality">
-          Cardinality
+          {copy.stage.cardinality}
         </label>
         {/* the same declaration in words, live: "many-to-one" does not say which
             end is which, and this is where somebody catches a backwards FK (#73) */}
@@ -103,11 +104,7 @@ export function StageRelationshipModal({
           ))}
         </select>
 
-        <p className="muted modal-note">
-          This stages the declaration in <code>.stitch/</code> only. Run{' '}
-          <code>stitch apply</code> to write it into the model’s <code>_schema.yml</code> — nothing
-          touches the repo before that.
-        </p>
+        <p className="muted modal-note">{copy.stage.note()}</p>
 
         <p className="modal-sentence" aria-live="polite">
           {cardinalitySentence({
@@ -123,16 +120,16 @@ export function StageRelationshipModal({
 
         <div className="modal-actions">
           <button type="button" className="ghost-button" onClick={onCancel} disabled={busy}>
-            Cancel
+            {copy.stage.cancel}
           </button>
           <button type="button" className="button" onClick={submit} disabled={busy}>
             {busy
               ? target.id
-                ? 'Saving…'
-                : 'Staging…'
+                ? copy.stage.saving
+                : copy.stage.staging
               : target.id
-                ? 'Save edit'
-                : 'Stage relationship'}
+                ? copy.stage.saveEdit
+                : copy.stage.stageRelationship}
           </button>
         </div>
       </div>

@@ -10,6 +10,7 @@
 // surface beyond this panel and the staged workspace. There is no bulk editor.
 
 import { useEffect, useState } from 'react'
+import { copy } from '../copy'
 import { erdHref } from '../router'
 import {
   StagingError,
@@ -110,16 +111,13 @@ export function DescriptionEditor({
           }}
           disabled={busy}
           autoFocus
-          aria-label="Description"
+          aria-label={copy.description.fieldLabel}
         />
-        <p className="muted desc-hint">
-          Staged in <code>.stitch/</code> only — <code>stitch apply</code> writes it into the
-          model’s <code>_schema.yml</code>. ⌘/Ctrl-Enter saves, Esc cancels.
-        </p>
+        <p className="muted desc-hint">{copy.description.hint()}</p>
         {error && <p className="modal-error">{error}</p>}
         <div className="desc-actions">
           <button type="button" className="button" onClick={() => void save()} disabled={busy}>
-            {busy ? 'Staging…' : 'Stage edit'}
+            {busy ? copy.description.staging : copy.description.stageEdit}
           </button>
           <button
             type="button"
@@ -127,7 +125,7 @@ export function DescriptionEditor({
             onClick={() => setEditing(false)}
             disabled={busy}
           >
-            Cancel
+            {copy.description.cancel}
           </button>
           {staged && (
             <button
@@ -135,9 +133,9 @@ export function DescriptionEditor({
               className="ghost-button desc-discard"
               onClick={() => void discard()}
               disabled={busy}
-              title="drop the staged edit and go back to what the repo says"
+              title={copy.description.discardTitle}
             >
-              Discard staged edit
+              {copy.description.discard}
             </button>
           )}
         </div>
@@ -150,37 +148,37 @@ export function DescriptionEditor({
       {current ? (
         <p className="panel-description desc-text">{current}</p>
       ) : (
-        <p className="muted desc-text">No description.</p>
+        <p className="muted desc-text">{copy.description.none}</p>
       )}
       <div className="desc-meta">
         {staged && (
           <>
-            <span className="staged-badge" title="not in the repo until `stitch apply`">
-              staged edit
+            <span className="staged-badge" title={copy.description.stagedBadgeTitle}>
+              {copy.description.stagedBadge}
             </span>
             <a className="desc-workspace-link" href={erdHref()}>
-              in the staged workspace →
+              {copy.description.workspaceLink}
             </a>
             {applied ? (
               <details className="desc-was">
-                <summary>what the repo says</summary>
+                <summary>{copy.description.whatRepoSays}</summary>
                 <p className="muted desc-text">{applied}</p>
               </details>
             ) : (
-              <span className="muted">the repo has none yet</span>
+              <span className="muted">{copy.description.repoHasNone}</span>
             )}
           </>
         )}
         {canStage && !refusal && (
           <button type="button" className="ghost-button desc-edit" onClick={open}>
-            {current ? 'Edit description' : 'Add a description'}
+            {current ? copy.description.edit : copy.description.add}
           </button>
         )}
         {canStage && refusal && (
           // Shown, not hidden: a missing button reads as a bug, and the reason is
           // something the reader can act on in their own repo.
           <span className="desc-unwritable" title={refusal}>
-            not editable here
+            {copy.description.notEditable}
           </span>
         )}
       </div>

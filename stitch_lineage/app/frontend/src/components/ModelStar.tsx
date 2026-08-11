@@ -28,6 +28,7 @@ import {
 import { displayName } from '../lib/present'
 import { erdHref, navigate, nodeHref } from '../router'
 import { ErdRoutedEdge } from './ErdEdge'
+import { copy } from '../copy'
 
 type StarFlowNode = Node<
   {
@@ -57,7 +58,7 @@ function StarNode({ id, data }: NodeProps<StarFlowNode>) {
       className={`star-node${isHub ? ' hub' : ''}`}
       role={href ? 'link' : undefined}
       tabIndex={href ? 0 : undefined}
-      title={href ? `${label} — open` : `${label} — you are here`}
+      title={href ? copy.star.openNode(label) : copy.star.hubNode(label)}
       onClick={open}
       onKeyDown={(event) => {
         if (event.key === 'Enter') open()
@@ -196,11 +197,9 @@ export function ModelStar({ star }: { star: ModelStarData | null }) {
   if (!flow) {
     return (
       <p className="muted star-empty">
-        No relationships on this table yet —{' '}
-        <a href={erdHref(star.hub.schema ? 'schema' : undefined, star.hub.schema ?? undefined)}>
-          draw one in the ERD
-        </a>{' '}
-        and it shows up here.
+        {copy.star.empty(
+          erdHref(star.hub.schema ? 'schema' : undefined, star.hub.schema ?? undefined),
+        )}
       </p>
     )
   }
@@ -251,7 +250,7 @@ export function ModelStar({ star }: { star: ModelStarData | null }) {
             star.hub.schema ?? undefined,
           )}
         >
-          see them all in the ERD →
+          {copy.star.seeAll}
         </a>
       </p>
     </>

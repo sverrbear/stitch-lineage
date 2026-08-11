@@ -21,13 +21,14 @@ import {
 } from '../lib/coverage'
 import { idTail } from '../lib/graph'
 import { nodeHref } from '../router'
+import { copy } from '../copy'
 
 function Orphan({ nodeId }: { nodeId: string }) {
   // in the coverage block but not in the graph: name it from the id
   return (
     <span className="coverage-orphan">
       <code>{idTail(nodeId)}</code>
-      <span className="muted">not in this graph</span>
+      <span className="muted">{copy.coverage.notInGraph}</span>
     </span>
   )
 }
@@ -67,7 +68,7 @@ function UntracedGroupBlock({
       {open && group.hint && <p className="untraced-group-hint">{group.hint}</p>}
       {open && group.node && (
         <p className="untraced-group-link">
-          <a href={nodeHref(group.node.node_id)}>Open {group.label} →</a>
+          <a href={nodeHref(group.node.node_id)}>{copy.coverage.openGroup(group.label)}</a>
         </p>
       )}
       {open && (
@@ -111,7 +112,7 @@ function UntracedColumns() {
   return (
     <>
       <div className="untraced-controls">
-        <span className="muted">Group by</span>
+        <span className="muted">{copy.coverage.groupBy}</span>
         {GROUPINGS.map((option) => (
           <button
             key={option.value}
@@ -163,13 +164,13 @@ export function CoveragePage({ kind }: { kind: CoverageListKind }) {
         <p className="panel-description">{list.description}</p>
         <div className="panel-actions">
           <a className="button" href="#/">
-            ← Overview
+            {copy.coverage.backToOverview}
           </a>
         </div>
       </div>
 
       {list.entries.length === 0 ? (
-        <p className="muted panel-empty">Nothing here — this build has full coverage.</p>
+        <p className="muted panel-empty">{copy.coverage.empty}</p>
       ) : untraced ? (
         <UntracedColumns />
       ) : (
