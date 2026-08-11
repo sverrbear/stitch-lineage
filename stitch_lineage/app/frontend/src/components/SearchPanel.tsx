@@ -15,9 +15,17 @@ export interface SearchPanelProps {
   onNavigate?: () => void
   /** Exposes the input so a global '/' handler can focus it. */
   inputRef?: React.RefObject<HTMLInputElement | null>
+  /** The home page's field: the tall one the whole screen is built around (7a). */
+  hero?: boolean
 }
 
-export function SearchPanel({ autoFocus, placeholder, onNavigate, inputRef }: SearchPanelProps) {
+export function SearchPanel({
+  autoFocus,
+  placeholder,
+  onNavigate,
+  inputRef,
+  hero,
+}: SearchPanelProps) {
   const { search } = useStitch()
   const [query, setQuery] = useState('')
   const [cursor, setCursor] = useState(0)
@@ -56,7 +64,7 @@ export function SearchPanel({ autoFocus, placeholder, onNavigate, inputRef }: Se
 
   let flatIndex = -1
   return (
-    <div className="search-panel">
+    <div className={`search-panel${hero ? ' hero' : ''}`}>
       <input
         ref={ref}
         className="search-input"

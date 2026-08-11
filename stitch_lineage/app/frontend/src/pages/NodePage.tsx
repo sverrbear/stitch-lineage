@@ -37,6 +37,7 @@ import {
   isPlaceholder,
   metabaseRelation,
   nodeContext,
+  ownerName,
   warehouseColumn,
   warehouseRelation,
 } from '../lib/present'
@@ -142,11 +143,17 @@ function PanelHeader({
   const archived = node.properties?.archived === true
   // undefined means "use the shared rule"; an explicit null suppresses the line.
   const shown = subtitle === undefined ? nodeContext(index, node) : subtitle
+  // A column is named with its model, always: `dim_users.user_id`, never
+  // `user_id` (principle 02). The title is selectable text, not a shape.
+  const owner = node.node_type === 'column' ? ownerName(index, node) : null
   return (
     <div className="panel-header">
       <div className="panel-title">
         <SystemBadge nodeType={node.node_type} size={20} />
-        <h2>{displayName(node)}</h2>
+        <h2 title={node.node_id}>
+          {owner && <span className="panel-name-owner">{owner}.</span>}
+          {displayName(node)}
+        </h2>
         <span className="panel-type">{NODE_TYPE_NAME[node.node_type]}</span>
         {archived && <span className="archived-tag">archived</span>}
       </div>

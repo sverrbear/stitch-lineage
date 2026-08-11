@@ -3,7 +3,7 @@
 // for them: the thing you want after reading "109/239 bound" is the other 130,
 // clickable.
 
-import { NodeChip, Section } from '../components/bits'
+import { NodeChip } from '../components/bits'
 import { useStitch } from '../data'
 import { coverageList, type CoverageListKind } from '../lib/coverage'
 import { idTail } from '../lib/graph'
@@ -15,9 +15,10 @@ export function CoveragePage({ kind }: { kind: CoverageListKind }) {
   return (
     <article className="panel">
       <div className="panel-header">
+        {/* the count leads: the size of the gap IS the finding (principle 03) */}
         <div className="panel-title">
+          <span className="panel-count">{list.entries.length.toLocaleString()}</span>
           <h2>{list.title}</h2>
-          <span className="panel-type">{list.entries.length}</span>
         </div>
         <p className="panel-description">{list.description}</p>
         <div className="panel-actions">
@@ -27,27 +28,25 @@ export function CoveragePage({ kind }: { kind: CoverageListKind }) {
         </div>
       </div>
 
-      <Section title={`${list.entries.length} entries`}>
-        {list.entries.length === 0 ? (
-          <p className="muted">Nothing here — this build has full coverage.</p>
-        ) : (
-          <ul className="coverage-list">
-            {list.entries.map((entry) => (
-              <li key={entry.nodeId}>
-                {entry.node ? (
-                  <NodeChip node={entry.node} />
-                ) : (
-                  // in the coverage block but not in the graph: name it from the id
-                  <span className="coverage-orphan">
-                    <code>{idTail(entry.nodeId)}</code>
-                    <span className="muted">not in this graph</span>
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
+      {list.entries.length === 0 ? (
+        <p className="muted panel-empty">Nothing here — this build has full coverage.</p>
+      ) : (
+        <ul className="coverage-list">
+          {list.entries.map((entry) => (
+            <li key={entry.nodeId}>
+              {entry.node ? (
+                <NodeChip node={entry.node} />
+              ) : (
+                // in the coverage block but not in the graph: name it from the id
+                <span className="coverage-orphan">
+                  <code>{idTail(entry.nodeId)}</code>
+                  <span className="muted">not in this graph</span>
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </article>
   )
 }

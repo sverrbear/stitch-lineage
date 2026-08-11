@@ -1,159 +1,125 @@
-// Search-first home (spec §9) with an overview under it (#48): what this build
-// covers, how big it is, how old it is, and where to start. '/' and ⌘K are
-// untouched — the search box is still the first thing focused.
+// The 7a home (#108): one 620px column, vertically centred — the question, the
+// field that answers it, three real identifiers to start from, the two canvases,
+// and what this build does NOT know. Nothing else. A lineage tool is opened in
+// the middle of a problem, so the home page is a way in, not a dashboard.
+//
+// '/' and ⌘K are untouched — the search box is still the first thing focused.
 
 import { useMemo, type RefObject } from 'react'
-import { NodeChip } from '../components/bits'
 import { SearchPanel } from '../components/SearchPanel'
 import { useStitch } from '../data'
-import { coverageTiles, graphStats, startingPoints, type CoverageTile } from '../lib/coverage'
-import { NODE_TYPE_NAME, displayName } from '../lib/present'
-import { coverageHref, erdHref, lineageHref } from '../router'
+import {
+  coveragePercent,
+  coverageRows,
+  homeExamples,
+  startingPoints,
+  type CoverageRow,
+} from '../lib/coverage'
+import { coverageHref, erdHref, lineageHref, nodeHref } from '../router'
 
-const STALE_DAYS = 7
-
-function Tile({ tile }: { tile: CoverageTile }) {
-  const pct = tile.total ? Math.round((tile.value / tile.total) * 100) : null
-  return (
-    <div className="tile" title={tile.hint}>
-      <div className="tile-value">
-        {tile.value.toLocaleString()}
-        {tile.total !== null && <span className="tile-total">/{tile.total.toLocaleString()}</span>}
-      </div>
-      <div className="tile-label">{tile.label}</div>
-      {pct !== null && (
-        <div className="tile-bar" aria-hidden="true">
-          <div className="tile-bar-fill" style={{ width: `${pct}%` }} />
-        </div>
-      )}
-      {tile.list ? (
-        <a className="tile-link" href={coverageHref(tile.list)}>
-          {tile.listLabel} →
-        </a>
-      ) : (
-        <span className="tile-link muted">complete</span>
-      )}
+function Row({ row }: { row: CoverageRow }) {
+  const value = (
+    <span className="coverage-row-value">
+      {row.value.toLocaleString()}
+      {row.total !== null && ` / ${row.total.toLocaleString()}`}
+    </span>
+  )
+  const body = (
+    <>
+      <span className="coverage-row-label">{row.label}</span>
+      <span className="coverage-row-right">
+        {/* the gap sits beside the number it qualifies, never on its own page */}
+        {row.gapLabel && <span className="coverage-row-gap">{row.gapLabel}</span>}
+        {value}
+      </span>
+    </>
+  )
+  // Only a row with something missing is a link — it leads to what is missing.
+  return row.list ? (
+    <a className="coverage-row" href={coverageHref(row.list)} title={row.hint}>
+      {body}
+    </a>
+  ) : (
+    <div className="coverage-row" title={row.hint}>
+      {body}
     </div>
   )
 }
 
 export function HomePage({ searchInputRef }: { searchInputRef: RefObject<HTMLInputElement | null> }) {
-  const { index, meta } = useStitch()
-  const stats = useMemo(() => graphStats(index.graph, new Date()), [index])
-  const tiles = useMemo(() => coverageTiles(index.graph.coverage), [index])
-  const starts = useMemo(() => startingPoints(index), [index])
-  const generatedAt = stats.generatedAt ?? meta.generated_at
+  const { index } = useStitch()
+  const rows = useMemo(() => coverageRows(index.graph.coverage), [index])
+  const percent = useMemo(() => coveragePercent(index.graph.coverage), [index])
+  const examples = useMemo(() => homeExamples(index), [index])
   // the lineage entry needs somewhere to start: the model the BI layer leans on most
-  const busiest = starts.mostConsumedModels[0] ?? null
+  const busiest = useMemo(() => startingPoints(index, 1).mostConsumedModels[0] ?? null, [index])
 
   return (
     <main className="home">
-      <div className="home-hero">
-        {/* same rule as the header: the wordmark alone (#66) */}
-        <h1 className="home-title">
-          <span>stitch</span>
-        </h1>
-        <p className="home-subtitle">
-          dbt ↔ Metabase column lineage — search anything, follow it end to end.
-        </p>
-        <SearchPanel inputRef={searchInputRef} autoFocus />
-        <p className="home-hint">
-          <kbd>/</kbd> to search · <kbd>⌘K</kbd> palette
-        </p>
-      </div>
-
-      <section className="home-section">
-        <h2 className="home-section-title">Coverage</h2>
-        <div className="tile-row">
-          {tiles.map((tile) => (
-            <Tile key={tile.key} tile={tile} />
-          ))}
+      <div className="home-column">
+        <div className="home-hero">
+          <h1 className="home-title">Trace a column</h1>
+          <SearchPanel
+            inputRef={searchInputRef}
+            autoFocus
+            hero
+            placeholder="Model, column, card or dashboard"
+          />
+          {examples.length > 0 && (
+            <div className="home-examples">
+              {examples.map((example, i) => (
+                <span key={example.node.node_id} className="home-example-slot">
+                  {i > 0 && <span className="home-example-sep">·</span>}
+                  <a
+                    className="home-example"
+                    href={nodeHref(example.node.node_id)}
+                    title={example.node.node_id}
+                  >
+                    {example.label}
+                  </a>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
-      </section>
 
-      <section className="home-section">
-        <h2 className="home-section-title">Start here</h2>
-        {/* Two ways in, and they are the two canvases stitch keeps: the model view
-            and the flow view. The global pipeline map is gone (#83). */}
-        <div className="entry-row">
-          <a className="entry-card" href={erdHref()}>
-            <span className="entry-card-title">ERD</span>
-            <span className="entry-card-text">
-              Tables and their declared relationships, one schema or dbt tag at a time.
+        {/* The two canvases stitch keeps, as rows rather than cards: a link is a
+            link. The global pipeline map is gone (#83). */}
+        <div className="home-links">
+          <a
+            className="home-link"
+            href={busiest ? lineageHref(busiest.node.node_id) : coverageHref('unbound-models')}
+          >
+            <span>Lineage</span>
+            <span className="home-link-chevron" aria-hidden="true">
+              ›
             </span>
           </a>
-          {busiest ? (
-            <a className="entry-card" href={lineageHref(busiest.node.node_id)}>
-              <span className="entry-card-title">Lineage</span>
-              <span className="entry-card-text">
-                Follow a column end to end, source to dashboard — starting at{' '}
-                {displayName(busiest.node)}, the most consumed model in this graph.
-              </span>
-            </a>
-          ) : (
-            <a className="entry-card" href={coverageHref('unbound-models')}>
-              <span className="entry-card-title">Coverage</span>
-              <span className="entry-card-text">
-                Nothing in this graph reaches Metabase yet — start with what is unbound.
-              </span>
-            </a>
-          )}
+          <a className="home-link" href={erdHref()}>
+            <span>ERD</span>
+            <span className="home-link-chevron" aria-hidden="true">
+              ›
+            </span>
+          </a>
         </div>
-        <div className="start-lists">
-          <div className="start-list">
-            <h3 className="subhead">most consumed models</h3>
-            {starts.mostConsumedModels.length === 0 ? (
-              <p className="muted">no Metabase consumption in this graph</p>
-            ) : (
-              <ul className="start-items">
-                {starts.mostConsumedModels.map(({ node, count }) => (
-                  <li key={node.node_id}>
-                    <NodeChip node={node} />
-                    <span className="muted">{count} cards</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-          <div className="start-list">
-            <h3 className="subhead">biggest dashboards</h3>
-            {starts.biggestDashboards.length === 0 ? (
-              <p className="muted">no dashboards in this graph</p>
-            ) : (
-              <ul className="start-items">
-                {starts.biggestDashboards.map(({ node, count }) => (
-                  <li key={node.node_id}>
-                    <NodeChip node={node} />
-                    <span className="muted">{count} cards</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-      </section>
 
-      <section className="home-section">
-        <h2 className="home-section-title">This graph</h2>
-        <p className="home-stats">
-          {stats.byType
-            .map((entry) => `${entry.count.toLocaleString()} ${NODE_TYPE_NAME[entry.type]}s`)
-            .join(' · ')}{' '}
-          · {stats.edgeCount.toLocaleString()} edges
-        </p>
-        <p className="muted home-generated">
-          {generatedAt ? `built ${generatedAt}` : 'build time unknown'}
-          {stats.ageDays !== null && (
-            <>
-              {' · '}
-              {stats.ageDays === 0 ? 'today' : `${stats.ageDays} day${stats.ageDays === 1 ? '' : 's'} old`}
-              {stats.ageDays >= STALE_DAYS && (
-                <span className="stale-hint"> — run `stitch build` to refresh</span>
-              )}
-            </>
+        <div className="coverage-block">
+          <div className="coverage-head">
+            <span>Coverage</span>
+            {percent !== null && <span className="coverage-percent">{percent}%</span>}
+          </div>
+          {percent !== null && (
+            <div className="coverage-bar" aria-hidden="true">
+              <div className="coverage-bar-fill" style={{ width: `${percent}%` }} />
+            </div>
           )}
-        </p>
-      </section>
+          <div className="coverage-rows">
+            {rows.map((row) => (
+              <Row key={row.key} row={row} />
+            ))}
+          </div>
+        </div>
+      </div>
     </main>
   )
 }

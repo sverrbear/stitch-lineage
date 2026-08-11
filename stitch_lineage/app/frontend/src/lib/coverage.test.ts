@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { coverageList, coverageTiles, graphStats, startingPoints } from './coverage'
+import {
+  buildStamp,
+  coverageList,
+  coveragePercent,
+  coverageRows,
+  graphStats,
+  homeExamples,
+  startingPoints,
+} from './coverage'
 import { fixtureGraph } from './fixture'
 import { buildIndex } from './graph'
 
@@ -24,31 +32,100 @@ const withCoverage = {
 }
 const index = buildIndex(withCoverage)
 
-describe('coverageTiles', () => {
-  const tiles = coverageTiles(withCoverage.coverage)
-  const tile = (key: string) => tiles.find((t) => t.key === key)!
+describe('coverageRows', () => {
+  const rows = coverageRows(withCoverage.coverage)
+  const row = (key: string) => rows.find((r) => r.key === key)!
 
-  it('turns the coverage block into four tiles with their gaps', () => {
-    expect(tiles.map((t) => t.key)).toEqual(['models', 'columns', 'cards', 'dashboards'])
-    expect(tile('models').value).toBe(1)
-    expect(tile('models').total).toBe(4)
-    expect(tile('models').list).toBe('unbound-models')
-    expect(tile('models').listLabel).toBe('2 unbound')
+  it('reads columns first, then models, then cards — the 7a order', () => {
+    expect(rows.map((r) => r.key)).toEqual(['columns', 'models', 'cards'])
+  })
+
+  it('puts each ratio next to the gap it leaves', () => {
+    expect(row('models').value).toBe(1)
+    expect(row('models').total).toBe(4)
+    expect(row('models').gap).toBe(2)
+    expect(row('models').list).toBe('unbound-models')
+    expect(row('models').gapLabel).toBe('2 unbound')
   })
 
   it('sums MBQL and native cards into one resolved figure', () => {
-    expect(tile('cards').value).toBe(1)
-    expect(tile('cards').total).toBe(3)
+    expect(row('cards').value).toBe(1)
+    expect(row('cards').total).toBe(3)
   })
 
   it('offers no list when there is no gap to list', () => {
-    expect(tile('dashboards').list).toBeNull()
+    const clean = coverageRows({ ...withCoverage.coverage, untraced_columns: [] })
+    expect(clean.find((r) => r.key === 'columns')!.list).toBeNull()
+    expect(clean.find((r) => r.key === 'columns')!.gapLabel).toBeNull()
   })
 
   it('survives a graph with no coverage block at all', () => {
-    const empty = coverageTiles(undefined)
-    expect(empty).toHaveLength(4)
-    expect(empty.every((t) => t.value === 0 && t.list === null)).toBe(true)
+    const empty = coverageRows(undefined)
+    expect(empty).toHaveLength(3)
+    expect(empty.every((r) => r.value === 0 && r.list === null)).toBe(true)
+  })
+})
+
+describe('coveragePercent', () => {
+  it('is the share of columns this build can trace', () => {
+    expect(coveragePercent(withCoverage.coverage)).toBe(63) // 5/8
+  })
+
+  it('is null when there is no total to be a fraction of', () => {
+    expect(coveragePercent(undefined)).toBeNull()
+    expect(coveragePercent({ columns_traced: 4 })).toBeNull()
+  })
+})
+
+describe('buildStamp', () => {
+  const built = '2026-08-10T16:07:00'
+
+  it('says today, with the clock time', () => {
+    expect(buildStamp(built, new Date('2026-08-10T23:00:00'))).toEqual({
+      text: 'Built today, 16:07',
+      ageDays: 0,
+      stale: false,
+    })
+  })
+
+  it('counts calendar days, not elapsed hours', () => {
+    // three hours later, but the reader calls it yesterday
+    expect(buildStamp('2026-08-10T23:30:00', new Date('2026-08-11T02:30:00'))?.text).toBe(
+      'Built yesterday, 23:30',
+    )
+  })
+
+  it('names the day up to a week out, then the date', () => {
+    expect(buildStamp(built, new Date('2026-08-13T09:00:00'))?.text).toBe('Built 3 days ago, 16:07')
+    expect(buildStamp(built, new Date('2026-08-20T09:00:00'))?.text).toBe('Built 2026-08-10, 16:07')
+  })
+
+  it('marks a graph a week old as stale — a stale graph is a wrong answer', () => {
+    expect(buildStamp(built, new Date('2026-08-16T09:00:00'))?.stale).toBe(false)
+    expect(buildStamp(built, new Date('2026-08-17T09:00:00'))?.stale).toBe(true)
+  })
+
+  it('is null when the graph carries no usable timestamp', () => {
+    expect(buildStamp(null, new Date())).toBeNull()
+    expect(buildStamp('not a date', new Date())).toBeNull()
+  })
+})
+
+describe('homeExamples', () => {
+  it('offers real identifiers from this graph, columns qualified by their model', () => {
+    const examples = homeExamples(index)
+    expect(examples.map((e) => e.label)).toEqual([
+      'fct_revenue.net_revenue',
+      'fct_revenue.user_id',
+      'Board dashboard',
+    ])
+  })
+
+  it('still finds somewhere to start when nothing reaches Metabase', () => {
+    const bare = buildIndex({ ...fixtureGraph(), edges: [] })
+    const examples = homeExamples(bare)
+    expect(examples).toHaveLength(3)
+    expect(examples.every((e) => e.label.length > 0)).toBe(true)
   })
 })
 
