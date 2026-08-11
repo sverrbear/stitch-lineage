@@ -1,0 +1,26 @@
+version: 2
+
+# a generated presentation layer: descriptions copied down from the models below it,
+# never tests. Writing here is writing into something a script regenerates.
+models:
+  - name: viz_fct_orders
+    description: >
+      Orders, one row per line item.
+    columns:
+      - name: order_id
+        description: "Primary key"
+      - name: customer_id
+        description: 'Who placed the order'
+
+  - name: viz_dim_customers
+    description: "Customer dimension (SCD1)"
+    columns:
+      - name: customer_id
+        description: "Primary key"
+
+  # nothing called 'only_report' exists: this IS the model, prefix and all
+  - name: viz_only_report
+    description: "Hand-written, owns itself"
+    columns:
+      - name: customer_id
+        description: "Who the row is about"

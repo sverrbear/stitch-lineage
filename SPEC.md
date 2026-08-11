@@ -213,6 +213,16 @@ relationships:
   cardinality_meta_key: relationship_type   # dbterd interop; also where the test form
                                         # keeps the arity a test cannot express
   validated_test_severity: warn         # every test stitch writes carries this, explicitly
+  test_argument_style: auto             # | flat | arguments — where `to`/`field` sit under
+                                        # `relationships:`. dbt 1.10 nests them in an
+                                        # `arguments:` mapping; auto reuses whatever the
+                                        # file already does and falls back to flat
+
+write:
+  strip_model_prefixes: ["viz_"]        # presentation-layer prefixes: a declaration drawn
+                                        # on `viz_dim_users` is WRITTEN onto `dim_users`.
+                                        # Distinct from serve.strip_model_prefixes, which
+                                        # only hides the prefix on screen
 
 serve:
   erd_default_scope: "schema:MARTS"     # | tag:<name> — ERD scope the app opens on;
@@ -385,6 +395,8 @@ What the ✓ therefore means, precisely: *dbt is checking this join's referentia
 
 **A written test never fails a pipeline.** Every test stitch writes carries `severity: warn` explicitly, from `validated_test_severity`. A relationship someone drew in a diagramming tool must not be the reason a deploy goes red; a warning is the honest signal, and the team can promote it by hand.
 
+**The test is written in the spelling the repo already uses.** dbt 1.10 moved test arguments under an `arguments:` mapping, and a repo on an older dbt cannot read that form — so `test_argument_style: auto` reads the form off the column, then off the file, and falls back to flat, the same way the `data_tests`/`tests` key is decided. Both spellings are also read when checking whether a declaration is already there, or a repo on 1.10 grows a second copy of a test it already declares.
+
 **Arity lives beside the test, not in it.** A `relationships` test states that two columns join and has no field for many-to-one versus one-to-one, so the cardinality is written to `cardinality_meta_key` on the FK column and read back from there. Without that, drawing a one-to-one and rebuilding hands back a many-to-one.
 
 The honest cost of declared-only: nothing exercises it against data. Mitigated structurally — `stitch build` statically validates every declaration against the manifest (target model exists, columns exist, types join-compatible; conceptual edges: target exists) and dangling declarations are build warnings in coverage output. Static checks catch typos; only the validated tier catches orphaned rows.
@@ -404,6 +416,8 @@ Editing in the app never touches the repo. The flow is plan/apply (issues #24 + 
    - refuse to write on a dirty target file (uncommitted changes) unless `--force` — the user's edits outrank ours
    - applied entries clear from their store; the next `stitch build` reads them back from the manifest (relationships as `relates_to`, validated; descriptions as node descriptions)
    - a successful apply also **patches `graph.json` in place** with what it wrote — the `relates_to` edges (confidence per the written form: validated for a test, declared for meta; evidence `source: stitch apply`) and the new node descriptions — so the app shows them on a refresh. Rewritten through `io/graph_store` so determinism holds, idempotent (an edge already present, or a description that already matches, rewrites nothing), skipped with a note when there is no graph or the target is not in it, and `--no-graph-update` opts out. The patch never rebuilds inside apply — `dbt parse` would drop compiled SQL and `dbt docs generate` hits the warehouse — and it never touches the previous-build snapshot, since neither a `relates_to` edge nor a description is a column change with a blast radius to report. `--build` runs a real `stitch build` afterwards for full reconciliation.
+   **Which model owns the write** — `write.strip_model_prefixes`. A repo whose BI layer is a set of views (`viz_dim_users` over `dim_users`) gives stitch no choice about what to bind: Metabase sees the view, so the view is the only name a relationship can be drawn on. It is not the name that should be written. The view's YAML is generated from the models underneath it in every repo that has one, so a declaration written there is regenerated away before anyone runs dbt — and where the convention is "no tests on the presentation layer", it was never allowed to land there in the first place. Configuring the prefix routes the write to the model underneath: the schema file, the model entry and the `ref()` in the emitted test all follow the routed name together, and both endpoints route independently. Routing is conditional on the stripped model existing in the manifest, so a model that genuinely owns a prefixed name keeps its own declaration, and it applies to staged descriptions on the same terms — the ownership question is the same one. `stitch migrate-relationships` is deliberately exempt: it restates a declaration where it already sits and strips the keys it replaces from that same column, so routing would write one half of the change to a different file.
+
 3. The plan/guard/clear/patch behaviour lives in **`stitch_lineage/apply.py`**, the engine both callers drive: `stitch apply` renders it to a console, `stitch serve` serialises it over HTTP (`POST /api/apply/preview`, `POST /api/apply`). Neither reimplements it, so "the CLI and the app do the same thing" is structural rather than aspirational. Only that engine may import `write/` (import-linter contract), and the app never gets a force path — overwriting uncommitted edits stays a CLI decision. The static export gets no server at all, so it remains read-only by construction.
 
 4. **`stitch migrate-relationships`** rewrites declarations already written as `fk_meta_keys` into the form `relationships.write_to` selects, and removes the two keys it replaces — `cardinality_meta_key` stays, being the only thing a `relationships` test cannot express. It redraws nothing and infers nothing: only declarations the manifest already carries are rewritten, so it sees what the last `dbt docs generate` saw. Composite and conceptual `stitch.relationships` entries are left alone, having no test form to migrate into. Same ceremony as apply — round-trip proof, one diff preview, one confirmation, files with uncommitted changes refused — and no store to clear, since nothing was staged.

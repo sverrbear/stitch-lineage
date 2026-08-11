@@ -28,7 +28,7 @@ from ruamel.yaml import YAML, YAMLError
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.scalarstring import LiteralScalarString
 
-from stitch_lineage.config import RelationshipsConfig
+from stitch_lineage.config import RelationshipsConfig, WriteConfig
 from stitch_lineage.io.staged_store import StagedChange, StagedDescription, StagedRelationship
 
 __all__ = [
@@ -151,6 +151,11 @@ def plan_migration(
         information rather than move it;
       * anything at all when `write_to` is already `meta`, which is a no-op by
         definition rather than a rewrite worth previewing.
+
+    It also does not route through `write.strip_model_prefixes`, unlike `plan_writes`:
+    a migration restates a declaration where it already sits and drops the two keys it
+    replaces from that same column. Routing would write the test onto one model and
+    strip the meta from another, leaving both halves wrong.
 
     Every guarantee `plan_writes` gives holds here, because it is the same machinery:
     the file is proof-round-tripped before it is touched, the emitter is configured
@@ -313,6 +318,7 @@ def plan_writes(
     manifest: dict[str, Any],
     project_dir: Path,
     relationships: RelationshipsConfig | None = None,
+    write: WriteConfig | None = None,
 ) -> WritePlan:
     """Compute the model-YAML edits that materialize `entries`; never touches disk state.
 
@@ -320,11 +326,16 @@ def plan_writes(
     edits -- and they are planned in order against a running copy of each file, so several
     changes landing in the same schema file accumulate into one edit and one diff.
 
+    `write.strip_model_prefixes` decides which model owns each entry before any of that
+    happens, so a declaration drawn on a presentation view lands on the model underneath
+    it -- file, entry and `ref()` all follow the routed name together.
+
     Raises:
         NotImplementedError: relationships.write_to is contract_constraint (SPEC.md
             section 8.1 shape, not implemented in v1).
     """
     config = relationships or RelationshipsConfig()
+    prefixes = (write or WriteConfig()).strip_model_prefixes
     if config.write_to == "contract_constraint":
         raise NotImplementedError(
             "relationships.write_to: contract_constraint is not implemented yet -- "
@@ -339,13 +350,13 @@ def plan_writes(
 
     for entry in entries:
         try:
-            path = _schema_path(entry, models, project_dir)
+            path = _schema_path(entry, models, project_dir, prefixes)
             if path not in current:
                 text = _read(path)
                 _assert_round_trips(path, text, entry)
                 originals[path] = text
                 current[path] = text
-            updated = _apply_entry(current[path], entry, models, config, path)
+            updated = _apply_entry(current[path], entry, models, config, path, prefixes)
         except YamlWriteError as exc:
             results.append(EntryResult(entry=entry, status="failed", message=str(exc)))
             continue
@@ -403,11 +414,34 @@ def _unchanged_message(entry: StagedChange) -> str:
     return "already declared in the repo"
 
 
-def _owner_model(entry: StagedChange) -> str:
+def _owner_model(
+    entry: StagedChange, models: dict[str, dict[str, Any]], prefixes: list[str]
+) -> str:
     """The model whose schema file the change is written into."""
-    if isinstance(entry, StagedDescription):
-        return entry.entity
-    return entry.from_model
+    drawn = entry.entity if isinstance(entry, StagedDescription) else entry.from_model
+    return _routed(drawn, models, prefixes)
+
+
+def _routed(name: str, models: dict[str, dict[str, Any]], prefixes: list[str]) -> str:
+    """The model a declaration drawn on `name` belongs to (write.strip_model_prefixes).
+
+    Metabase only ever sees the presentation view, so `viz_dim_users` is the only name
+    stitch can bind a relationship to -- but the view is not what the repo maintains, and
+    in a repo whose viz YAML is generated from the models underneath, a declaration
+    written onto the view is regenerated away before anyone runs dbt.
+
+    Routing is conditional on the stripped model actually existing in the manifest, so a
+    repo that genuinely owns a model called `viz_something` keeps it, and a configured
+    prefix that matches nothing costs nothing. The manifest's own spelling is returned:
+    slicing the string would carry the view's casing onto the model's name.
+    """
+    for prefix in prefixes:
+        if not prefix or not name.lower().startswith(prefix.lower()):
+            continue
+        node = models.get(name[len(prefix) :].lower())
+        if node:
+            return str(node.get("name") or name[len(prefix) :])
+    return name
 
 
 def _model_or_fail(name: str, models: dict[str, dict[str, Any]], role: str) -> dict[str, Any]:
@@ -420,8 +454,13 @@ def _model_or_fail(name: str, models: dict[str, dict[str, Any]], role: str) -> d
     return node
 
 
-def _schema_path(entry: StagedChange, models: dict[str, dict[str, Any]], project_dir: Path) -> Path:
-    model = _owner_model(entry)
+def _schema_path(
+    entry: StagedChange,
+    models: dict[str, dict[str, Any]],
+    project_dir: Path,
+    prefixes: list[str] | None = None,
+) -> Path:
+    model = _owner_model(entry, models, prefixes or [])
     node = _model_or_fail(model, models, "source")
     patch_path = node.get("patch_path")
     if not patch_path:
@@ -461,18 +500,27 @@ class ModelWriteability:
     path: str | None = None
 
 
-def model_writeability(manifest: dict[str, Any], project_dir: Path) -> dict[str, ModelWriteability]:
+def model_writeability(
+    manifest: dict[str, Any], project_dir: Path, write: WriteConfig | None = None
+) -> dict[str, ModelWriteability]:
     """Per-model write-ability for every model in the manifest, keyed by lowercased name.
 
     One round-trip proof per FILE, not per model -- a schema file with forty models in
     it is parsed once.
+
+    A model that routes under `write.strip_model_prefixes` is judged on the file its
+    writes will land in, not the one it is drawn on: the reason is shown to a person
+    about to edit, so it has to be about the file that edit will actually touch.
     """
     models = _model_index(manifest)
+    prefixes = (write or WriteConfig()).strip_model_prefixes
     project_dir = Path(project_dir)
     per_file: dict[Path, str | None] = {}
     out: dict[str, ModelWriteability] = {}
 
-    for name, node in models.items():
+    for name, drawn in models.items():
+        owner = _routed(name, models, prefixes)
+        node = models.get(owner.lower(), drawn)
         patch_path = node.get("patch_path")
         if not patch_path:
             out[name] = ModelWriteability(
@@ -480,7 +528,7 @@ def model_writeability(manifest: dict[str, Any], project_dir: Path) -> dict[str,
                 writable=False,
                 reason=(
                     "this model has no schema YAML file yet -- add a '- name: "
-                    f"{name}' entry under models: in a _schema.yml first"
+                    f"{owner}' entry under models: in a _schema.yml first"
                 ),
             )
             continue
@@ -703,10 +751,12 @@ def _apply_entry(
     models: dict[str, dict[str, Any]],
     config: RelationshipsConfig,
     path: Path,
+    prefixes: list[str] | None = None,
 ) -> str:
     yaml = _yaml_for(text)
     document = _load(text, yaml, path)
-    owner = _owner_model(entry)
+    prefixes = prefixes or []
+    owner = _owner_model(entry, models, prefixes)
     model_entry = _model_entry(document, owner)
     if model_entry is None:
         raise YamlWriteError(
@@ -716,12 +766,13 @@ def _apply_entry(
     if isinstance(entry, StagedDescription):
         _write_description(model_entry, entry)
         return _emit(text, document, yaml, path)
-    target = _model_or_fail(entry.to_model, models, "target")
+    to_model = _routed(entry.to_model, models, prefixes)
+    target = _model_or_fail(to_model, models, "target")
     column = _ensure_column(model_entry, entry.from_column)
     if config.write_to == "meta":
-        _write_meta(column, entry, target, config)
+        _write_meta(column, entry, target, config, to_model)
     else:
-        _write_relationships_test(column, document, entry, config)
+        _write_relationships_test(column, document, entry, config, to_model)
     return _emit(text, document, yaml, path)
 
 
@@ -838,12 +889,91 @@ def _ref_target(value: Any) -> str | None:
     return (match.group(2) or match.group(1)).lower()
 
 
+def _test_arguments(relationships: Any) -> dict[str, Any] | None:
+    """The `to`/`field` mapping of a relationships test, in whichever dbt spells it.
+
+    dbt 1.10 moved test arguments under `arguments:`; before that they sat directly on
+    the test. Reading both is what keeps a repo already on the new form from having a
+    second, identical test appended underneath the one it already declares.
+    """
+    if not isinstance(relationships, dict):
+        return None
+    arguments = relationships.get("arguments")
+    return arguments if isinstance(arguments, dict) else relationships
+
+
+def _argument_style(column: CommentedMap, document: Any, config: RelationshipsConfig) -> str:
+    """Where this file wants a relationships test's `to`/`field`: "arguments" or "flat".
+
+    Decided the way `_tests_key` decides its key: reuse what the column already does,
+    then what the rest of the file does. The fallback is flat, which every dbt version
+    reads -- writing `arguments:` into a repo on dbt < 1.10 would break its build, so it
+    is only ever written where the repo has shown it can be read.
+    """
+    if config.test_argument_style != "auto":
+        return config.test_argument_style
+    for scope in (column, document):
+        style = _declared_argument_style(scope)
+        if style is not None:
+            return style
+    return "flat"
+
+
+def _declared_argument_style(node: Any) -> str | None:
+    """The form used by the first test under `node` that spells its arguments at all.
+
+    Read from ANY test, not just `relationships`: a `dbt_utils` test nesting under
+    `arguments:` proves this repo runs a dbt that reads the form, which is the whole of
+    what the flat fallback protects against. A schema file usually declares its first
+    relationship long after its first uniqueness test, so looking only at relationships
+    would fall back to flat in exactly the repos that have already moved on.
+    """
+    if isinstance(node, dict):
+        for key in _TESTS_KEYS:
+            style = _tests_argument_style(node.get(key))
+            if style is not None:
+                return style
+        children: Any = node.values()
+    elif isinstance(node, list):
+        children = node
+    else:
+        return None
+    for child in children:
+        style = _declared_argument_style(child)
+        if style is not None:
+            return style
+    return None
+
+
+def _tests_argument_style(tests: Any) -> str | None:
+    """The form one `data_tests:`/`tests:` list demonstrates, or None if it shows neither.
+
+    A bare `- not_null` and a test carrying nothing but `config:` are both silent on the
+    question -- they are stepped over rather than counted as flat.
+    """
+    if not isinstance(tests, list):
+        return None
+    for item in tests:
+        if not isinstance(item, dict):
+            continue
+        for value in item.values():
+            if not isinstance(value, dict):
+                continue
+            if isinstance(value.get("arguments"), dict):
+                return "arguments"
+            if set(value) - {"config"}:
+                return "flat"
+    return None
+
+
 def _write_relationships_test(
     column: CommentedMap,
     document: Any,
     entry: StagedRelationship,
     config: RelationshipsConfig,
+    to_model: str | None = None,
 ) -> None:
+    to_model = to_model or entry.to_model
     key = _tests_key(column, document)
     tests = column.get(key)
     if tests is None:
@@ -856,23 +986,30 @@ def _write_relationships_test(
     for item in tests:
         if not isinstance(item, dict):
             continue
-        existing = item.get("relationships")
-        if not isinstance(existing, dict):
+        existing = _test_arguments(item.get("relationships"))
+        if existing is None:
             continue
         if (
-            _ref_target(existing.get("to")) == entry.to_model.lower()
+            _ref_target(existing.get("to")) == to_model.lower()
             and str(existing.get("field") or "").lower() == entry.to_column.lower()
         ):
             return
+    arguments = CommentedMap()
+    arguments["to"] = f"ref('{to_model}')"
+    arguments["field"] = entry.to_column
     relationships = CommentedMap()
-    relationships["to"] = f"ref('{entry.to_model}')"
-    relationships["field"] = entry.to_column
+    if _argument_style(column, document, config) == "arguments":
+        relationships["arguments"] = arguments
+    else:
+        relationships.update(arguments)
     if config.validated_test_severity:
         # Explicit, and warn by default: a relationship stitch inferred and a human
         # drew must never be the reason someone's pipeline goes red (#134). Setting
         # validated_test_severity to "" opts out and writes a bare test.
         severity = CommentedMap()
         severity["severity"] = config.validated_test_severity
+        # a sibling of `arguments:`, not one of them -- severity configures the test,
+        # it is not an argument to it, in either dbt spelling
         relationships["config"] = severity
     test = CommentedMap()
     test["relationships"] = relationships
@@ -904,13 +1041,15 @@ def _write_meta(
     entry: StagedRelationship,
     target: dict[str, Any],
     config: RelationshipsConfig,
+    to_model: str | None = None,
 ) -> None:
+    to_model = to_model or entry.to_model
     table_key, field_key = config.fk_meta_keys[0], config.fk_meta_keys[1]
     meta = _ensure_meta(column)
     schema = str(target.get("schema") or "")
-    value = f"{schema}.{entry.to_model}" if schema else entry.to_model
+    value = f"{schema}.{to_model}" if schema else to_model
     existing = meta.get(table_key)
-    if existing is not None and str(existing).split(".")[-1].lower() != entry.to_model.lower():
+    if existing is not None and str(existing).split(".")[-1].lower() != to_model.lower():
         raise YamlWriteError(
             f"column '{entry.from_column}' already declares {table_key}: {existing} -- "
             "remove the existing declaration or edit it by hand"
