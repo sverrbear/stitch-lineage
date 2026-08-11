@@ -1,1 +1,0 @@
-function e(e,t,n=4){return!e||Math.hypot(t.x-e.x,t.y-e.y)<=n}export{e as t};
