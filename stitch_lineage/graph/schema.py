@@ -163,6 +163,12 @@ class Coverage(BaseModel):
     columns_traced: int = 0
     columns_total: int = 0
     columns_inferred: int = 0
+    # what the sqlglot pass had to work with. Counted separately from models_bound/
+    # models_total, which are the Metabase bind denominator and narrowed by config:
+    # a manifest carrying no compiled_code at all traces nothing, and that reports as
+    # `0/2385 columns traced` unless the artifacts get to answer for it (#97).
+    models_compiled: int = 0
+    models_uncompiled: int = 0
     # mb fields whose dbt relation supplied no column inventory -- skipped, never fabricated
     unverified_field_count: int = 0
     # seed/snapshot deps dropped from `references` (neither is a node type in the graph)

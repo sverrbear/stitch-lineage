@@ -12,7 +12,7 @@ from stitch_lineage.graph.schema import (
     column_node_id,
 )
 from stitch_lineage.io.graph_store import write_graph
-from stitch_lineage.resolve.dbt import DbtResolution, resolve_dbt
+from stitch_lineage.resolve.dbt import DbtResolution, compiled_model_counts, resolve_dbt
 
 FIXTURES = Path(__file__).parent / "fixtures" / "dbt"
 
@@ -503,6 +503,56 @@ def test_model_without_compiled_code_is_untraced():
     assert result.columns_total == 1
     assert result.columns_traced == 0
     assert result.untraced_columns == [column_node_id("model.demo.fct_a", "user_id")]
+
+
+def test_a_parse_only_manifest_is_counted_not_just_untraced():
+    """#97: 0/N traced reads as a fact about the SQL until the artifacts answer for it."""
+    manifest = {
+        "metadata": {},
+        "nodes": {
+            "model.demo.fct_a": _model("fct_a", columns={"user_id": _column("user_id")}),
+            "model.demo.dim_b": _model("dim_b", columns={"user_id": _column("user_id")}),
+        },
+        "sources": {},
+    }
+    result = resolve_dbt(manifest, {})
+    assert (result.models_compiled, result.models_uncompiled) == (0, 2)
+    assert result.columns_traced == 0
+
+
+def test_mixed_compiled_and_parse_only_models_split_the_count():
+    manifest = {
+        "metadata": {},
+        "nodes": {
+            "model.demo.stg_a": _model(
+                "stg_a",
+                schema="staging",
+                compiled="select 1 as user_id",
+                columns={"user_id": _column("user_id")},
+            ),
+            "model.demo.fct_b": _model("fct_b", columns={"user_id": _column("user_id")}),
+        },
+        "sources": {},
+    }
+    result = resolve_dbt(manifest, {})
+    assert (result.models_compiled, result.models_uncompiled) == (1, 1)
+
+
+def test_compiled_model_counts_ignores_everything_that_is_not_a_model():
+    # a real manifest's `nodes` also carries tests, seeds and snapshots -- none of them
+    # is an input to the sqlglot pass, so none belongs in the denominator
+    manifest = {
+        "metadata": {},
+        "nodes": {
+            "model.demo.fct_a": _model("fct_a", compiled="select 1 as id"),
+            # whitespace-only compiled_code is the same state as none: nothing to hand sqlglot
+            "model.demo.fct_b": _model("fct_b", compiled="   "),
+            "test.demo.not_null_fct_a_id": {"resource_type": "test", "name": "not_null"},
+            "seed.demo.countries": {"resource_type": "seed", "name": "countries"},
+        },
+        "sources": {},
+    }
+    assert compiled_model_counts(manifest) == (1, 1)
 
 
 def test_custom_fk_meta_keys_and_cardinality_key():

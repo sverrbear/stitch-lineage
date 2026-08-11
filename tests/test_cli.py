@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 
 import uvicorn
+from conftest import plain
 from typer.main import get_command
 from typer.testing import CliRunner
 
@@ -584,6 +585,25 @@ def test_coverage_report_stays_quiet_when_counters_are_zero():
     output = _coverage_output(Coverage())
     assert "left unbound" not in output
     assert "seed/snapshot" not in output
+
+
+def test_parse_only_artifacts_warn_instead_of_reporting_a_bare_zero():
+    # #97: the reference deployment reported 0/2385 traced and nothing said the manifest
+    # was parse-only, so it read as SQL sqlglot could not handle
+    output = plain(_coverage_output(Coverage(columns_total=2385, models_uncompiled=2385)))
+    assert "warning: none of the 2385 dbt models carry compiled SQL" in output
+    assert "these artifacts are parse-only" in output
+    assert "re-run 'dbt docs generate' without --no-compile" in output
+
+
+def test_partly_compiled_artifacts_name_the_share_not_the_whole():
+    output = plain(_coverage_output(Coverage(models_compiled=38, models_uncompiled=2)))
+    assert "warning: 2 of 40 dbt models carry no compiled SQL" in output
+    assert "parse-only" not in output
+
+
+def test_fully_compiled_artifacts_say_nothing_about_compiled_sql():
+    assert "compiled SQL" not in plain(_coverage_output(Coverage(models_compiled=40)))
 
 
 def test_some_case_mismatches_stay_a_warning():

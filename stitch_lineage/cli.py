@@ -89,7 +89,7 @@ from stitch_lineage.mend.plan import build_plan as build_mend_plan
 from stitch_lineage.mend.render import format_plan, format_summary_slack, format_summary_text
 from stitch_lineage.payloads import MetabasePayload
 from stitch_lineage.resolve.bind import bind
-from stitch_lineage.resolve.dbt import TRACE_REASON_LABELS, resolve_dbt
+from stitch_lineage.resolve.dbt import TRACE_REASON_LABELS, compiled_model_counts, resolve_dbt
 from stitch_lineage.resolve.metabase import resolve_metabase
 from stitch_lineage.resolve.types import TypeWaterfallResult, apply_type_waterfall
 from stitch_lineage.write.yaml_writer import WritePlan
@@ -381,6 +381,27 @@ def _print_type_sources(result: TypeWaterfallResult) -> None:
     console.print(f"{'column types':<20} {typed}/{total} typed   ({', '.join(sources)})")
 
 
+def _uncompiled_models_warning(compiled: int, uncompiled: int) -> str | None:
+    """The one sentence `build` and `doctor` both say about parse-only artifacts (#97).
+
+    None when every model carries compiled SQL, which is the ordinary case and needs no
+    line. Otherwise it names the count and the fix, because the coverage row alone
+    reports this as `0/2385 columns traced` -- reading as a claim about SQL stitch could
+    not parse, when nothing was ever handed to the parser.
+    """
+    total = compiled + uncompiled
+    if not uncompiled or not total:
+        return None
+    scope = (
+        f"none of the {total} dbt models carry compiled SQL: these artifacts are "
+        "parse-only, so nothing could be traced"
+        if uncompiled == total
+        else f"{uncompiled} of {total} dbt models carry no compiled SQL, "
+        "so their columns could not be traced"
+    )
+    return f"{scope} -- re-run 'dbt docs generate' without --no-compile"
+
+
 def _print_coverage(
     coverage: Coverage,
     metabase_side: bool,
@@ -426,6 +447,11 @@ def _print_coverage(
         "dbt column lineage",
         f"{coverage.columns_traced}/{coverage.columns_total} columns traced{suffix}",
     )
+    uncompiled_warning = _uncompiled_models_warning(
+        coverage.models_compiled, coverage.models_uncompiled
+    )
+    if uncompiled_warning:
+        console.print(f"warning: {uncompiled_warning}", soft_wrap=True)
     if coverage.seed_snapshot_dependencies:
         console.print(
             f"note: {coverage.seed_snapshot_dependencies} seed/snapshot dependencies "
@@ -555,6 +581,8 @@ def _run_build(
             "untraced_columns": dbt_res.untraced_columns,
             "dangling_relationships": dbt_res.dangling_relationships,
             "seed_snapshot_dependencies": dbt_res.seed_snapshot_dependencies,
+            "models_compiled": dbt_res.models_compiled,
+            "models_uncompiled": dbt_res.models_uncompiled,
         }
         metabase_version: str | None = None
         metabase_side = True
@@ -1569,12 +1597,26 @@ def doctor(
 
     target_path = _target_path(config, cfg)
     try:
-        load_manifest(target_path)
+        manifest = load_manifest(target_path)
         load_catalog(target_path)
         console.print(f"ok    dbt artifacts in {target_path} parse")
     except StitchArtifactError as exc:
         failed = True
         console.print(f"fail  {exc}")
+    else:
+        # parsing is not enough: column lineage is a sqlglot pass over compiled_code, so
+        # a parse-only manifest leaves SPEC section 7.3 dark while everything here says ok (#97)
+        compiled, uncompiled = compiled_model_counts(manifest)
+        warning = _uncompiled_models_warning(compiled, uncompiled)
+        if warning is None:
+            if compiled:
+                console.print(f"ok    all {compiled} dbt models carry compiled SQL")
+        elif compiled:
+            console.print(f"warn  {warning}", soft_wrap=True)
+        else:
+            # nothing at all to trace: the feature is off, not degraded
+            failed = True
+            console.print(f"fail  {warning}", soft_wrap=True)
 
     if graph_path.is_file():
         try:

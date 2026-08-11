@@ -319,6 +319,8 @@ dbt column lineage  2551/3293 columns traced   (1329 inferred via star-expansion
 
 **Weak evidence is labelled, not averaged in.** `columns_inferred` is traced by star-expansion or name match rather than parsed out of the SQL, and on a real project it is the majority of the traced count — so the share rides next to the ratio in both the CLI output and the app's coverage block, never folded silently into one number.
 
+**A zero is a claim too — and usually about the artifacts.** Column lineage is a sqlglot pass over `compiled_code`, so a parse-only artifact set (a `dbt parse`, or a docs run with `--no-compile`) traces nothing at all, and the ratio alone reports that as `0/2385 columns traced` — indistinguishable from SQL stitch could not handle. `models_compiled` / `models_uncompiled` are therefore counted separately from `models_bound`, and the build says so out loud, naming the count and `dbt docs generate`. `stitch doctor` asks the same question of the manifest and **fails** when no model carries compiled SQL: artifacts that parse are not artifacts that can be traced, and the check that only reported the former was the one that let §7.3 stay dark on the reference deployment.
+
 Coverage reporting is what turns "the graph looks thin" from a bug report into a documented limitation evaluable in thirty seconds. Non-negotiable in Phase 0.
 
 ### 7.6 Data type resolution — a waterfall, with provenance
