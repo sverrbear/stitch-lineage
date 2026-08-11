@@ -457,7 +457,7 @@ def _owner_display(nodes_by_id: dict[str, Node], owner_id: str) -> str:
     return owner.name if owner else owner_id.rsplit(".", 1)[-1]
 
 
-def _column_display(nodes_by_id: dict[str, Node], node_id: str) -> str:
+def column_display(nodes_by_id: dict[str, Node], node_id: str) -> str:
     """'model.column' for a column node id; the raw id for anything else."""
     owner_id, sep, column = node_id.rpartition("::")
     if not sep:
@@ -472,7 +472,7 @@ def _card_sort_key(node_id: str) -> tuple[int, str]:
 
 def _node_display(nodes_by_id: dict[str, Node], node: Node) -> str:
     if node.node_type is NodeType.COLUMN:
-        return _column_display(nodes_by_id, node.node_id)
+        return column_display(nodes_by_id, node.node_id)
     return node.name
 
 
@@ -654,7 +654,7 @@ def column_blast_radius(graph: Graph, node_id: str, max_depth: int = 20) -> Blas
 
     return BlastRadius(
         node_id=node_id,
-        label=_column_display(nodes_by_id, node_id),
+        label=column_display(nodes_by_id, node_id),
         models=models,
         columns=refs(NodeType.COLUMN),
         fields=refs(NodeType.MB_FIELD),
@@ -707,3 +707,129 @@ def format_blast_radius(radius: BlastRadius) -> str:
     if radius.truncated:
         lines.append(f"Downstream walk truncated at depth {radius.max_depth}.")
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------------------
+# Machine-readable diff (issue #143): the same answer the PR comment gives, as data.
+#
+# `stitch mend` recomputes the diff in-process rather than reading this back -- a file
+# contract between two commands is a version to keep in step. What this is for is the CI
+# gate ("did anything break?" is `columns == []`) and any other consumer that should not
+# have to scrape prose or re-parse a node id to find a card.
+# --------------------------------------------------------------------------------------
+
+
+class ImpactedCard(BaseModel):
+    """One Metabase card in the machine-readable diff, addressable without re-parsing ids."""
+
+    node_id: str
+    card_id: int | None = None
+    name: str
+    dashboards: list[str] = Field(default_factory=list)
+    owner: str | None = None
+
+
+class ImpactedColumn(BaseModel):
+    """One changed column and everything the change reaches, grouped by what it is."""
+
+    node_id: str
+    label: str
+    change: str
+    old_type: str | None = None
+    new_type: str | None = None
+    models: list[str] = Field(default_factory=list)
+    cards: list[ImpactedCard] = Field(default_factory=list)
+    dashboards: list[str] = Field(default_factory=list)
+
+
+class ImpactJson(BaseModel):
+    """`stitch impact --format json` -- the diff a machine can act on.
+
+    `added` carries no blast radius by definition and so appears as bare node ids.
+    """
+
+    removed: list[str] = Field(default_factory=list)
+    type_changed: list[TypeChange] = Field(default_factory=list)
+    added: list[str] = Field(default_factory=list)
+    columns: list[ImpactedColumn] = Field(default_factory=list)
+    card_count: int = 0
+    dashboard_count: int = 0
+    max_depth: int = 20
+    truncated: bool = False
+
+
+def impact_json(diff: ColumnDiff, report: ImpactReport, graph: Graph) -> ImpactJson:
+    """Build the machine-readable impact diff.
+
+    Deliberately built on the same _gather_impact the comment renderers use: a JSON
+    consumer that disagreed with the PR comment about what broke would be worse than no
+    JSON at all. Fully sorted, like every other renderer here.
+    """
+    _, blocks = _gather_impact(diff, report, graph)
+    nodes_by_id = {node.node_id: node for node in graph.nodes}
+    dashboards_by_card: dict[str, list[str]] = {}
+    for edge in graph.edges:
+        if edge.edge_type is EdgeType.APPEARS_ON:
+            dashboards_by_card.setdefault(edge.from_, []).append(edge.to)
+
+    types = {tc.node_id: tc for tc in diff.type_changed}
+    order = [*sorted(diff.removed), *sorted(types)]
+
+    columns: list[ImpactedColumn] = []
+    for node_id, block in zip(order, blocks, strict=False):
+        change = types.get(node_id)
+        cards = [
+            ImpactedCard(
+                node_id=item.node_id,
+                card_id=int(tail) if (tail := item.node_id.rpartition("::")[2]).isdigit() else None,
+                name=nodes_by_id[item.node_id].name,
+                dashboards=sorted(
+                    nodes_by_id[dash].name
+                    for dash in dashboards_by_card.get(item.node_id, ())
+                    if dash in nodes_by_id
+                ),
+                owner=nodes_by_id[item.node_id].properties.get("creator")
+                or nodes_by_id[item.node_id].owner,
+            )
+            for item in sorted(
+                (
+                    item
+                    for item in report.impacted.get(node_id, [])
+                    if item.node_type is NodeType.MB_CARD and item.node_id in nodes_by_id
+                ),
+                key=_card_sort_key_of,
+            )
+        ]
+        columns.append(
+            ImpactedColumn(
+                node_id=node_id,
+                label=block["label"],
+                change="type_changed" if change else "removed",
+                old_type=change.old_type if change else None,
+                new_type=change.new_type if change else None,
+                models=block["models"],
+                cards=cards,
+                dashboards=sorted({dash for card in cards for dash in card.dashboards})
+                or block["dashboards"],
+            )
+        )
+
+    impacted = {
+        item.node_id: item.node_type for items in report.impacted.values() for item in items
+    }
+    return ImpactJson(
+        removed=sorted(diff.removed),
+        type_changed=sorted(diff.type_changed, key=lambda tc: tc.node_id),
+        added=sorted(diff.added),
+        columns=columns,
+        card_count=sum(1 for node_type in impacted.values() if node_type is NodeType.MB_CARD),
+        dashboard_count=sum(
+            1 for node_type in impacted.values() if node_type is NodeType.MB_DASHBOARD
+        ),
+        max_depth=report.max_depth,
+        truncated=report.truncated,
+    )
+
+
+def _card_sort_key_of(item: ImpactedNode) -> tuple[int, str]:
+    return _card_sort_key(item.node_id)
