@@ -482,3 +482,56 @@ def test_without_an_apply_context_the_repo_cannot_be_written(read_only, repo):
     assert read_only.post("/api/apply/preview").status_code != 200
     assert read_only.post("/api/apply").status_code != 200
     assert (repo / MARTS).read_text() == before
+
+
+# --- write-ability, asked before anything is staged (#132) ------------------------------
+
+# A file that mixes the two list-indentation conventions: `models:` uses a dash indented
+# under its key, `data_tests:` uses one flush with it. ruamel has a single indent setting
+# per dump, so no emitter configuration reproduces both -- this file genuinely cannot be
+# written, and the app has to say so before anything is staged.
+MIXED_INDENT = """version: 2
+
+models:
+  - name: fct_orders
+    columns:
+    - name: order_id
+      data_tests:
+        - unique
+"""
+
+
+def test_writeability_reports_every_model_in_the_manifest(client):
+    body = client.get("/api/writeability").json()
+    assert set(body["models"]) >= {"fct_orders", "dim_customers", "fct_events"}
+    assert body["models"]["fct_orders"] == {
+        "writable": True,
+        "reason": None,
+        "path": MARTS,
+    }
+
+
+def test_writeability_refuses_a_file_that_cannot_round_trip(client, repo):
+    (repo / MARTS).write_text(MIXED_INDENT)
+    body = client.get("/api/writeability").json()
+    entry = body["models"]["fct_orders"]
+    assert entry["writable"] is False
+    assert "round trip" in entry["reason"]
+    # the verdict is per file: a model in another file keeps its affordance
+    assert body["models"]["fct_events"]["writable"] is True
+
+
+def test_writeability_matches_what_apply_would_do(client, repo):
+    """The affordance may never promise a write apply then refuses."""
+    (repo / MARTS).write_text(MIXED_INDENT)
+    offered = client.get("/api/writeability").json()["models"]["fct_orders"]["writable"]
+    client.post("/api/staged-relationships", json=DRAWN)
+    preview = client.post("/api/apply/preview").json()
+    assert offered is False
+    assert preview["files"] == []
+    assert preview["unappliable"], "apply must refuse exactly what writeability withheld"
+
+
+def test_a_read_only_build_has_no_writeability_route(read_only):
+    """No apply context, no promises: the app falls back to offering everything."""
+    assert read_only.get("/api/writeability").status_code == 404

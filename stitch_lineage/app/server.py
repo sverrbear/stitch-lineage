@@ -413,6 +413,32 @@ def create_app(
 
     if apply_context is not None:
 
+        @api.get("/api/writeability")
+        def api_writeability() -> JSONResponse:
+            """Which models a declaration can be written into, asked before staging (#132).
+
+            The app uses this to withhold an affordance rather than take an edit and
+            refuse it at apply time. A model missing from the map is one stitch has no
+            opinion about; the app treats that as writable and lets apply have the
+            final word, which is the behaviour that predates this endpoint.
+            """
+            try:
+                entries = apply_context.writeability()
+            except (StitchArtifactError, StagedStoreError) as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            return JSONResponse(
+                {
+                    "models": {
+                        name: {
+                            "writable": item.writable,
+                            "reason": item.reason,
+                            "path": item.path,
+                        }
+                        for name, item in entries.items()
+                    }
+                }
+            )
+
         @api.post("/api/apply/preview")
         def api_apply_preview() -> JSONResponse:
             return JSONResponse(_preview_payload(_plan_or_error(apply_context)))
