@@ -370,6 +370,53 @@ export function erdForScope(
   }
 }
 
+/**
+ * The neighbourhood of one table: itself, plus every table an edge on the canvas
+ * joins it to (#163).
+ *
+ * "Related" spans every edge kind the canvas DRAWS — declared, staged and suggested —
+ * because the alternative is an edge leaving the focused table for a card that is not
+ * there. A staged relationship is one the reader has just drawn; hiding its far end
+ * would hide the thing they were looking at.
+ */
+export function relatedModelIds(erd: ErdData, modelId: string): Set<string> {
+  const kept = new Set([modelId])
+  for (const pair of [...erd.relationships, ...erd.staged, ...erd.suggested]) {
+    if (pair.fromModelId === modelId) kept.add(pair.toModelId)
+    if (pair.toModelId === modelId) kept.add(pair.fromModelId)
+  }
+  return kept
+}
+
+/**
+ * The same scope narrowed to one table and its direct relations (#163).
+ *
+ * Returns the ErdData the canvas already draws, so focusing is a filter rather than a
+ * second rendering path: the layout, the counts, the legend and the staging flow all
+ * keep working on it unchanged.
+ *
+ * An edge survives when BOTH endpoints do, which keeps two things true at once — no
+ * edge dangles, and a relationship between two neighbours still shows, because a
+ * neighbourhood that hides its own internal joins is a star, not a model.
+ *
+ * Focusing a table this canvas does not hold returns it untouched: the scope changed
+ * under the focus, and collapsing to an empty diagram would read as a bug.
+ */
+export function focusErd(erd: ErdData, modelId: string | null): ErdData {
+  if (!modelId) return erd
+  if (!erd.models.some((model) => model.node.node_id === modelId)) return erd
+  const kept = relatedModelIds(erd, modelId)
+  const inside = (pair: { fromModelId: string; toModelId: string }) =>
+    kept.has(pair.fromModelId) && kept.has(pair.toModelId)
+  return {
+    ...erd,
+    models: erd.models.filter((model) => kept.has(model.node.node_id)),
+    relationships: erd.relationships.filter(inside),
+    staged: erd.staged.filter(inside),
+    suggested: erd.suggested.filter(inside),
+  }
+}
+
 export interface ErdCounts {
   /** Models the scope itself holds — the number the picker offered. */
   models: number

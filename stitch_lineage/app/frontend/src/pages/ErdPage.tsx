@@ -44,6 +44,7 @@ import {
   erdCounts,
   erdCountsLabel,
   erdForScope,
+  focusErd,
   initialScope,
   listScopes,
   relationshipScopeLabel,
@@ -99,6 +100,8 @@ import { erdHref, navigate, nodeHref } from '../router'
 
 const COLLAPSED_LIMIT = 8
 const OPEN_HINT = 'Open details · ⌘/Ctrl-click for lineage'
+const FOCUS_HINT = 'Show only this table and what it joins · click again for the whole scope'
+const UNFOCUS_HINT = 'Back to the whole scope'
 const RELATE_HINT = 'Drag onto another column to declare a relationship'
 
 type ErdFlowNode = Node<
@@ -110,12 +113,16 @@ type ErdFlowNode = Node<
     connectable: boolean
     /** `model::column` keys the hovered relationship joins — lit up in the card. */
     lit: ReadonlySet<string>
+    /** Narrow the canvas to this table and its relations, or widen it again (#163). */
+    onFocus: (id: string) => void
+    /** True on the one table the canvas is currently narrowed to. */
+    focused: boolean
   },
   'erdModel'
 >
 
 function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
-  const { model, expanded, onToggle, connectable, lit } = data
+  const { model, expanded, onToggle, connectable, lit, onFocus, focused } = data
   const pressedAt = useRef<Point | null>(null)
 
   const onPointerDown = (event: PointerEvent) => {
@@ -136,6 +143,36 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
     navigate(erdClickHref(nodeId, event))
   }
 
+  /**
+   * The header's own click narrows the canvas rather than leaving it (#163).
+   *
+   * Clicking a table on a diagram of tables means "this one" — and it used to mean
+   * "leave this diagram", which is the friction the issue is about. ⌘/Ctrl-click still
+   * goes to lineage, and the ↗ below keeps the detail panel one click away, so nothing
+   * that was reachable stopped being reachable.
+   */
+  const focus = (event: MouseEvent) => {
+    const from = pressedAt.current
+    pressedAt.current = null
+    if (!isClickNotDrag(from, { x: event.clientX, y: event.clientY })) return
+    event.stopPropagation()
+    if (event.metaKey || event.ctrlKey) {
+      navigate(erdClickHref(model.node.node_id, event))
+      return
+    }
+    onFocus(model.node.node_id)
+  }
+
+  const focusOnEnter = (event: KeyboardEvent) => {
+    if (event.key !== 'Enter') return
+    event.stopPropagation()
+    if (event.metaKey || event.ctrlKey) {
+      navigate(erdClickHref(model.node.node_id, event))
+      return
+    }
+    onFocus(model.node.node_id)
+  }
+
   const visible = visibleColumns(model, expanded, COLLAPSED_LIMIT)
   const hidden = model.columns.length - visible.length
   const collapsible = model.columns.some((column) => !column.isKey)
@@ -147,14 +184,18 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
   const table = displayTableName(model.node.table)
 
   return (
-    <div className={`erd-node${model.external ? ' external' : ''}`} onPointerDown={onPointerDown}>
+    <div
+      className={`erd-node${model.external ? ' external' : ''}${focused ? ' focused' : ''}`}
+      onPointerDown={onPointerDown}
+    >
       <div
         className="erd-node-title"
-        role="link"
+        role="button"
+        aria-pressed={focused}
         tabIndex={0}
-        title={OPEN_HINT}
-        onClick={open(model.node.node_id)}
-        onKeyDown={openOnEnter(model.node.node_id)}
+        title={focused ? UNFOCUS_HINT : FOCUS_HINT}
+        onClick={focus}
+        onKeyDown={focusOnEnter}
       >
         {/* The header is the NAME's line: `mart_content_feed_impressions_daily` used to
             shove the type tag out of the card, so the tag moved down to the detail line
@@ -165,6 +206,19 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
             {name}
           </span>
           {model.external && <span className="erd-external-tag">other scope</span>}
+          {/* the header click now focuses, so the panel gets its own target rather
+              than losing its one-click route off the canvas (#163) */}
+          <span
+            className="erd-node-open"
+            role="link"
+            tabIndex={0}
+            title={OPEN_HINT}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={open(model.node.node_id)}
+            onKeyDown={openOnEnter(model.node.node_id)}
+          >
+            ↗
+          </span>
         </div>
         <div className="erd-node-schema">
           <span className="erd-node-kind">{NODE_TYPE_NAME[model.node.node_type]}</span>
@@ -321,6 +375,8 @@ export function ErdPage({
   const flow = useRef<ReactFlowInstance<ErdFlowNode, Edge> | null>(null)
   const [manual, setManual] = useState<Record<string, { x: number; y: number }>>({})
   const [layoutStale, setLayoutStale] = useState(false)
+  /** The one table the canvas is narrowed to, or null for the whole scope (#163). */
+  const [focused, setFocused] = useState<string | null>(null)
   const movedCount = Object.keys(manual).length
 
   // Rendered node heights, keyed by table AND expansion state, so the layout
@@ -362,6 +418,22 @@ export function ErdPage({
     if (movedCount > 0) setLayoutStale(true)
     else fitSoon()
   }
+
+  /**
+   * Narrow to a table, or widen again when it is the one already focused (#163).
+   *
+   * Focusing changes which tables exist on the canvas, so the layout is refitted
+   * unconditionally -- unlike `relayout`, hand-dragged positions are not a reason to
+   * leave a five-table neighbourhood scattered across a hundred-table arrangement.
+   * The drags are kept, so widening again puts them back where the reader left them.
+   */
+  const toggleFocus = useCallback((modelId: string) => {
+    setFocused((current) => (current === modelId ? null : modelId))
+    // a relationship picked in the wider view may not be drawn in the narrower one
+    setPicked(null)
+    setHovered(null)
+    fitSoon()
+  }, [])
 
   const refreshStaged = useCallback(async () => {
     try {
@@ -480,10 +552,15 @@ export function ErdPage({
     const shown = new Set(shownSuggestions.map((entry) => entry.id))
     return resolvedSuggestions.drawable.filter((rel) => shown.has(rel.id))
   }, [resolvedSuggestions, shownSuggestions])
-  const erd = useMemo(
+  const scoped = useMemo(
     () => (active ? erdForScope(index, active, resolved.drawable, drawableSuggestions) : null),
     [index, active, resolved, drawableSuggestions],
   )
+  // The whole canvas, or one table's neighbourhood of it (#163). Everything
+  // downstream -- layout, counts, legend, staging -- reads `erd` and cannot tell
+  // the difference, which is the point of doing this as a filter.
+  const erd = useMemo(() => (scoped ? focusErd(scoped, focused) : null), [scoped, focused])
+  const focusedModel = focused ? (index.nodesById.get(focused) ?? null) : null
   // what the header states: the scope's own models, kept apart from the FK
   // targets pulled in from elsewhere, so it agrees with the picker (#120)
   const counts = useMemo(() => (erd ? erdCounts(erd) : null), [erd])
@@ -675,9 +752,11 @@ export function ErdPage({
         onToggle,
         connectable: canStage,
         lit: litColumns,
+        onFocus: toggleFocus,
+        focused: focused === model.node.node_id,
       },
     }))
-  }, [erd, expanded, canStage, positions, manual, litColumns])
+  }, [erd, expanded, canStage, positions, manual, litColumns, focused, toggleFocus])
 
   const edges = useMemo(() => {
     if (!erd) return [] as Edge[]
@@ -789,6 +868,8 @@ export function ErdPage({
     // a relationship picked in the old scope is not on this canvas: put it out
     setPicked(null)
     setHovered(null)
+    // ...and neither is a table focused in it (#163)
+    setFocused(null)
     setExpanded(autoExpandedModels(erd?.models ?? []))
     // ...and the panel filters go back to whatever THIS scope's counts deserve,
     // rather than carrying a choice made about a different set of candidates
@@ -884,13 +965,25 @@ export function ErdPage({
             Suggested ({scopedSuggestions.length})
           </button>
         )}
+        {focusedModel && (
+          <button
+            type="button"
+            className="ghost-button erd-unfocus"
+            onClick={() => toggleFocus(focusedModel.node_id)}
+            title={UNFOCUS_HINT}
+          >
+            Showing {displayName(focusedModel)} + relations — show all
+          </button>
+        )}
         {canStage ? (
           <span className="muted graph-toolbar-hint">
-            drag from a column's edge onto another column to declare a relationship · click for
-            details
+            click a table to see only what it joins · drag from a column's edge onto another
+            column to declare a relationship · ↗ for details
           </span>
         ) : (
-          <span className="muted graph-toolbar-hint">click a table or column for details</span>
+          <span className="muted graph-toolbar-hint">
+            click a table to see only what it joins · ↗ or a column for details
+          </span>
         )}
       </div>
       <div
