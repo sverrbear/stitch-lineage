@@ -92,15 +92,54 @@ export function traceReason(node: GraphNode): TraceReason | null {
 
 export type DefinedAsKind = 'expression' | 'passthrough' | 'star'
 
+/** Where a passthrough chain was actually defined (#162). */
+export type DefinedOriginKind = 'expression' | 'source'
+
+export interface DefinedOrigin {
+  /** `expression` — computed in `model`; `source` — a warehouse column, no SQL. */
+  kind: DefinedOriginKind
+  model: string
+  /** Its name at the origin, which a rename mid-chain makes different from here. */
+  column: string
+  sql: string | null
+  /** Passthrough hops walked to get there; 1 is the immediate upstream. */
+  hops: number
+}
+
 export interface DefinedAs {
   kind: DefinedAsKind
   /** The defining SQL, already truncated for display by the build. */
   sql: string
   /** The upstream column (passthrough) or relation (star), when unambiguous. */
   upstream: string | null
+  /** Set on a passthrough or star whose chain reaches a definition. */
+  origin: DefinedOrigin | null
 }
 
 const KINDS: DefinedAsKind[] = ['expression', 'passthrough', 'star']
+const ORIGIN_KINDS: DefinedOriginKind[] = ['expression', 'source']
+
+/**
+ * `defined_as.origin`, validated. Null when the build could not walk the chain — and
+ * on every graph built before #162, which is why an absent origin falls back to the
+ * local projection rather than blanking the block.
+ */
+function definedOrigin(raw: unknown): DefinedOrigin | null {
+  if (!raw || typeof raw !== 'object') return null
+  const value = raw as Record<string, unknown>
+  const { kind, model, column, hops } = value
+  if (typeof kind !== 'string' || !ORIGIN_KINDS.includes(kind as DefinedOriginKind)) return null
+  if (typeof model !== 'string' || !model) return null
+  if (typeof column !== 'string' || !column) return null
+  if (typeof hops !== 'number' || !Number.isInteger(hops) || hops < 1) return null
+  return {
+    kind: kind as DefinedOriginKind,
+    model,
+    column,
+    sql: typeof value.sql === 'string' && value.sql ? value.sql : null,
+    hops,
+  }
+}
 
 /** `properties.defined_as`, validated. Null when the build could not say. */
 export function definedAs(node: GraphNode): DefinedAs | null {
@@ -114,6 +153,7 @@ export function definedAs(node: GraphNode): DefinedAs | null {
     kind: kind as DefinedAsKind,
     sql: value.sql,
     upstream: typeof value.upstream === 'string' && value.upstream ? value.upstream : null,
+    origin: definedOrigin(value.origin),
   }
 }
 
@@ -154,4 +194,32 @@ export function definedAsSummary(definition: DefinedAs): string {
     return definition.upstream ? `passthrough from ${definition.upstream}` : 'passthrough'
   }
   return 'expression'
+}
+
+/**
+ * "defined in stg_orders · 3 hops upstream" (#162).
+ *
+ * The line that answers the question the summary above it cannot: a passthrough names
+ * its parent, and its parent is usually another passthrough. The hop count is what
+ * says whether the definition is next door or across the project, and it is dropped
+ * at one hop where "1 hop upstream" is just noise next to a named model.
+ */
+export function definedOriginSummary(origin: DefinedOrigin): string {
+  const where =
+    origin.kind === 'source'
+      ? `originates in ${origin.model}.${origin.column}`
+      : `defined in ${origin.model}`
+  return origin.hops > 1 ? `${where} · ${origin.hops} hops upstream` : where
+}
+
+/**
+ * The SQL the 'Defined as' block should show: the origin's expression when the chain
+ * found one, else the column's own projection.
+ *
+ * This is the fix in one line (#162) — for a passthrough, the local projection is a
+ * restatement of the edge the upstream list already shows, and the expression that
+ * actually defines the value lives at the far end of the chain.
+ */
+export function definitionSql(definition: DefinedAs): string {
+  return definition.origin?.sql || definition.sql
 }

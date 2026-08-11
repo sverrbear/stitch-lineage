@@ -45,7 +45,12 @@ import {
   warehouseColumn,
   warehouseRelation,
 } from '../lib/present'
-import { columnDefinition, definedAsSummary } from '../lib/trace'
+import {
+  columnDefinition,
+  definedAsSummary,
+  definedOriginSummary,
+  definitionSql,
+} from '../lib/trace'
 import { lineageHref } from '../router'
 import type { GraphNode } from '../types'
 
@@ -193,6 +198,13 @@ function PanelHeader({
  * follow it — why (#147). Every column answers one of the two, so the panel is
  * never silent about a column it has no upstreams for.
  *
+ * For a passthrough, "how it is built" is two facts, not one: the parent it reads,
+ * and the model the value was actually DEFINED in — which is usually not the parent,
+ * because a parent that is itself a passthrough only restates the same edge (#162).
+ * The origin line carries the second, and the SQL shown is the origin's expression
+ * whenever there is one: this block is titled for the definition, so it shows the
+ * definition rather than the last restatement of it.
+ *
  * Renders nothing for a source column: warehouse-native, no SQL behind it, and
  * "unknown" there would be noise rather than a finding. The expression is also the
  * evidence for the upstream list right below it, which is why it sits above it.
@@ -200,6 +212,7 @@ function PanelHeader({
 function DefinedAsBlock({ node }: { node: GraphNode }) {
   const info = columnDefinition(node)
   if (!info) return null
+  const origin = info.definition?.origin
   return (
     <Section title="Defined as">
       {/* the reason leads: on an untraced column it IS the finding */}
@@ -217,8 +230,11 @@ function DefinedAsBlock({ node }: { node: GraphNode }) {
         <div className={info.reason ? 'defined-as-body is-secondary' : 'defined-as-body'}>
           {/* the summary already names the upstream, so the SQL needs no caption */}
           <p className="defined-as-summary">{definedAsSummary(info.definition)}</p>
+          {origin && (
+            <p className="defined-as-origin">{definedOriginSummary(origin)}</p>
+          )}
           <pre className="defined-as-sql">
-            <code>{info.definition.sql}</code>
+            <code>{definitionSql(info.definition)}</code>
           </pre>
         </div>
       )}
