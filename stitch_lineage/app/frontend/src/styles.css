@@ -1917,11 +1917,15 @@ kbd {
 
 /* ---- apply: the commit screen (#72) ---- */
 
-.apply-modal {
-  width: min(860px, 100%);
+/* Diffs are wide: this modal takes most of the viewport rather than the 520px
+   the generic `.modal` sizes to. The compound selector is load-bearing — `.modal`
+   is declared later in this file, so a bare `.apply-modal` loses on source
+   order and the dialog silently renders at conversation width (#131). */
+.modal.apply-modal {
+  width: min(1200px, 100%);
   display: flex;
   flex-direction: column;
-  max-height: min(84vh, 900px);
+  max-height: min(88vh, 1000px);
 }
 
 .apply-lead {
@@ -1982,7 +1986,10 @@ kbd {
   color: var(--edge-weak);
 }
 
-/* the diff is shown verbatim: a horizontal scroll, never a re-wrap */
+/* the diff is shown verbatim: a horizontal scroll, never a re-wrap. With the
+   wider modal (#131) most lines now fit outright; when one genuinely doesn't,
+   the scrollbar has to be visible rather than a macOS overlay that fades out —
+   otherwise a clipped line reads as truncated content. */
 .diff-body {
   margin: 0;
   padding: 6px 0;
@@ -1990,6 +1997,17 @@ kbd {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11.5px;
   line-height: 1.5;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.diff-body::-webkit-scrollbar {
+  height: 8px;
+}
+
+.diff-body::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
 }
 
 .diff-line {

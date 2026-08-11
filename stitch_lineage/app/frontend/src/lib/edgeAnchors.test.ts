@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { anchorOn, chooseAnchors, type AnchorEnd } from './edgeAnchors'
-import { pathHitsRects, routeEdge, type RoutingRect } from './edgeRouting'
+import { pathHitsRects, polylineMidpoint, routeEdge, type RoutingRect } from './edgeRouting'
 
 const CARD_W = 300
 const CARD_H = 200
@@ -155,6 +155,58 @@ describe('chooseAnchors — the side each end attaches to', () => {
     expect(length(routed)).toBeLessThan(length(fixed) / 2)
     // and the #79 invariant still holds on the new anchors
     expect(pathHitsRects(routed, [source, target])).toEqual([])
+  })
+})
+
+// What the side choice is FOR, now that the drawn edge is one straight segment
+// (#130). Nothing bends around anything any more, so the anchoring is the only
+// thing standing between a relationship and a line drawn out through the back of
+// its own card. These assert on the segment that actually gets drawn.
+describe('chooseAnchors — the straight segment it produces', () => {
+  const segment = (from: AnchorEnd, to: AnchorEnd, obstacles: RoutingRect[] = []) => {
+    const chosen = chooseAnchors(from, to, obstacles)
+    return [chosen.from, chosen.to]
+  }
+
+  it('never draws a relationship through either of its own two cards', () => {
+    // a ring of partners all the way around one card: whichever way the line goes,
+    // it leaves from a border that faces its partner, so it never re-enters either box
+    const source = card('hub', 1000, 1000)
+    for (let i = 0; i < 24; i++) {
+      const angle = (2 * Math.PI * i) / 24
+      const target = card(
+        `dim_${i}`,
+        Math.round(1000 + Math.cos(angle) * 900),
+        Math.round(1000 + Math.sin(angle) * 700),
+      )
+      expect(pathHitsRects(segment(end(source), end(target)), [source, target])).toEqual([])
+    }
+  })
+
+  it('holds even when the two cards nearly touch', () => {
+    // the tight case: a dimension parked right beside its fact, where an anchor on the
+    // wrong border would have almost no room to be wrong in
+    const source = card('a', 0, 0)
+    for (const target of [card('b', 320, 0), card('b', 0, 220), card('b', -320, 30)]) {
+      expect(pathHitsRects(segment(end(source), end(target)), [source, target])).toEqual([])
+    }
+  })
+
+  it('draws exactly two points, whatever is parked in the way', () => {
+    // the Power BI bargain: a card in the corridor no longer buys a detour. It may
+    // still move the anchors, but what is drawn stays one segment.
+    const source = card('a', 0, 0)
+    const target = card('b', 0, 600)
+    const wall = card('wall', 0, 320, CARD_W, 80)
+    expect(segment(end(source), end(target), [wall])).toHaveLength(2)
+  })
+
+  it('puts the ✓ at the middle of the segment, not at a bend', () => {
+    const [from, to] = segment(end(card('a', 0, 0)), end(card('b', 700, 40)))
+    expect(polylineMidpoint([from, to])).toEqual({
+      x: (from.x + to.x) / 2,
+      y: (from.y + to.y) / 2,
+    })
   })
 })
 

@@ -240,6 +240,19 @@ export function simplify(points: readonly Point[]): Point[] {
   return out
 }
 
+/**
+ * The whole ERD relationship, Power BI style: one segment, anchor to anchor (#130).
+ *
+ * There is deliberately nothing between the two points — no corridor, no corner,
+ * no curve. Which BORDER each end leaves from is still chosen per pair (see
+ * lib/edgeAnchors), so a straight line sets off towards the card it is going to;
+ * what it no longer does is bend around whatever is in the way. Cards are kept
+ * out of the way by the layout instead (#129).
+ */
+export function straightPath(from: Point, to: Point): string {
+  return `M ${from.x},${from.y} L ${to.x},${to.y}`
+}
+
 /** An SVG `d` with the corners rounded — a planned path still has to look drawn. */
 export function roundedPath(points: readonly Point[], radius = 8): string {
   const path = simplify(points)
