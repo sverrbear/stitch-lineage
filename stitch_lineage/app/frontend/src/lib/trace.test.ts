@@ -3,6 +3,8 @@ import {
   columnDefinition,
   definedAs,
   definedAsSummary,
+  definedOriginSummary,
+  definitionSql,
   traceReason,
   traceStatus,
 } from './trace'
@@ -76,6 +78,7 @@ describe('definedAs', () => {
       kind: 'passthrough',
       sql: 'o.amount',
       upstream: 'stg_orders.amount',
+      origin: null,
     })
   })
 
@@ -83,12 +86,77 @@ describe('definedAs', () => {
     const defined = definedAs(
       column({ defined_as: { kind: 'expression', sql: 'amount * fx_rate', upstream: null } }),
     )
-    expect(defined).toEqual({ kind: 'expression', sql: 'amount * fx_rate', upstream: null })
+    expect(defined).toEqual({
+      kind: 'expression',
+      sql: 'amount * fx_rate',
+      upstream: null,
+      origin: null,
+    })
   })
 
   it('reads a star with the upstream relation', () => {
     const defined = definedAs(column({ defined_as: { kind: 'star', sql: '*', upstream: 'stg_orders' } }))
-    expect(defined).toEqual({ kind: 'star', sql: '*', upstream: 'stg_orders' })
+    expect(defined).toEqual({ kind: 'star', sql: '*', upstream: 'stg_orders', origin: null })
+  })
+
+  it('reads the origin of a passthrough chain', () => {
+    const defined = definedAs(
+      column({
+        defined_as: {
+          kind: 'passthrough',
+          sql: 'i.amount_usd',
+          upstream: 'int_orders.amount_usd',
+          origin: {
+            kind: 'expression',
+            model: 'stg_orders',
+            column: 'amount_usd',
+            sql: 'amount * fx_rate',
+            hops: 3,
+          },
+        },
+      }),
+    )
+    expect(defined?.origin).toEqual({
+      kind: 'expression',
+      model: 'stg_orders',
+      column: 'amount_usd',
+      sql: 'amount * fx_rate',
+      hops: 3,
+    })
+  })
+
+  it('reads a source origin, which has no SQL behind it', () => {
+    const defined = definedAs(
+      column({
+        defined_as: {
+          kind: 'passthrough',
+          sql: 'user_id',
+          upstream: 'stg_users.user_id',
+          origin: { kind: 'source', model: 'raw_users', column: 'id', sql: null, hops: 2 },
+        },
+      }),
+    )
+    expect(defined?.origin?.kind).toBe('source')
+    expect(defined?.origin?.sql).toBeNull()
+  })
+
+  it('drops an origin it cannot trust without dropping the definition', () => {
+    // a graph from a newer or older stitch must still render its projection
+    const cases = [
+      'stg_orders',
+      { kind: 'guess', model: 'stg_orders', column: 'amount', hops: 1 },
+      { kind: 'expression', model: '', column: 'amount', hops: 1 },
+      { kind: 'expression', model: 'stg_orders', column: 'amount' },
+      { kind: 'expression', model: 'stg_orders', column: 'amount', hops: 0 },
+      { kind: 'expression', model: 'stg_orders', column: 'amount', hops: 1.5 },
+    ]
+    for (const origin of cases) {
+      const defined = definedAs(
+        column({ defined_as: { kind: 'passthrough', sql: 'o.amount', upstream: null, origin } }),
+      )
+      expect(defined?.kind).toBe('passthrough')
+      expect(defined?.origin).toBeNull()
+    }
   })
 
   it('rejects a payload it cannot trust rather than half-rendering it', () => {
@@ -108,7 +176,7 @@ describe('columnDefinition', () => {
       }),
     )
     expect(result).toEqual({
-      definition: { kind: 'expression', sql: 'amount * fx_rate', upstream: null },
+      definition: { kind: 'expression', sql: 'amount * fx_rate', upstream: null, origin: null },
       reason: null,
     })
   })
@@ -152,15 +220,95 @@ describe('columnDefinition', () => {
 describe('definedAsSummary', () => {
   it('names the upstream when there is one, and stays honest when there is not', () => {
     expect(
-      definedAsSummary({ kind: 'passthrough', sql: 'o.amount', upstream: 'stg_orders.amount' }),
+      definedAsSummary({
+        kind: 'passthrough',
+        sql: 'o.amount',
+        upstream: 'stg_orders.amount',
+        origin: null,
+      }),
     ).toBe('passthrough from stg_orders.amount')
-    expect(definedAsSummary({ kind: 'passthrough', sql: 'o.amount', upstream: null })).toBe(
-      'passthrough',
+    expect(
+      definedAsSummary({ kind: 'passthrough', sql: 'o.amount', upstream: null, origin: null }),
+    ).toBe('passthrough')
+    expect(
+      definedAsSummary({ kind: 'star', sql: '*', upstream: 'stg_orders', origin: null }),
+    ).toBe('via star from stg_orders')
+    expect(definedAsSummary({ kind: 'star', sql: '*', upstream: null, origin: null })).toBe(
+      'via star',
     )
-    expect(definedAsSummary({ kind: 'star', sql: '*', upstream: 'stg_orders' })).toBe(
-      'via star from stg_orders',
-    )
-    expect(definedAsSummary({ kind: 'star', sql: '*', upstream: null })).toBe('via star')
-    expect(definedAsSummary({ kind: 'expression', sql: 'a * b', upstream: null })).toBe('expression')
+    expect(
+      definedAsSummary({ kind: 'expression', sql: 'a * b', upstream: null, origin: null }),
+    ).toBe('expression')
+  })
+})
+
+describe('definedOriginSummary', () => {
+  it('names the defining model, with the distance once it is more than one hop', () => {
+    expect(
+      definedOriginSummary({
+        kind: 'expression',
+        model: 'stg_orders',
+        column: 'amount_usd',
+        sql: 'amount * fx_rate',
+        hops: 3,
+      }),
+    ).toBe('defined in stg_orders · 3 hops upstream')
+    // one hop up, the parent is already named on the line above: no count needed
+    expect(
+      definedOriginSummary({
+        kind: 'expression',
+        model: 'stg_orders',
+        column: 'amount_usd',
+        sql: 'amount * fx_rate',
+        hops: 1,
+      }),
+    ).toBe('defined in stg_orders')
+  })
+
+  it('says a source column originates rather than claiming it is defined', () => {
+    expect(
+      definedOriginSummary({
+        kind: 'source',
+        model: 'raw_users',
+        column: 'id',
+        sql: null,
+        hops: 2,
+      }),
+    ).toBe('originates in raw_users.id · 2 hops upstream')
+  })
+})
+
+describe('definitionSql', () => {
+  it('shows the origin expression rather than the passthrough that restates it', () => {
+    // the #162 fix: `i.amount_usd` says nothing the upstream list did not already say
+    expect(
+      definitionSql({
+        kind: 'passthrough',
+        sql: 'i.amount_usd',
+        upstream: 'int_orders.amount_usd',
+        origin: {
+          kind: 'expression',
+          model: 'stg_orders',
+          column: 'amount_usd',
+          sql: 'amount * fx_rate',
+          hops: 3,
+        },
+      }),
+    ).toBe('amount * fx_rate')
+  })
+
+  it('falls back to the projection when the origin carries no SQL of its own', () => {
+    // a source origin, and every graph built before #162
+    expect(
+      definitionSql({
+        kind: 'passthrough',
+        sql: 'id',
+        upstream: 'raw_users.id',
+        origin: { kind: 'source', model: 'raw_users', column: 'id', sql: null, hops: 1 },
+      }),
+    ).toBe('id')
+    expect(
+      definitionSql({ kind: 'expression', sql: 'a * b', upstream: null, origin: null }),
+    ).toBe('a * b')
   })
 })

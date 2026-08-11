@@ -1276,7 +1276,20 @@ def test_defined_as_renamed_passthrough_is_still_a_passthrough():
     )
     result = resolve_dbt(_traced_manifest(upstream, downstream), {})
     defined = _defined_as(result, "model.demo.fct_o", "gross_amount")
-    assert defined == {"kind": "passthrough", "sql": "o.amount", "upstream": "stg_o.amount"}
+    assert defined == {
+        "kind": "passthrough",
+        "sql": "o.amount",
+        "upstream": "stg_o.amount",
+        # the rename does not hide where the value comes from: one hop up is a literal,
+        # so that is already the definition
+        "origin": {
+            "kind": "expression",
+            "model": "stg_o",
+            "column": "amount",
+            "sql": "1",
+            "hops": 1,
+        },
+    }
 
 
 def test_defined_as_star_names_the_upstream_relation():
@@ -1294,7 +1307,19 @@ def test_defined_as_star_names_the_upstream_relation():
     )
     result = resolve_dbt(_traced_manifest(upstream, downstream), {})
     defined = _defined_as(result, "model.demo.dim_u", "user_id")
-    assert defined == {"kind": "star", "sql": "*", "upstream": "stg_u"}
+    assert defined == {
+        "kind": "star",
+        "sql": "*",
+        "upstream": "stg_u",
+        # a star is a hop like any other: the column it expanded to is walkable (#162)
+        "origin": {
+            "kind": "expression",
+            "model": "stg_u",
+            "column": "user_id",
+            "sql": "1",
+            "hops": 1,
+        },
+    }
     assert _trace(result, "model.demo.dim_u", "user_id")["trace_status"] == "traced"
 
 
@@ -1328,6 +1353,194 @@ def test_defined_as_sql_is_truncated_for_display():
     assert defined["kind"] == "expression"
     assert len(defined["sql"]) == 240
     assert defined["sql"].endswith("…")
+
+
+# --- where a passthrough was DEFINED, not last mentioned (#162) -------------
+
+
+def _origin(resolution, uid, column):
+    defined = _defined_as(resolution, uid, column)
+    return defined and defined.get("origin")
+
+
+def _chain_models():
+    """stg_o defines the value; three passthrough hops carry it, renaming at the end.
+
+    The shape #162 is about: every hop's own projection is `x.amount_usd`, so nothing
+    in the chain says where the value comes from except the far end of it.
+    """
+    return (
+        _model(
+            "stg_o",
+            schema="staging",
+            compiled="select amount * fx_rate as amount_usd from analytics.raw.orders",
+            columns={"amount_usd": _column("amount_usd")},
+        ),
+        _model(
+            "int_o",
+            schema="intermediate",
+            compiled="select s.amount_usd from analytics.staging.stg_o s",
+            deps=["model.demo.stg_o"],
+            columns={"amount_usd": _column("amount_usd")},
+        ),
+        _model(
+            "int_o2",
+            schema="intermediate",
+            compiled="select i.amount_usd from analytics.intermediate.int_o i",
+            deps=["model.demo.int_o"],
+            columns={"amount_usd": _column("amount_usd")},
+        ),
+        _model(
+            "fct_o",
+            compiled="select i.amount_usd as revenue from analytics.intermediate.int_o2 i",
+            deps=["model.demo.int_o2"],
+            columns={"revenue": _column("revenue")},
+        ),
+    )
+
+
+def test_origin_walks_a_passthrough_chain_to_the_defining_expression():
+    result = resolve_dbt(_traced_manifest(*_chain_models()), {})
+    # three hops up from fct_o.revenue, through two intermediates and a rename
+    assert _origin(result, "model.demo.fct_o", "revenue") == {
+        "kind": "expression",
+        "model": "stg_o",
+        "column": "amount_usd",
+        "sql": "amount * fx_rate",
+        "hops": 3,
+    }
+
+
+def test_origin_hop_count_is_the_distance_from_each_column():
+    result = resolve_dbt(_traced_manifest(*_chain_models()), {})
+    # the same origin from every point on the chain, each with its own distance
+    assert _origin(result, "model.demo.int_o", "amount_usd")["hops"] == 1
+    assert _origin(result, "model.demo.int_o2", "amount_usd")["hops"] == 2
+    for uid in ("model.demo.int_o", "model.demo.int_o2"):
+        assert _origin(result, uid, "amount_usd")["model"] == "stg_o"
+    # and the definition itself has no origin to point at: it IS the origin
+    assert _origin(result, "model.demo.stg_o", "amount_usd") is None
+
+
+def test_origin_keeps_the_defining_models_own_column_name_through_renames():
+    # renamed at every hop: the origin must name the column as the ORIGIN spells it,
+    # which is the one thing none of the downstream models know
+    definition = _model(
+        "stg_r",
+        schema="staging",
+        compiled="select gross - discount as net_amount from analytics.raw.orders",
+        columns={"net_amount": _column("net_amount")},
+    )
+    middle = _model(
+        "int_r",
+        schema="intermediate",
+        compiled="select s.net_amount as net from analytics.staging.stg_r s",
+        deps=["model.demo.stg_r"],
+        columns={"net": _column("net")},
+    )
+    downstream = _model(
+        "fct_r",
+        compiled="select i.net as revenue_net from analytics.intermediate.int_r i",
+        deps=["model.demo.int_r"],
+        columns={"revenue_net": _column("revenue_net")},
+    )
+    result = resolve_dbt(_traced_manifest(definition, middle, downstream), {})
+    assert _origin(result, "model.demo.fct_r", "revenue_net") == {
+        "kind": "expression",
+        "model": "stg_r",
+        "column": "net_amount",
+        "sql": "gross - discount",
+        "hops": 2,
+    }
+
+
+def test_origin_walks_through_a_star_expansion_hop():
+    # a `select *` in the middle of the chain is a hop like any other
+    definition = _model(
+        "stg_s",
+        schema="staging",
+        compiled="select upper(country) as country_code from analytics.raw.users",
+        columns={"country_code": _column("country_code")},
+    )
+    middle = _model(
+        "int_s",
+        schema="intermediate",
+        compiled="select * from analytics.staging.stg_s",
+        deps=["model.demo.stg_s"],
+        columns={"country_code": _column("country_code")},
+    )
+    downstream = _model(
+        "dim_s",
+        compiled="select i.country_code from analytics.intermediate.int_s i",
+        deps=["model.demo.int_s"],
+        columns={"country_code": _column("country_code")},
+    )
+    result = resolve_dbt(_traced_manifest(definition, middle, downstream), {})
+    assert _origin(result, "model.demo.dim_s", "country_code") == {
+        "kind": "expression",
+        "model": "stg_s",
+        "column": "country_code",
+        "sql": "UPPER(country)",
+        "hops": 2,
+    }
+    # and the star hop itself resolves to the same definition, one hop closer
+    assert _origin(result, "model.demo.int_s", "country_code")["hops"] == 1
+
+
+def test_origin_stops_at_a_source_column(resolution):
+    # dim_users.user_id is a passthrough of stg_users.user_id, which is itself `id`
+    # off a source: the value is never computed anywhere, so the source IS the origin
+    assert _origin(resolution, DIM_USERS, "user_id") == {
+        "kind": "source",
+        "model": "raw_users",
+        "column": "id",
+        "sql": None,
+        "hops": 2,
+    }
+
+
+def test_origin_is_absent_when_a_hop_is_ambiguous():
+    # a union projects one name from two relations, so there is no single column to
+    # walk to -- and a chain that cannot be walked exactly is not reported at all
+    left = _model("stg_l", schema="staging", compiled="select 1 as amount")
+    right = _model("stg_rr", schema="staging", compiled="select 2 as amount")
+    middle = _model(
+        "int_u",
+        schema="intermediate",
+        compiled=(
+            "select amount from analytics.staging.stg_l "
+            "union all select amount from analytics.staging.stg_rr"
+        ),
+        deps=["model.demo.stg_l", "model.demo.stg_rr"],
+        columns={"amount": _column("amount")},
+    )
+    downstream = _model(
+        "fct_u",
+        compiled="select i.amount from analytics.intermediate.int_u i",
+        deps=["model.demo.int_u"],
+        columns={"amount": _column("amount")},
+    )
+    result = resolve_dbt(_traced_manifest(left, right, middle, downstream), {})
+    assert _defined_as(result, "model.demo.fct_u", "amount")["kind"] == "passthrough"
+    assert _origin(result, "model.demo.fct_u", "amount") is None
+
+
+def test_origin_is_absent_when_the_chain_leaves_the_project():
+    # the upstream is not a dbt relation, so there is nothing upstream to walk
+    model = _model(
+        "fct_x",
+        compiled="select o.amount from analytics.raw.not_a_dbt_relation o",
+        columns={"amount": _column("amount")},
+    )
+    result = resolve_dbt(_traced_manifest(model), {})
+    assert _origin(result, "model.demo.fct_x", "amount") is None
+
+
+def test_origin_is_never_claimed_for_a_source_column(resolution):
+    # a source column is a lineage root: it carries no definition at all, origin included
+    for node in resolution.nodes:
+        if node.node_type == NodeType.COLUMN and node.node_id.startswith("source."):
+            assert "defined_as" not in node.properties
 
 
 def test_reason_no_compiled_code():
@@ -1378,6 +1591,8 @@ def test_reason_star_not_expandable():
         "kind": "star",
         "sql": "*",
         "upstream": None,
+        # nothing to expand against means nothing to walk either
+        "origin": None,
     }
 
 
@@ -1409,6 +1624,8 @@ def test_reason_no_upstream_columns():
     # a constant genuinely has nothing upstream -- the definition says so
     assert _defined_as(result, "model.demo.fct_e", "version") == {
         "kind": "expression",
+        # an expression is its own origin
+        "origin": None,
         "sql": "'v1'",
         "upstream": None,
     }
