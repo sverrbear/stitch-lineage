@@ -2513,20 +2513,6 @@ kbd {
   vector-effect: non-scaling-stroke;
 }
 
-/* the `1` / `*` a model view puts at each end of a relationship */
-.erd-markers {
-  position: absolute;
-  width: 0;
-  height: 0;
-  overflow: hidden;
-}
-
-.erd-marker-glyph {
-  fill: var(--edge-strong);
-  font: 650 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-
-.erd-edge.staged ~ .erd-marker-glyph,
 .erd-edge.suggested .react-flow__edge-path {
   opacity: 0.75;
 }

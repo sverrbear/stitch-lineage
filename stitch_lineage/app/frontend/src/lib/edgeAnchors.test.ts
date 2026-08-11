@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { anchorOn, chooseAnchors, markerForSide, type AnchorEnd } from './edgeAnchors'
+import { anchorOn, chooseAnchors, type AnchorEnd } from './edgeAnchors'
 import { pathHitsRects, routeEdge, type RoutingRect } from './edgeRouting'
 
 const CARD_W = 300
@@ -172,19 +172,5 @@ describe('anchorOn', () => {
     const anchor = anchorOn({ rect: card('a', 0, 0, 300, 0), row: 0 }, 'top', { x: 0, y: 500 })
     expect(Number.isFinite(anchor.x)).toBe(true)
     expect(Number.isFinite(anchor.y)).toBe(true)
-  })
-})
-
-describe('markerForSide', () => {
-  it('points a cardinality glyph at the side its end anchors to', () => {
-    // the form React Flow hands the edge component, quotes and all
-    expect(markerForSide("url('#erd-card-one')", 'top')).toBe("url('#erd-card-one-top')")
-    expect(markerForSide("url('#erd-card-many')", 'left')).toBe("url('#erd-card-many-left')")
-    expect(markerForSide('url(#erd-card-one)', 'bottom')).toBe('url(#erd-card-one-bottom)')
-  })
-
-  it('leaves anything else alone', () => {
-    expect(markerForSide(undefined, 'left')).toBeUndefined()
-    expect(markerForSide("url('#something-else')", 'left')).toBe("url('#something-else')")
   })
 })

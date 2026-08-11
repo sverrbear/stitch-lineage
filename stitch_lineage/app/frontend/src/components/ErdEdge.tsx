@@ -5,7 +5,7 @@
 
 import { BaseEdge, Position, useStore, type EdgeProps } from '@xyflow/react'
 import { useMemo } from 'react'
-import { chooseAnchors, markerForSide } from '../lib/edgeAnchors'
+import { chooseAnchors } from '../lib/edgeAnchors'
 import {
   polylineMidpoint,
   roundedPath,
@@ -16,58 +16,6 @@ import {
 
 /** Corner radius of the routed path — enough to read as drawn, not as a diagram. */
 const CORNER_PX = 9
-
-const GLYPHS = [
-  { name: 'many', text: '*' },
-  { name: 'one', text: '1' },
-] as const
-
-/**
- * Where a glyph sits relative to the path end, per side: the reference point moves
- * to the marker border the card is on, which pushes the 14px box outward. A `1` on
- * a card's top edge belongs ABOVE the line's end, not beside it.
- */
-const SIDE_REF: Record<AnchorSide, { refX: number; refY: number }> = {
-  left: { refX: 14, refY: 7 },
-  right: { refX: 0, refY: 7 },
-  top: { refX: 7, refY: 14 },
-  bottom: { refX: 7, refY: 0 },
-}
-
-/**
- * The `1` and `*` glyphs a model view puts on each end of a relationship. Defined
- * once per canvas and referenced by id, so every surface that draws relationships
- * (the ERD, the model page's mini star) renders identical ends. `orient="0"` keeps
- * them upright whatever direction the edge runs, and there is one variant per card
- * side (#100) because an edge may now leave from any of the four — `markerForSide`
- * picks the variant that clears the card this end is anchored to.
- */
-export function ErdMarkers() {
-  return (
-    <svg className="erd-markers" aria-hidden="true" focusable="false">
-      <defs>
-        {GLYPHS.flatMap((glyph) =>
-          (Object.keys(SIDE_REF) as AnchorSide[]).map((side) => (
-            <marker
-              key={`${glyph.name}-${side}`}
-              id={`erd-card-${glyph.name}-${side}`}
-              viewBox="0 0 14 14"
-              markerWidth="14"
-              markerHeight="14"
-              refX={SIDE_REF[side].refX}
-              refY={SIDE_REF[side].refY}
-              orient="0"
-            >
-              <text className="erd-marker-glyph" x="7" y="11" textAnchor="middle">
-                {glyph.text}
-              </text>
-            </marker>
-          )),
-        )}
-      </defs>
-    </svg>
-  )
-}
 
 /**
  * Every card on the canvas, in flow coordinates. Positions are quantised so a
@@ -128,8 +76,6 @@ export function ErdRoutedEdge({
   labelBgStyle,
   labelBgPadding,
   labelBgBorderRadius,
-  markerStart,
-  markerEnd,
   style,
   interactionWidth,
 }: EdgeProps) {
@@ -138,7 +84,7 @@ export function ErdRoutedEdge({
   // this pair of cards (#100), and the router is handed the result. React Flow's own
   // handle positions stay left/right — they are where a relationship is DRAWN from,
   // not where a drawn one has to run.
-  const { points, from, to } = useMemo(() => {
+  const { points } = useMemo(() => {
     const own: RoutingRect[] = []
     const obstacles: RoutingRect[] = []
     let sourceCard: RoutingRect | undefined
@@ -163,11 +109,7 @@ export function ErdRoutedEdge({
             from: { x: sourceX, y: sourceY, side: sideOf(sourcePosition, 'right') },
             to: { x: targetX, y: targetY, side: sideOf(targetPosition, 'left') },
           }
-    return {
-      points: routeEdge(anchors.from, anchors.to, obstacles, { soft: own }),
-      from: anchors.from.side,
-      to: anchors.to.side,
-    }
+    return { points: routeEdge(anchors.from, anchors.to, obstacles, { soft: own }) }
   }, [cards, source, target, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition])
 
   const label_ = polylineMidpoint(points)
@@ -183,8 +125,6 @@ export function ErdRoutedEdge({
       labelBgStyle={labelBgStyle}
       labelBgPadding={labelBgPadding}
       labelBgBorderRadius={labelBgBorderRadius}
-      markerStart={markerForSide(markerStart, from)}
-      markerEnd={markerForSide(markerEnd, to)}
       style={style}
       interactionWidth={interactionWidth}
     />
