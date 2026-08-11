@@ -99,6 +99,17 @@ def _drop_stg_payments_amount_usd(project: Path) -> None:
     _edit_json(project / "target" / "manifest.json", mutate)
 
 
+def _make_manifest_parse_only(project: Path) -> None:
+    """What a parse-only artifact set looks like: models, no compiled SQL on any of them."""
+
+    def mutate(manifest):
+        for node in manifest["nodes"].values():
+            node.pop("compiled_code", None)
+            node.pop("compiled_sql", None)
+
+    _edit_json(project / "target" / "manifest.json", mutate)
+
+
 def _git(project: Path, *args: str) -> None:
     subprocess.run(
         ["git", "-c", "user.email=e2e@example.com", "-c", "user.name=e2e", *args],
@@ -147,6 +158,27 @@ def test_full_build_produces_unbroken_end_to_end_chain(project):
     # every binding in this fixture is a case-only mismatch (warehouse identifier
     # casing), so the line reports itself calmly instead of as a warning
     assert "note: 4/4 column bindings matched on a case-only mismatch" in plain(result.output)
+    # these artifacts are compiled, so the parse-only warning stays out of the way (#97)
+    assert "compiled SQL" not in plain(result.output)
+
+
+def test_a_parse_only_manifest_says_so_instead_of_reporting_zero_traced(project):
+    """#97: the build still succeeds -- it stops implying the SQL was the problem.
+
+    This is the reference deployment's failure verbatim: artifacts that parse, models
+    that bind, and a column lineage of 0 because sqlglot was never handed any SQL.
+    """
+    _make_manifest_parse_only(project)
+    result = _full_build()
+
+    cov = _graph(project).coverage
+    assert (cov.models_compiled, cov.models_uncompiled) == (0, 7)
+    assert cov.columns_traced == 0
+
+    output = plain(result.output)
+    assert "warning: none of the 7 dbt models carry compiled SQL" in output
+    assert "these artifacts are parse-only" in output
+    assert "re-run 'dbt docs generate' without --no-compile" in output
 
 
 def test_build_progress_renders_to_stderr_and_keeps_stdout_clean(project, wide_console):
@@ -664,6 +696,33 @@ def test_doctor_happy_path(project):
     assert result.exit_code == 0, result.output
     assert "v0.53.2" in plain(result.output)
     assert "fail" not in plain(result.output)
+
+
+def test_doctor_diagnoses_a_parse_only_manifest(project, monkeypatch):
+    """#97: artifacts that parse are not artifacts that can be traced -- doctor says which."""
+    _make_manifest_parse_only(project)
+    _full_build()
+    monkeypatch.delenv("STITCH_METABASE_URL")
+    monkeypatch.delenv("STITCH_METABASE_API_KEY")
+
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 1
+    output = plain(result.output)
+    # parsing was never the problem, and the old output stopped here saying "ok"
+    assert "ok dbt artifacts in" in output
+    assert "fail none of the 7 dbt models carry compiled SQL" in output
+    assert "re-run 'dbt docs generate' without --no-compile" in output
+
+
+def test_doctor_confirms_compiled_sql_when_the_artifacts_are_whole(project, monkeypatch):
+    _full_build()
+    monkeypatch.delenv("STITCH_METABASE_URL")
+    monkeypatch.delenv("STITCH_METABASE_API_KEY")
+
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0, result.output
+    # 7 models out of a manifest that also carries seeds and tests
+    assert "ok all 7 dbt models carry compiled SQL" in plain(result.output)
 
 
 def test_doctor_missing_artifacts_fails(tmp_path, monkeypatch):

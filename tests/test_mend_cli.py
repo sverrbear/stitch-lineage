@@ -6,6 +6,10 @@ can reach a real instance.
 """
 
 import json
+import os
+import pty
+import subprocess
+import sys
 from pathlib import Path
 
 import mend_scenario as scenario
@@ -365,6 +369,144 @@ def test_the_slack_notice_is_posted_through_the_webhook_client(tmp_path, monkeyp
     assert posted and posted[0][0] == "https://hooks.example.com/T/B/x"
     assert "stitch mend" in posted[0][1]
     assert "plan notice posted" in plain(result.output)
+
+
+# --------------------------------------------------------------------------------------
+# the loading state (issue #161): visible while you wait, invisible once redirected
+# --------------------------------------------------------------------------------------
+
+# a spinner that leaked into redirected output shows up as one of these: the cursor and
+# repaint codes Rich writes, or the braille frames themselves
+ANSI = "\x1b["
+SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+def _has_spinner_debris(text: str) -> bool:
+    return ANSI in text or any(frame in text for frame in SPINNER_FRAMES)
+
+
+@pytest.mark.parametrize("output_format", ["text", "slack", "github-comment"])
+def test_a_redirected_plan_carries_no_spinner_debris(tmp_path, monkeypatch, output_format):
+    """Nothing here is a terminal, so the progress display must render nothing at all --
+    `--format github-comment` gets piped straight into a PR comment."""
+    monkeypatch.chdir(_project(tmp_path))
+    result = runner.invoke(app, ["mend", "--plan", "--use-cache", "--format", output_format])
+    assert result.exit_code == 0, result.output
+    assert "stitch mend" in result.stdout
+    assert not _has_spinner_debris(result.stdout)
+    assert not _has_spinner_debris(result.stderr)
+
+
+def test_a_redirected_apply_carries_no_spinner_debris(tmp_path, monkeypatch, fake_client):
+    project = _project(tmp_path)
+    write_plan(plan_of(strip_card()), plan_path(project / ".stitch"))
+    monkeypatch.chdir(project)
+    result = runner.invoke(app, ["mend", "--apply"])
+    assert result.exit_code == 0, result.output
+    assert "APPLIED (1)" in result.stdout
+    assert not _has_spinner_debris(result.stdout)
+    assert not _has_spinner_debris(result.stderr)
+
+
+def _with_tty_stderr(code: str, cwd: Path) -> tuple[str, str]:
+    """Run `code` in a child with stderr on a pty and stdout on a pipe, returning both.
+
+    That pairing -- an interactive terminal, output redirected to a file -- is the case
+    CliRunner cannot reach, because nothing it hands the process is a terminal, and it is
+    the only case where a live display can eat the redirected payload.
+    """
+    master, slave = pty.openpty()
+    process = subprocess.Popen(
+        [sys.executable, "-c", code],
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=slave,
+        env={**os.environ, "TERM": "xterm-256color", "COLUMNS": "80"},
+    )
+    os.close(slave)
+    chunks: list[bytes] = []
+    while True:
+        try:
+            data = os.read(master, 4096)
+        except OSError:  # the child exited and closed the last slave fd
+            break
+        if not data:
+            break
+        chunks.append(data)
+    os.close(master)
+    stdout, _ = process.communicate(timeout=120)
+    stderr = b"".join(chunks).decode(errors="replace")
+    assert process.returncode == 0, stderr
+    return stdout.decode(), stderr
+
+
+needs_pty = pytest.mark.skipif(
+    os.name != "posix", reason="needs a pty to fake an interactive terminal"
+)
+
+# what `mend --apply` does per card: write payload to stdout from inside a live stage
+_ECHO_FROM_A_LIVE_STAGE = """
+from stitch_lineage.cli import _live_progress, _paused_echo
+
+with _live_progress() as progress:
+    progress.add_task("applying cards", total=2)
+    echo = _paused_echo(progress)
+    echo("PAYLOAD LINE ONE")
+    echo("PAYLOAD LINE TWO")
+"""
+
+
+@needs_pty
+def test_stdout_written_during_a_live_stage_survives_being_redirected(tmp_path):
+    """The regression that would make `mend --apply > log.txt` come out empty.
+
+    _paused_echo tears the display down around each write, so the diffs reach stdout the
+    way they always did -- clean in the file, and not stamped over the spinner on screen.
+    """
+    stdout, stderr = _with_tty_stderr(_ECHO_FROM_A_LIVE_STAGE, tmp_path)
+    assert stdout == "PAYLOAD LINE ONE\nPAYLOAD LINE TWO\n"
+    assert not _has_spinner_debris(stdout)
+    # the terminal is where the waiting is shown, and this one really is a terminal
+    assert _has_spinner_debris(stderr)
+
+
+# no _paused_echo: what happens to a plain stdout write that forgets to pause the display
+_UNPAUSED_STDOUT_WRITE = """
+from stitch_lineage.cli import _live_progress
+
+with _live_progress() as progress:
+    progress.add_task("applying cards", total=1)
+    print("PAYLOAD LINE ONE")
+"""
+
+
+@needs_pty
+def test_a_live_stage_never_swallows_stdout_even_when_nobody_pauses_it(tmp_path):
+    """Why _stage_progress turns Rich's redirect_stdout off.
+
+    Left at its default, Rich replaces sys.stdout for the whole live region whenever its
+    own console is a terminal -- so on a tty with stdout piped, this write would be
+    rerouted to the terminal and the redirect would receive nothing at all. Losing
+    payload silently is far worse than a spinner someone forgot to pause, so the
+    redirection is off and the worst case is cosmetic.
+    """
+    stdout, _stderr = _with_tty_stderr(_UNPAUSED_STDOUT_WRITE, tmp_path)
+    assert "PAYLOAD LINE ONE" in stdout
+
+
+@needs_pty
+def test_the_plan_still_reaches_a_redirected_stdout_while_the_terminal_shows_progress(tmp_path):
+    """`stitch mend --plan > plan.txt` from a terminal: the file gets the whole plan, and
+    the progress display stays behind on stderr where it cannot corrupt it."""
+    code = "from stitch_lineage.cli import app; app()"
+    stdout, stderr = _with_tty_stderr(
+        f"import sys; sys.argv[1:] = ['mend', '--plan', '--use-cache']; {code}",
+        _project(tmp_path),
+    )
+    assert "stitch mend" in stdout
+    assert "fct_orders.promo_code" in stdout
+    assert not _has_spinner_debris(stdout)
+    assert _has_spinner_debris(stderr)
 
 
 # --------------------------------------------------------------------------------------

@@ -68,6 +68,34 @@ TRACE_REASON_LABELS: dict[str, str] = {
 }
 
 
+class DefinedOrigin(BaseModel):
+    """Where a passthrough column was actually DEFINED, `hops` models upstream (#162).
+
+    A passthrough's own projection only restates the edge the upstream list already
+    shows -- `revenue` is `i.amount_usd` is `s.amount_usd` is ... -- so on its own it
+    answers "where was this last mentioned", not "where was this defined". This is the
+    answer to the second question: the walk up the passthrough chain, stopping where
+    the column stops being a passthrough.
+
+    kind is what ended the walk:
+      expression -- a computed projection in `model`; `sql` is that expression
+      source     -- a source column, i.e. the warehouse root; `sql` is None
+
+    Those two are the only definitive ends, so they are the only ones recorded: a walk
+    that dies on an ambiguous or untraced hop yields no origin at all, because "as far
+    as this build could get" would read in the panel as a definition without being one.
+    """
+
+    kind: str
+    """The model or source the column is defined in, in dbt's spelling."""
+    model: str
+    """Its name there, which a rename mid-chain makes different from the caller's."""
+    column: str
+    sql: str | None = None
+    """Passthrough hops walked to get here; 1 means the immediate upstream."""
+    hops: int
+
+
 class DefinedAs(BaseModel):
     """How a model column is defined, read off its projection in the compiled SQL.
 
@@ -79,11 +107,16 @@ class DefinedAs(BaseModel):
     `upstream` is set only when it is unambiguous (exactly one upstream column for a
     passthrough, exactly one upstream relation for a star) -- a guess here would read
     as a fact. sql is truncated for display; see _DEFINED_AS_SQL_LIMIT.
+
+    `origin` is set on a passthrough or star whose chain ends somewhere definitive --
+    the column's actual definition, which is the whole point of the block (#162). An
+    expression is its own origin and carries none.
     """
 
     kind: str
     sql: str
     upstream: str | None = None
+    origin: DefinedOrigin | None = None
 
 
 class ColumnTrace(BaseModel):
@@ -93,10 +126,17 @@ class ColumnTrace(BaseModel):
     whenever the compiled SQL says how the column is built. Either can be None:
     an unparseable model has a reason and no definition, and a column can be
     traced (definition known) with no reason at all.
+
+    upstream_ref is scaffolding rather than output: the (unique_id, column) a
+    passthrough or star reads, which is what makes the chain walkable once every
+    model's own trace exists. It is never written onto a node -- only `defined_as`
+    and `reason` are (see _column_nodes) -- because the app wants the end of the
+    walk, not the links.
     """
 
     defined_as: DefinedAs | None = None
     reason: TraceReason | None = None
+    upstream_ref: tuple[str, str] | None = None
 
 
 class DbtResolution(BaseModel):
@@ -120,6 +160,12 @@ class DbtResolution(BaseModel):
     columns_total: int = 0
     columns_inferred: int = 0
     seed_snapshot_dependencies: int = 0
+    # the sqlglot pass's input, split so the build can say which it had: a model with no
+    # compiled SQL in the manifest is untraceable before any parsing happens, and a whole
+    # manifest of them reports as `0/2385 columns traced` -- indistinguishable from SQL
+    # stitch failed to parse unless the counts are carried out (#97).
+    models_compiled: int = 0
+    models_uncompiled: int = 0
     untraced_columns: list[str] = Field(default_factory=list)
     dangling_relationships: list[str] = Field(default_factory=list)
 
@@ -248,6 +294,7 @@ def resolve_dbt(
     }
     inferred_targets = {edge.to for edge in feeds if edge.confidence == Confidence.INFERRED}
     traced = model_column_ids & fed
+    models_compiled, models_uncompiled = compiled_model_counts(manifest)
 
     # candidates for columns the artifacts could not type -- the waterfall decides
     inferred_types = {
@@ -265,9 +312,36 @@ def resolve_dbt(
         columns_total=len(model_column_ids),
         columns_inferred=len(model_column_ids & inferred_targets),
         seed_snapshot_dependencies=seed_snapshot_deps,
+        models_compiled=models_compiled,
+        models_uncompiled=models_uncompiled,
         untraced_columns=sorted(model_column_ids - fed),
         dangling_relationships=dangling,
     )
+
+
+def _compiled_sql(model: dict[str, Any]) -> str:
+    """A model's compiled SQL, or "" when the manifest carries none.
+
+    dbt writes `compiled_code`; manifests from older schema versions wrote `compiled_sql`.
+    Blank and absent are the same state -- there is nothing to trace either way.
+    """
+    return (model.get("compiled_code") or model.get("compiled_sql") or "").strip()
+
+
+def compiled_model_counts(manifest: dict[str, Any]) -> tuple[int, int]:
+    """(models with compiled SQL, models without) for a parsed manifest.
+
+    `stitch doctor` asks the manifest the question the resolver already answers during a
+    build, so the diagnosis and the build's warning cannot drift apart (#97). Pure: reads
+    the same dict resolve_dbt does, runs no sqlglot.
+    """
+    models = [
+        node
+        for node in (manifest.get("nodes") or {}).values()
+        if isinstance(node, dict) and node.get("resource_type") == "model"
+    ]
+    compiled = sum(1 for model in models if _compiled_sql(model))
+    return compiled, len(models) - compiled
 
 
 def _merged_meta(entity: dict[str, Any]) -> dict[str, Any]:
@@ -604,8 +678,7 @@ def _column_specs(
     inferred_by_uid: dict[str, dict[str, str]] = {}
     for uid in _model_order(models):
         model = models[uid]
-        compiled = model.get("compiled_code") or model.get("compiled_sql") or ""
-        projection = _projected_columns(compiled, schema_mapping, infer_types)
+        projection = _projected_columns(_compiled_sql(model), schema_mapping, infer_types)
         if projection is None:
             specs[uid] = catalog_specs.get(uid, {})
             continue
@@ -729,7 +802,8 @@ def _column_nodes(
     of every column either how it is defined or why stitch could not tell (#147/#148):
       trace_status  -- "traced" / "untraced", i.e. whether a feeds edge reached it
       trace_reason  -- the TraceReason, on untraced columns only
-      defined_as    -- the defining projection {kind, sql, upstream}, when known
+      defined_as    -- the defining projection {kind, sql, upstream, origin}, when
+                       known; `origin` is where a passthrough chain was defined (#162)
     Model columns only. A source column is a lineage root -- warehouse-native, no SQL
     behind it -- so all three stay absent rather than claiming it failed to trace.
     Absence means "does not apply / not known", never "no": the same rule the two
@@ -1018,6 +1092,20 @@ def _entity_name(uid: str, models: dict[str, Any], sources: dict[str, Any]) -> s
     return str((models.get(uid) or sources.get(uid) or {}).get("name") or uid)
 
 
+def _column_display_name(
+    uid: str,
+    leaf_column: str,
+    column_specs: dict[str, dict[str, dict[str, Any]]],
+) -> str:
+    """A leaf column in the dbt spelling, never the parser's.
+
+    sqlglot hands back dialect-normalized leaf names (SCREAMING_CASE on Snowflake),
+    which is not how anyone refers to the column; the upstream's own resolved spec is.
+    """
+    spec = column_specs.get(uid, {}).get(leaf_column.lower())
+    return spec["name"] if spec else leaf_column.lower()
+
+
 def _upstream_column_label(
     uid: str,
     leaf_column: str,
@@ -1025,13 +1113,8 @@ def _upstream_column_label(
     sources: dict[str, Any],
     column_specs: dict[str, dict[str, dict[str, Any]]],
 ) -> str:
-    """`stg_orders.order_id` -- the dbt spelling on both sides, never the parser's.
-
-    sqlglot hands back dialect-normalized leaf names (SCREAMING_CASE on Snowflake),
-    which is not how anyone refers to the column; the upstream's own resolved spec is.
-    """
-    spec = column_specs.get(uid, {}).get(leaf_column.lower())
-    name = spec["name"] if spec else leaf_column.lower()
+    """`stg_orders.order_id` -- the dbt spelling on both sides."""
+    name = _column_display_name(uid, leaf_column, column_specs)
     return f"{_entity_name(uid, models, sources)}.{name}"
 
 
@@ -1044,35 +1127,126 @@ def _defined_as(
     models: dict[str, Any],
     sources: dict[str, Any],
     column_specs: dict[str, dict[str, dict[str, Any]]],
-) -> DefinedAs | None:
-    """The column's defining projection, or None when the SQL does not name it.
+) -> tuple[DefinedAs | None, tuple[str, str] | None]:
+    """(the column's defining projection, the single upstream column it reads).
 
-    None means "this build cannot say", never "nothing" -- a column documented in
-    schema.yml but absent from the projection has no definition to show, and saying
-    so is the point of #148's shared surface with the untraced reason.
+    The definition is None when the SQL does not name the column: "this build cannot
+    say", never "nothing" -- a column documented in schema.yml but absent from the
+    projection has no definition to show, and saying so is the point of #148's shared
+    surface with the untraced reason.
+
+    The second element is the chain link for #162's origin walk, set only when the
+    projection reads exactly one upstream column -- which is what makes a hop
+    unambiguous, for a star the same way as for a named passthrough.
     """
+    distinct = list(dict.fromkeys(leaves))
+    ref = distinct[0] if len(distinct) == 1 else None
     projection = projections.get(lower)
     if projection is None:
         if not has_star:
-            return None
+            return None, None
         upstreams = list(dict.fromkeys(uid for uid, _ in leaves))
-        return DefinedAs(
-            kind="star",
-            sql=star_sql,
-            upstream=_entity_name(upstreams[0], models, sources) if len(upstreams) == 1 else None,
+        # Deliberately not name-matching a multi-leaf star against its single upstream
+        # relation: `select *` does carry columns through by name, but that link is an
+        # inference (_star_fallback_edges grades its own name matches INFERRED) and the
+        # origin is stated in the panel as a fact. Measured on the Smitten project it
+        # would have added 56 links and resolved 0 further origins -- all cost, no
+        # answer. Every hop the walk follows is one sqlglot resolved.
+        return (
+            DefinedAs(
+                kind="star",
+                sql=star_sql,
+                upstream=_entity_name(upstreams[0], models, sources)
+                if len(upstreams) == 1
+                else None,
+            ),
+            ref,
         )
     inner = projection.unalias() if isinstance(projection, exp.Alias) else projection
     if isinstance(inner, exp.Column) and not isinstance(inner.this, exp.Star):
-        distinct = list(dict.fromkeys(leaves))
         upstream = (
-            _upstream_column_label(*distinct[0], models, sources, column_specs)
-            if len(distinct) == 1
-            else None
+            _upstream_column_label(*distinct[0], models, sources, column_specs) if ref else None
         )
-        return DefinedAs(
-            kind="passthrough", sql=_truncate_sql(inner.sql(dialect=_DIALECT)), upstream=upstream
+        return (
+            DefinedAs(
+                kind="passthrough",
+                sql=_truncate_sql(inner.sql(dialect=_DIALECT)),
+                upstream=upstream,
+            ),
+            ref,
         )
-    return DefinedAs(kind="expression", sql=_truncate_sql(inner.sql(dialect=_DIALECT)))
+    # an expression is its own origin, so it needs no link even when it reads one column
+    return DefinedAs(kind="expression", sql=_truncate_sql(inner.sql(dialect=_DIALECT))), None
+
+
+def _column_origin(
+    start: str,
+    traces: dict[str, ColumnTrace],
+    models: dict[str, Any],
+    sources: dict[str, Any],
+    column_specs: dict[str, dict[str, dict[str, Any]]],
+) -> DefinedOrigin | None:
+    """Walk `start`'s passthrough chain to where the column was defined (#162).
+
+    Every hop is a single unambiguous upstream column (ColumnTrace.upstream_ref), so
+    the walk is exact rather than a name match. It ends on the first hop that is not
+    itself a passthrough: a computed expression, or a source column, which is a
+    lineage root and as far upstream as anything goes.
+
+    Returns None when the chain dies instead of ending -- an ambiguous hop, an
+    upstream this build never traced, a passthrough of a column no longer in the
+    graph. Reporting the last reachable hop there would put a model name next to the
+    word "defined" without having established that anything is defined in it.
+    """
+    ref = traces[start].upstream_ref
+    seen = {start}
+    hops = 0
+    while ref is not None:
+        uid, leaf = ref
+        node_id = column_node_id(uid, leaf)
+        # a dbt DAG is acyclic, so this is a guard against our own bookkeeping
+        if node_id in seen:
+            return None
+        seen.add(node_id)
+        hops += 1
+        if uid in sources:
+            return DefinedOrigin(
+                kind="source",
+                model=_entity_name(uid, models, sources),
+                column=_column_display_name(uid, leaf, column_specs),
+                hops=hops,
+            )
+        upstream = traces.get(node_id)
+        if upstream is None or upstream.defined_as is None:
+            return None
+        if upstream.defined_as.kind == "expression":
+            return DefinedOrigin(
+                kind="expression",
+                model=_entity_name(uid, models, sources),
+                column=_column_display_name(uid, leaf, column_specs),
+                sql=upstream.defined_as.sql,
+                hops=hops,
+            )
+        ref = upstream.upstream_ref
+    return None
+
+
+def _resolve_origins(
+    traces: dict[str, ColumnTrace],
+    models: dict[str, Any],
+    sources: dict[str, Any],
+    column_specs: dict[str, dict[str, dict[str, Any]]],
+) -> None:
+    """Fill in every passthrough's origin, in place.
+
+    A second pass rather than part of the per-model one: a chain runs downstream to
+    upstream in no particular model order, so the links only all exist once every
+    model has been walked.
+    """
+    for node_id, trace in traces.items():
+        if trace.upstream_ref is None or trace.defined_as is None:
+            continue
+        trace.defined_as.origin = _column_origin(node_id, traces, models, sources, column_specs)
 
 
 def _feeds_edges(
@@ -1110,6 +1284,7 @@ def _feeds_edges(
         traces.update(model_traces)
         if on_progress is not None:
             on_progress(done, len(model_ids))
+    _resolve_origins(traces, models, sources, column_specs)
     return edges, traces
 
 
@@ -1132,8 +1307,8 @@ def _model_feeds_edges(
             for spec in real_specs.values()
         }
 
-    compiled = model.get("compiled_code") or model.get("compiled_sql") or ""
-    if not compiled.strip():
+    compiled = _compiled_sql(model)
+    if not compiled:
         return [], all_untraced(TraceReason.NO_COMPILED_CODE)
     try:
         parsed = sqlglot.parse_one(compiled, dialect=_DIALECT)
@@ -1170,7 +1345,7 @@ def _model_feeds_edges(
             traces[target_id] = ColumnTrace(
                 defined_as=_defined_as(
                     lower, projections, star_sql, has_star, [], models, sources, column_specs
-                ),
+                )[0],
                 reason=None
                 if fallback
                 else (
@@ -1185,7 +1360,7 @@ def _model_feeds_edges(
             )
             continue
         leaves = _leaf_columns(root, relation_map)
-        defined_as = _defined_as(
+        defined_as, upstream_ref = _defined_as(
             lower, projections, star_sql, has_star, leaves, models, sources, column_specs
         )
         if not leaves:
@@ -1194,7 +1369,7 @@ def _model_feeds_edges(
                 reason=_no_leaf_reason(root, relation_map, foreign_relations),
             )
             continue
-        traces[target_id] = ColumnTrace(defined_as=defined_as)
+        traces[target_id] = ColumnTrace(defined_as=defined_as, upstream_ref=upstream_ref)
         confidence = Confidence.EXACT if _is_plain_projection(root) else Confidence.PARSED
         evidence = {
             "source": "sqlglot.lineage",

@@ -5,7 +5,7 @@ import json
 import subprocess
 import threading
 import webbrowser
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, NoReturn
@@ -89,7 +89,7 @@ from stitch_lineage.mend.plan import build_plan as build_mend_plan
 from stitch_lineage.mend.render import format_plan, format_summary_slack, format_summary_text
 from stitch_lineage.payloads import MetabasePayload
 from stitch_lineage.resolve.bind import bind
-from stitch_lineage.resolve.dbt import TRACE_REASON_LABELS, resolve_dbt
+from stitch_lineage.resolve.dbt import TRACE_REASON_LABELS, compiled_model_counts, resolve_dbt
 from stitch_lineage.resolve.metabase import resolve_metabase
 from stitch_lineage.resolve.types import TypeWaterfallResult, apply_type_waterfall
 from stitch_lineage.write.yaml_writer import WritePlan
@@ -111,8 +111,11 @@ ConfigOpt = Annotated[
 _MB_NODE_TYPES = (NodeType.MB_FIELD, NodeType.MB_CARD, NodeType.MB_DASHBOARD)
 _MB_EDGE_TYPES = (EdgeType.CONSUMED_BY, EdgeType.APPEARS_ON)
 
+# where a helper sends its running commentary: plain stderr, or the live display's console
+Note = Callable[[str], None]
 
-# the live build progress, so anything printing to `console` can tear it down first
+
+# the live stage progress, so anything printing to `console` can tear it down first
 _active_progress: Progress | None = None
 
 
@@ -266,9 +269,19 @@ def _metabase_client(cfg: StitchConfig, cache_dir: Path | None = None) -> Metaba
     )
 
 
-def _build_progress() -> Progress:
-    """Build-stage progress. Renders to stderr so stdout stays clean for piping;
-    transient so nothing lingers after the summary prints."""
+def _stage_progress() -> Progress:
+    """Per-stage progress for the long commands. Renders to stderr so stdout stays clean
+    for piping; transient so nothing lingers after the summary prints.
+
+    A non-terminal stderr renders nothing at all (Rich skips a transient live display it
+    cannot repaint), which is what keeps redirected runs free of spinner debris.
+
+    redirect_stdout is off deliberately. Rich's default hijacks `sys.stdout` for the whole
+    live region whenever its own console is a terminal -- so with stderr on a tty and stdout
+    piped (`stitch mend --apply > log.txt`), everything written to stdout would be rerouted
+    to the terminal and the file would come out empty. Anything that must reach stdout while
+    a stage is live goes through _paused_echo() instead.
+    """
     return Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
@@ -277,20 +290,53 @@ def _build_progress() -> Progress:
         TimeElapsedColumn(),
         console=Console(stderr=True),
         transient=True,
+        redirect_stdout=False,
     )
 
 
 @contextlib.contextmanager
-def _live_build_progress() -> Iterator[Progress]:
-    """Run the build progress while registering it for _stop_active_progress()."""
+def _live_progress() -> Iterator[Progress]:
+    """Run a stage progress display while registering it for _stop_active_progress()."""
     global _active_progress
-    progress = _build_progress()
+    progress = _stage_progress()
     _active_progress = progress
     try:
         with progress:
             yield progress
     finally:
         _active_progress = None
+
+
+def _stderr_note(line: str) -> None:
+    """Commentary on stderr -- where it goes whenever no live stage is running."""
+    err_console.print(line, soft_wrap=True)
+
+
+def _progress_note(progress: Progress) -> Note:
+    """The same commentary, routed through the live display's own console so Rich repaints
+    the spinner around it instead of letting the two land on the same line."""
+
+    def note(line: str) -> None:
+        progress.console.print(line, soft_wrap=True)
+
+    return note
+
+
+def _paused_echo(progress: Progress) -> Callable[[str], None]:
+    """Print to stdout from inside a live stage without the two garbling each other.
+
+    Commentary belongs on the progress console (same stream, cleanly interleaved), but
+    `mend --apply`'s diffs are stdout payload and have to stay there. Tearing the live
+    region down around each write -- the same move _stop_active_progress() makes before an
+    error -- keeps `mend --apply > log.txt` byte-for-byte what it was before the spinner.
+    """
+
+    def echo(line: str) -> None:
+        progress.stop()
+        typer.echo(line)
+        progress.start()
+
+    return echo
 
 
 def _version_callback(value: bool) -> None:
@@ -333,6 +379,27 @@ def _print_type_sources(result: TypeWaterfallResult) -> None:
     if result.unknown:
         sources.append(f"{result.unknown} unknown")
     console.print(f"{'column types':<20} {typed}/{total} typed   ({', '.join(sources)})")
+
+
+def _uncompiled_models_warning(compiled: int, uncompiled: int) -> str | None:
+    """The one sentence `build` and `doctor` both say about parse-only artifacts (#97).
+
+    None when every model carries compiled SQL, which is the ordinary case and needs no
+    line. Otherwise it names the count and the fix, because the coverage row alone
+    reports this as `0/2385 columns traced` -- reading as a claim about SQL stitch could
+    not parse, when nothing was ever handed to the parser.
+    """
+    total = compiled + uncompiled
+    if not uncompiled or not total:
+        return None
+    scope = (
+        f"none of the {total} dbt models carry compiled SQL: these artifacts are "
+        "parse-only, so nothing could be traced"
+        if uncompiled == total
+        else f"{uncompiled} of {total} dbt models carry no compiled SQL, "
+        "so their columns could not be traced"
+    )
+    return f"{scope} -- re-run 'dbt docs generate' without --no-compile"
 
 
 def _print_coverage(
@@ -380,6 +447,11 @@ def _print_coverage(
         "dbt column lineage",
         f"{coverage.columns_traced}/{coverage.columns_total} columns traced{suffix}",
     )
+    uncompiled_warning = _uncompiled_models_warning(
+        coverage.models_compiled, coverage.models_uncompiled
+    )
+    if uncompiled_warning:
+        console.print(f"warning: {uncompiled_warning}", soft_wrap=True)
     if coverage.seed_snapshot_dependencies:
         console.print(
             f"note: {coverage.seed_snapshot_dependencies} seed/snapshot dependencies "
@@ -479,7 +551,7 @@ def _run_build(
             _fail(str(exc))
 
     dbt_only_note: str | None = None
-    with _live_build_progress() as progress:
+    with _live_progress() as progress:
         load_task = progress.add_task("loading artifacts", total=1)
         try:
             manifest = load_manifest(target_path)
@@ -509,6 +581,8 @@ def _run_build(
             "untraced_columns": dbt_res.untraced_columns,
             "dangling_relationships": dbt_res.dangling_relationships,
             "seed_snapshot_dependencies": dbt_res.seed_snapshot_dependencies,
+            "models_compiled": dbt_res.models_compiled,
+            "models_uncompiled": dbt_res.models_uncompiled,
         }
         metabase_version: str | None = None
         metabase_side = True
@@ -706,7 +780,7 @@ def _store_history_snapshot(
     return f"history: stored baseline for {entry.short_sha} ({kept}/{retention} kept)"
 
 
-def _history_baseline(base: str, graph_path: Path) -> Graph | None:
+def _history_baseline(base: str, graph_path: Path, *, note: Note = _stderr_note) -> Graph | None:
     """The stored snapshot for `base`, if this repo has one. None -> use the committed baseline.
 
     A snapshot that does not decompress is treated as absent: it is a cache, and falling
@@ -719,14 +793,14 @@ def _history_baseline(base: str, graph_path: Path) -> Graph | None:
         graph = load_snapshot(history_dir(graph_path.parent), hit.sha)
     except (ValueError, OSError):
         return None
-    err_console.print(hit.provenance, soft_wrap=True)
+    note(hit.provenance)
     return graph
 
 
-def _baseline_graph(base: str, graph_path: Path) -> Graph:
+def _baseline_graph(base: str, graph_path: Path, *, note: Note = _stderr_note) -> Graph:
     """The baseline for `--base <ref>`: the local SHA-keyed history first (issue #87),
     then the graph.json committed on that ref."""
-    local = _history_baseline(base, graph_path)
+    local = _history_baseline(base, graph_path, note=note)
     if local is not None:
         return local
     ref_path = graph_path.as_posix()
@@ -751,6 +825,7 @@ def _baseline_graph(base: str, graph_path: Path) -> Graph:
         # "path missing at ref" gets an actionable message; bad refs / not-a-repo
         # keep the raw git stderr, which already names the real problem.
         if "exists on disk, but not in" in stderr or "does not exist in" in stderr:
+            _stop_active_progress()
             console.print(f"[red]error:[/red] no committed baseline at {base}:{ref_path}")
             console.print(
                 "  --base diffs the current build against the graph committed on that ref.",
@@ -769,11 +844,13 @@ def _baseline_graph(base: str, graph_path: Path) -> Graph:
             )
             raise typer.Exit(code=1)
         _fail(f"could not load the baseline via 'git show {base}:{ref_path}' -- {stderr}")
-    err_console.print(f"baseline: graph.json committed at {base}:{ref_path}", soft_wrap=True)
+    note(f"baseline: graph.json committed at {base}:{ref_path}")
     return Graph.model_validate_json(result.stdout)
 
 
-def _impact_baseline(base: str | None, base_file: Path | None, graph_path: Path) -> Graph:
+def _impact_baseline(
+    base: str | None, base_file: Path | None, graph_path: Path, *, note: Note = _stderr_note
+) -> Graph:
     """--base-file, then --base <git ref>, then the previous build's snapshot.
 
     The two local stores answer different questions and neither can stand in for the
@@ -792,13 +869,14 @@ def _impact_baseline(base: str | None, base_file: Path | None, graph_path: Path)
             graph = read_graph(base_file)
         except ValueError as exc:
             _fail(f"{base_file} is not a stitch graph -- {exc}")
-        err_console.print(f"baseline: {base_file}", soft_wrap=True)
+        note(f"baseline: {base_file}")
         return graph
     if base is not None:
-        return _baseline_graph(base, graph_path)
+        return _baseline_graph(base, graph_path, note=note)
 
     previous = previous_graph_path(graph_path)
     if not previous.is_file():
+        _stop_active_progress()
         console.print(f"[red]error:[/red] no baseline at {previous}")
         console.print(
             "  every 'stitch build' snapshots the graph it overwrites, so the baseline "
@@ -815,7 +893,7 @@ def _impact_baseline(base: str | None, base_file: Path | None, graph_path: Path)
         graph = read_graph(previous)
     except ValueError as exc:
         _fail(f"{previous} does not parse -- delete it and run 'stitch build' twice ({exc})")
-    err_console.print(f"baseline: the graph your previous build overwrote ({previous})")
+    note(f"baseline: the graph your previous build overwrote ({previous})")
     return graph
 
 
@@ -983,7 +1061,7 @@ def _mend_autonomy(cfg: StitchConfig) -> tuple[list[MendAction], list[str]]:
 
 
 def _mend_payload(
-    cfg: StitchConfig, out_dir: Path, client: MetabaseClient | None
+    cfg: StitchConfig, out_dir: Path, client: MetabaseClient | None, *, note: Note = _stderr_note
 ) -> MetabasePayload:
     """The Metabase payload a plan needs: cached from the last build, or fetched fresh.
 
@@ -1000,7 +1078,7 @@ def _mend_payload(
                 f"no cached Metabase payload under {cache_dir} -- run 'stitch build' first, "
                 "or drop --use-cache to fetch"
             )
-        err_console.print(f"payload: cached Metabase fetch from {cache_dir}")
+        note(f"payload: cached Metabase fetch from {cache_dir}")
         return payload
     try:
         return client.fetch_all([db.metabase_name for db in cfg.metabase.databases])
@@ -1149,23 +1227,61 @@ def _mend_plan(
     if output_format not in _MEND_FORMATS:
         _fail(f"unsupported --format '{output_format}' (expected: {', '.join(_MEND_FORMATS)})")
     graph_path = _graph_path(config)
-    candidate = _read_graph_or_fail(graph_path)
-    baseline = _impact_baseline(base, base_file, graph_path)
-    diff, _report = impact_from_graphs(baseline, candidate)
-    client = None if use_cache else _metabase_client(cfg, cache_dir=out_dir / "cache")
-    payload = _mend_payload(cfg, out_dir, client)
     auto, notify_only = _mend_autonomy(cfg)
-    plan = build_mend_plan(
-        baseline,
-        candidate,
-        diff,
-        payload,
-        renames=renames,
-        auto=auto,
-        notify_only_collections=notify_only,
-        revisions=_card_revisions(client, baseline, diff),
-    )
-    written = write_plan(plan, out)
+    # planning is the half of mend that waits -- on a multi-megabyte graph, on the Metabase
+    # fetch, on one revision read per affected card -- so every step of it is named while
+    # it runs. The rendered plan is printed after the display is torn down.
+    with _live_progress() as progress:
+        note = _progress_note(progress)
+
+        read_task = progress.add_task("reading graphs", total=2)
+        candidate = _read_graph_or_fail(graph_path)
+        progress.update(read_task, completed=1)
+        baseline = _impact_baseline(base, base_file, graph_path, note=note)
+        progress.update(read_task, completed=2)
+
+        diff_task = progress.add_task("diffing against the baseline", total=1)
+        diff, _report = impact_from_graphs(baseline, candidate)
+        progress.update(diff_task, completed=1)
+
+        client = None if use_cache else _metabase_client(cfg, cache_dir=out_dir / "cache")
+        fetch_task = progress.add_task(
+            "reading the cached payload" if use_cache else "fetching Metabase", total=1
+        )
+        payload = _mend_payload(cfg, out_dir, client, note=note)
+        progress.update(fetch_task, completed=1)
+
+        # --use-cache never reaches the API, so there is no revision phase to show
+        revisions: dict[int, int | None] = {}
+        if client is not None:
+            revisions_task = progress.add_task("reading card revisions", total=None)
+            revisions = _card_revisions(
+                client,
+                baseline,
+                diff,
+                note=note,
+                on_progress=lambda done, total: progress.update(
+                    revisions_task, completed=done, total=total
+                ),
+            )
+
+        plan_task = progress.add_task("planning repairs", total=1)
+        plan = build_mend_plan(
+            baseline,
+            candidate,
+            diff,
+            payload,
+            renames=renames,
+            auto=auto,
+            notify_only_collections=notify_only,
+            revisions=revisions,
+        )
+        progress.update(plan_task, completed=1)
+
+        write_task = progress.add_task("writing the plan", total=1)
+        written = write_plan(plan, out)
+        progress.update(write_task, completed=1)
+
     count = len(plan.cards)
     err_console.print(f"plan: {count} card{'' if count == 1 else 's'} -> {written}")
     typer.echo(format_plan(plan, output_format))
@@ -1174,7 +1290,12 @@ def _mend_plan(
 
 
 def _card_revisions(
-    client: MetabaseClient | None, baseline: Graph, diff: ColumnDiff
+    client: MetabaseClient | None,
+    baseline: Graph,
+    diff: ColumnDiff,
+    *,
+    note: Note = _stderr_note,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[int, int | None]:
     """Latest revision id per affected card -- the state a failed apply reverts to.
 
@@ -1190,12 +1311,15 @@ def _card_revisions(
     if client is None:
         return {}
     revisions: dict[int, int | None] = {}
-    for card_id in affected_card_ids(baseline, diff):
+    card_ids = list(affected_card_ids(baseline, diff))
+    for done, card_id in enumerate(card_ids, start=1):
         try:
             revisions[card_id] = client.latest_card_revision(card_id)
         except MetabaseAPIError as exc:
-            err_console.print(f"revisions: card {card_id} unreadable ({exc}) -- will use the plan")
+            note(f"revisions: card {card_id} unreadable ({exc}) -- will use the plan")
             revisions[card_id] = None
+        if on_progress is not None:
+            on_progress(done, len(card_ids))
     return revisions
 
 
@@ -1208,7 +1332,19 @@ def _mend_apply(*, cfg: StitchConfig, path: Path, force: bool, slack: bool) -> N
         err_console.print(f"apply: {path} has nothing to write")
     if force:
         err_console.print("apply: --force -- the staleness guard is off for this run")
-    outcome = apply_plan(plan, _metabase_client(cfg), force=force, log=typer.echo)
+    # each card is a re-read, a write and a re-execution against Metabase, so the count is
+    # the only honest answer to "how far in is it" while the diffs scroll past
+    with _live_progress() as progress:
+        apply_task = progress.add_task("applying cards", total=len(plan.cards))
+        outcome = apply_plan(
+            plan,
+            _metabase_client(cfg),
+            force=force,
+            log=_paused_echo(progress),
+            on_progress=lambda done, total: progress.update(
+                apply_task, completed=done, total=total
+            ),
+        )
     typer.echo("")
     typer.echo(format_summary_text(outcome))
     if slack:
@@ -1461,12 +1597,26 @@ def doctor(
 
     target_path = _target_path(config, cfg)
     try:
-        load_manifest(target_path)
+        manifest = load_manifest(target_path)
         load_catalog(target_path)
         console.print(f"ok    dbt artifacts in {target_path} parse")
     except StitchArtifactError as exc:
         failed = True
         console.print(f"fail  {exc}")
+    else:
+        # parsing is not enough: column lineage is a sqlglot pass over compiled_code, so
+        # a parse-only manifest leaves SPEC section 7.3 dark while everything here says ok (#97)
+        compiled, uncompiled = compiled_model_counts(manifest)
+        warning = _uncompiled_models_warning(compiled, uncompiled)
+        if warning is None:
+            if compiled:
+                console.print(f"ok    all {compiled} dbt models carry compiled SQL")
+        elif compiled:
+            console.print(f"warn  {warning}", soft_wrap=True)
+        else:
+            # nothing at all to trace: the feature is off, not degraded
+            failed = True
+            console.print(f"fail  {warning}", soft_wrap=True)
 
     if graph_path.is_file():
         try:

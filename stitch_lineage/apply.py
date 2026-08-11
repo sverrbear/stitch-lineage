@@ -200,7 +200,7 @@ def writeability(config_path: Path, cfg: StitchConfig) -> dict[str, ModelWriteab
     """
     paths = paths_for(config_path, cfg)
     manifest = load_manifest(config_path.parent / cfg.dbt.project_dir / cfg.dbt.target_path)
-    return model_writeability(manifest, paths.project_dir)
+    return model_writeability(manifest, paths.project_dir, cfg.write)
 
 
 def paths_for(config_path: Path, cfg: StitchConfig) -> ApplyPaths:
@@ -233,7 +233,7 @@ def build_plan(config_path: Path, cfg: StitchConfig) -> ApplyPlan:
     paths = paths_for(config_path, cfg)
     changes = read_changes(paths)
     manifest = load_manifest(config_path.parent / cfg.dbt.project_dir / cfg.dbt.target_path)
-    plan = plan_writes(changes.all, manifest, paths.project_dir, cfg.relationships)
+    plan = plan_writes(changes.all, manifest, paths.project_dir, cfg.relationships, cfg.write)
     return ApplyPlan(paths=paths, changes=changes, plan=plan, write_to=cfg.relationships.write_to)
 
 
