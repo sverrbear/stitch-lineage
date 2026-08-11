@@ -1,10 +1,42 @@
 # stitch
 
-**dbt ↔ Metabase column lineage.**
+**dbt ↔ Metabase column lineage — so you know what a column change breaks before you make it.**
 
-stitch answers "where does this column go, and what uses it?" for the half of the stack where the answer usually isn't visible. It reads your dbt artifacts and the Metabase API and traces column lineage end to end — source column → staging → mart → Metabase field → card → dashboard. The result is `.stitch/graph.json`, a plain local file next to your dbt project: search it from the terminal, explore it in the browser (`stitch serve`), export it for agents. Local-first: no server, no warehouse backend, no hosted anything — and nothing generated needs to be committed. (Teams that want git history of the graph can commit it; nothing requires that.)
+```
+$ stitch impact --column fct_orders.discount_amount
+fct_orders.discount_amount
+  ├ 2 downstream models: mart_orders_enriched, mart_revenue_daily
+  ├ 2 downstream columns:
+      mart_orders_enriched.discount_amount
+      mart_revenue_daily.discount_amount
+  ├ 1 Metabase field: Discount Amount
+  ├ 4 Metabase cards:
+      #412 Discount impact by region  (Revenue review, dana)
+      #418 Weekly discount trend  (Revenue review, dana)
+      #503 Promo cohort summary  (Growth weekly)
+      #547 Net revenue after discounts  (Growth weekly, priya)
+  └ 2 dashboards: Growth weekly, Revenue review
+```
 
-> Full design in [SPEC.md](SPEC.md) (draft v0.4).
+No baseline, no git, no Metabase credentials, no CI job — one command over a local file, answerable *before* you touch the model. Three questions, three commands:
+
+| Question | Command |
+|---|---|
+| What breaks if I change this column? | `stitch impact --column fct_orders.discount_amount` |
+| What did my last build change, and what does it hit? | `stitch impact` |
+| What has my branch changed since `main`? | `stitch impact --base main` |
+
+You don't have to remember the second one. Every `stitch build` closes with the blast radius of what it just changed, and stays silent when nothing did:
+
+```
+since last build: 2 columns removed, 1 type-changed -> 4 cards on 2 dashboards affected (run 'stitch impact' for the tree)
+```
+
+## What it is
+
+stitch answers "where does this column go, and what uses it?" for the half of the stack where the answer usually isn't visible. It reads your dbt artifacts and the Metabase API and traces column lineage end to end — source column → staging → mart → Metabase field → card → dashboard. The result is `.stitch/graph.json`, a plain local file next to your dbt project: query it from the terminal, explore it in the browser (`stitch serve`), export it for agents. Local-first: no server, no warehouse backend, no hosted anything — and nothing generated needs to be committed. (Teams that want git history of the graph can commit it; nothing requires that.)
+
+> Full design in [SPEC.md](SPEC.md) (v0.5).
 
 ## Quickstart
 
@@ -97,9 +129,63 @@ stitch export --format site      # static build of the app, graph inlined, host 
 
 Commands that don't call the Metabase API (`build --no-metabase`, `impact`, `history`, `search`, `suggest`, `export`, `doctor --unbound/--untraced/--dead`) work without the `STITCH_METABASE_*` env vars set. Add `.stitch/` to your `.gitignore` — the graph is a local artifact.
 
-### `doctor --dead`: estate hygiene
+## Asking before the edit: `impact --column`
 
-The mirror image of impact analysis — the same flow edges, walked the other way. Counts headline, then the lists:
+The blast radius at the top of this README is the whole feature: `stitch impact --column` walks the current `graph.json` downstream from one column and groups what it reaches — models, columns, Metabase fields, cards (with their dashboards and owner), dashboards. It needs one graph and nothing else: no baseline, no git ref, no Metabase credentials.
+
+It takes `model.column`, a bare column name when that is unique, or a full node id; anything unknown or ambiguous gets `stitch search`-style suggestions rather than a guess. Add `--json` to pipe it.
+
+## What did my last build change?
+
+The mirror question, asked after the edit. Every build first copies the graph it is about to overwrite to `.stitch/graph.prev.json`, then closes with the blast radius of the difference:
+
+```
+since last build: 2 columns removed, 1 type-changed -> 4 cards on 2 dashboards affected (run 'stitch impact' for the tree)
+```
+
+Silent when nothing changed. `stitch impact` prints the tree behind that line — each changed column with the downstream models, Metabase cards and dashboards it reaches — diffing against that snapshot by default, so there is nothing to commit and no git ceremony:
+
+```bash
+stitch impact                              # vs your previous build (.stitch/graph.prev.json)
+stitch impact --base-file path/graph.json  # vs a graph file you kept
+stitch impact --base origin/main           # vs a git ref (local history first, see below)
+```
+
+A rename shows up as a removal plus an addition: ids are name-based, so a rename is indistinguishable from remove + add — and the downstream card breaks either way until it is repointed.
+
+## Baselines without committing anything
+
+Every `stitch build` on a clean working tree keeps a gzipped copy of the graph in `.stitch/history/<commit-sha>.json.gz`, keyed by the commit you built. Nothing is committed — `.stitch/` stays gitignored — but `stitch impact --base <ref>` now has somewhere local to look:
+
+```bash
+git switch main && stitch build     # history: stored baseline for a1b2c3d (1/20 kept)
+git switch -c feat/rename-columns   # ... edit models, dbt docs generate ...
+stitch build --no-metabase
+stitch impact --base main           # diffed against main's stored snapshot
+```
+
+`--base <ref>` resolves the ref to its merge-base with `HEAD` — the commit your branch actually diverged from — then takes that commit's snapshot, or the nearest stored ancestor of it. The baseline it picked is always printed, on stderr, so it can never be a guess (and so stdout stays a clean payload for `--format github-comment`):
+
+```
+baseline: local history snapshot for a1b2c3d ('main')
+baseline: local history snapshot for a1b2c3d -- nearest stored ancestor of the merge-base of 'origin/main' and HEAD, 3 commits back
+```
+
+With no snapshot in the ancestry it falls back to the `graph.json` committed on that ref, and a miss on both names the fix. `stitch history` lists what is stored:
+
+```
+2 baselines in .stitch/history (keeping 20), newest first
+  a1b2c3d  2026-08-10T09:12:04+00:00  1904 nodes / 3120 edges  feat: split fct_orders
+  9f4e0b1  2026-08-09T16:40:11+00:00  1901 nodes / 3117 edges  chore: bump dbt
+```
+
+Builds with uncommitted changes store nothing and say so: that graph describes your working tree, not the commit, and as a baseline it would quietly report no impact at all. `output.history_retention` caps how many are kept (oldest pruned first; `0` turns history off and clears the directory).
+
+The two local stores answer different questions, so neither replaces the other: `graph.prev.json` is *the graph my last build overwrote* (kept on every build, whatever the tree and commit), while `.stitch/history/` is *the graph as of commit `<sha>`* (clean trees only) and is what `--base` reads.
+
+## `doctor --dead`: the same edges, walked the other way
+
+Impact asks what depends on a column. Run the flow edges backwards and you get estate hygiene — what nothing depends on. Counts headline, then the lists:
 
 ```
 unconsumed columns                  412/1901   (across 96 models, 4 sources)
@@ -160,16 +246,16 @@ applied 1 relationship — graph updated, refresh the app · next 'stitch build'
 
 A `relationships` test lands as a validated edge and a meta declaration as a declared one — exactly what the next build reads back out of the manifest, which is why the patch is a preview of state your repo already contains and never an invention. `--no-graph-update` skips it; `--build` runs a full `stitch build` afterwards (`dbt docs generate` and all) when you want everything reconciled on the spot.
 
-## Editing documentation
+### Editing documentation
 
 Column and model descriptions are staged and applied through the same flow. An edit lands in `.stitch/staged_descriptions.yml` (one entry per model+column, last write wins), and the next `stitch apply` writes it onto the model or column entry in its `_schema.yml`:
 
 ```diff
-       - name: match_id
--        description: "The unique identifier for the match."
+       - name: order_id
+-        description: "The unique identifier for the order."
 +        description: |
-+          One row per match.
-+          Null for unmatched likes.
++          One row per order.
++          Null for abandoned carts.
 ```
 
 The same guarantees hold: the `description:` key is created when it is missing, multi-line text becomes a `|` block, the file's own quoting style is kept, a description the repo already has is reported as nothing to do, and everything around it survives byte-identically. Relationships and descriptions applied in one run share one diff, one confirmation and one graph patch.
@@ -184,9 +270,9 @@ Starting from zero declared relationships, `stitch suggest` tells you which ones
 stitch suggest
 ```
 ```
- source         score  from                     to                        why
- implicit_join  204    fct_user_activity.user_id  dim_users.user_id       204 cards join through it
- naming         0.5    dim_subscriptions.user_id  dim_users.user_id       names the 'user' grain
+ source         score  from                       to                         why
+ implicit_join  204    fct_orders.customer_id     dim_customers.customer_id  204 cards join through it
+ naming         0.5    dim_subscriptions.user_id  dim_users.user_id          names the 'user' grain
 ```
 
 Two sources of candidates. **Implicit joins** come from Metabase itself: when a card reaches a column by joining through an FK, that join is recorded in the graph, so the score is the number of cards already relying on a relationship nobody wrote down. **Naming** is the weaker `<entity>_id` → matching-grain-model convention, always ranked below a single witnessing card.
@@ -207,84 +293,20 @@ dbt column lineage   1842/1901 columns traced   (37 inferred via star-expansion,
 
 MBQL cards resolve exactly, including card-on-card sources. Native SQL cards resolve by parsing: stitch substitutes the card's template tags (`{{variable}}`, `[[optional clauses]]`, `{{snippet: name}}`, `{{#123-card}}`), parses the result with sqlglot, and maps every column that lands on a table Metabase knows to that table's field — so a hand-written card's columns join the same lineage chain an MBQL card's do, marked `parsed` rather than `exact`. A field-filter tag names its field outright and stays `exact`. Anything that will not parse degrades to the tables it reads (`stitch doctor --unresolved-cards` says which card and why); no card is ever dropped, and no column is ever invented. Both query formats are handled on both paths: the legacy `dataset_query.query` shape and the MBQL 5 (`lib/type` + `stages`) shape modern Metabase returns.
 
-## What did my last build change?
-
-Every build first copies the graph it is about to overwrite to `.stitch/graph.prev.json`, then closes with the blast radius of the difference:
-
-```
-since last build: 2 columns removed, 1 type-changed -> 3 cards on 2 dashboards affected (run 'stitch impact' for the tree)
-```
-
-Silent when nothing changed. `stitch impact` prints the tree behind that line — each changed column with the downstream models, Metabase cards and dashboards it reaches — diffing against that snapshot by default, so there is nothing to commit and no git ceremony:
-
-```bash
-stitch impact                              # vs your previous build (.stitch/graph.prev.json)
-stitch impact --base-file path/graph.json  # vs a graph file you kept
-stitch impact --base origin/main           # vs a git ref (local history first, see below)
-```
-
-A rename shows up as a removal plus an addition: ids are name-based, so a rename is indistinguishable from remove + add — and the downstream card breaks either way until it is repointed.
-
-The mirror question — *what would a change here break* — is `--column`, askable before the edit. It needs no baseline at all: it walks the current `graph.json` downstream from one column.
-
-```
-$ stitch impact --column fct_matches.match_intensity
-fct_matches.match_intensity
-  ├ 2 downstream models: mart_board_kpis, mart_engagement
-  ├ 2 downstream columns:
-      mart_board_kpis.match_intensity
-      mart_engagement.match_intensity
-  ├ 1 Metabase field: Match Intensity
-  ├ 2 Metabase cards:
-      #412 Match intensity by country  (Board dashboard, sverrir)
-      #418 Weekly intensity trend  (Board dashboard)
-  └ 1 dashboard: Board dashboard
-```
-
-It takes `model.column`, a bare column name when that is unique, or a full node id; anything unknown or ambiguous gets `stitch search`-style suggestions. Add `--json` to pipe it. No git, no baseline, no Metabase credentials.
-
-## Baselines without committing anything
-
-Every `stitch build` on a clean working tree keeps a gzipped copy of the graph in `.stitch/history/<commit-sha>.json.gz`, keyed by the commit you built. Nothing is committed — `.stitch/` stays gitignored — but `stitch impact --base <ref>` now has somewhere local to look:
-
-```bash
-git switch main && stitch build     # history: stored baseline for a1b2c3d (1/20 kept)
-git switch -c feat/rename-columns   # ... edit models, dbt docs generate ...
-stitch build --no-metabase
-stitch impact --base main           # diffed against main's stored snapshot
-```
-
-`--base <ref>` resolves the ref to its merge-base with `HEAD` — the commit your branch actually diverged from — then takes that commit's snapshot, or the nearest stored ancestor of it. The baseline it picked is always printed, on stderr, so it can never be a guess (and so stdout stays a clean payload for `--format github-comment`):
-
-```
-baseline: local history snapshot for a1b2c3d ('main')
-baseline: local history snapshot for a1b2c3d -- nearest stored ancestor of the merge-base of 'origin/main' and HEAD, 3 commits back
-```
-
-With no snapshot in the ancestry it falls back to the `graph.json` committed on that ref, and a miss on both names the fix. `stitch history` lists what is stored:
-
-```
-2 baselines in .stitch/history (keeping 20), newest first
-  a1b2c3d  2026-08-10T09:12:04+00:00  1904 nodes / 3120 edges  feat: split fct_matches
-  9f4e0b1  2026-08-09T16:40:11+00:00  1901 nodes / 3117 edges  chore: bump dbt
-```
-
-Builds with uncommitted changes store nothing and say so: that graph describes your working tree, not the commit, and as a baseline it would quietly report no impact at all. `output.history_retention` caps how many are kept (oldest pruned first; `0` turns history off and clears the directory).
-
-The two local stores answer different questions, so neither replaces the other: `graph.prev.json` is *the graph my last build overwrote* (kept on every build, whatever the tree and commit), while `.stitch/history/` is *the graph as of commit `<sha>`* (clean trees only) and is what `--base` reads.
-
 ## Phases
 
 | Phase | Scope | Status |
 |---|---|---|
-| **0** | `build` (dbt column lineage via sqlglot + MBQL cards), deterministic `graph.json` + `--check`, coverage report, recursive `impact` against the previous build + GitHub Action template (the PR-comment workflow is shelved), `search` CLI, `doctor` | **shipped** |
+| **0** | `build` (dbt column lineage via sqlglot + MBQL cards), deterministic `graph.json` + `--check`, coverage report, recursive `impact` — the previous-build summary, `--column` point query and SHA-keyed local history — `search` CLI, `doctor` incl. `--dead` | **shipped** |
 | **1** | `serve`: search + detail panels, end-to-end lineage view, catalog, read-only ERD; `export --format site` | **shipped** |
-| 2 | Editable ERD canvas: YAML write-back with diff preview, suggestion layer | planned |
-| 3 | Native SQL cards via sqlglot, rename heuristics, `--verify-lineage` | planned |
+| **2** | Editable ERD canvas: staged relationships and descriptions, `stitch apply` with diff preview, suggestion layer, `stitch init` | **shipped** |
+| 3 | Native SQL cards via sqlglot and MBQL 5 stages (**shipped**, ahead of phase order); rename heuristics, `--verify-lineage`, Metabase version matrix | ongoing |
 
-## Shelved: PR impact comments
+Work is tracked as GitHub issues; that tracker, not this table, is the operational truth.
 
-The same blast radius can be posted as a PR comment (`stitch impact --format github-comment`) or a Slack deploy alert (`--format slack`; workflow templates in [`action/`](action/)). Both formats work today, but that CI workflow needs a baseline `graph.json` committed on the base branch — which conflicts with keeping the graph purely local — so it stays shelved as a default story. Locally, `stitch impact` needs none of it: the previous-build snapshot and the SHA-keyed history above cover both questions without committing anything.
+## The CI variant: PR impact comments
+
+The same blast radius can be posted as a PR comment (`stitch impact --format github-comment`) or a Slack deploy alert (`--format slack`; workflow templates in [`action/`](action/)). Both formats work today. That CI workflow needs a baseline `graph.json` committed on the base branch, which is why it isn't the default story — but it remains available for teams that do keep a committed graph. Locally, `stitch impact` needs none of it: the previous-build snapshot and the SHA-keyed history above answer the same questions without committing anything.
 
 ## Built on
 
@@ -293,7 +315,7 @@ stitch deliberately reuses the conventions of the tools next to it rather than r
 - [sqlglot](https://github.com/tobymao/sqlglot) — SQL parsing and column-level lineage over dbt compiled SQL
 - [dbt-metabase](https://github.com/gouline/dbt-metabase) — FK/semantic-type/description sync into Metabase; stitch's `metabase.fk_target_*` relationship meta keys are interop-compatible with it by design
 - [dbterd](https://github.com/datnguye/dbterd) — ERD conventions; stitch matches its `relationship_type` meta key
-- [typer](https://github.com/fastapi/typer) + [pydantic](https://github.com/pydantic/pydantic) + [ruamel.yaml](https://sourceforge.net/projects/ruamel-yaml/) + [requests](https://github.com/psf/requests) + [rich](https://github.com/Textualize/rich) — CLI, data contracts/validation, round-trip YAML write-back (Phase 2), Metabase API access, terminal output
+- [typer](https://github.com/fastapi/typer) + [pydantic](https://github.com/pydantic/pydantic) + [ruamel.yaml](https://sourceforge.net/projects/ruamel-yaml/) + [requests](https://github.com/psf/requests) + [rich](https://github.com/Textualize/rich) — CLI, data contracts/validation, round-trip YAML write-back, Metabase API access, terminal output
 - [FastAPI](https://github.com/fastapi/fastapi) + [uvicorn](https://github.com/encode/uvicorn) + [React Flow](https://github.com/xyflow/xyflow) — `stitch serve`; the SPA ships prebuilt in the wheel, so installing never needs a node toolchain
 
 ## Development
