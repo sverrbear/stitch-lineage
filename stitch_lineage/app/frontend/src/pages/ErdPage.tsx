@@ -46,6 +46,7 @@ import {
 } from '../lib/canvas'
 import {
   autoExpandedModels,
+  COLLAPSED_LIMIT,
   erdClickHref,
   erdColumnNodeId,
   erdCounts,
@@ -109,7 +110,6 @@ import { workspaceView } from '../lib/workspace'
 import { erdHref, navigate, nodeHref } from '../router'
 import { copy } from '../copy'
 
-const COLLAPSED_LIMIT = 8
 /** Breathing room around the whole arrangement, as React Flow reads padding. */
 const FIT_PADDING = 0.12
 /** The .suggest-panel / .staged-panel strip (320px in styles.css), plus a gutter. */
