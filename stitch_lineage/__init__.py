@@ -1,3 +1,8 @@
 """stitch: dbt <-> Metabase column lineage and interactive ERD."""
 
-__version__ = "0.2.1"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("stitch-lineage")
+except PackageNotFoundError:  # a checkout that was never pip-installed
+    __version__ = "0.0.0+unknown"
