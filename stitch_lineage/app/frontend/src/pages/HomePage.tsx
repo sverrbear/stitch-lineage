@@ -20,6 +20,7 @@ import {
   type CoverageRow,
 } from '../lib/coverage'
 import { coverageHref, erdHref, lineageHref } from '../router'
+import { copy } from '../copy'
 
 function Row({ row }: { row: CoverageRow }) {
   const value = (
@@ -69,12 +70,12 @@ export function HomePage({ searchInputRef }: { searchInputRef: RefObject<HTMLInp
     <main className="home">
       <div className="home-column">
         <div className="home-hero">
-          <h1 className="home-title">Trace a column</h1>
+          <h1 className="home-title">{copy.home.title}</h1>
           <SearchPanel
             inputRef={searchInputRef}
             autoFocus
             hero
-            placeholder="Model, column, card or dashboard"
+            placeholder={copy.home.searchPlaceholder}
           />
         </div>
 
@@ -85,13 +86,13 @@ export function HomePage({ searchInputRef }: { searchInputRef: RefObject<HTMLInp
             className="home-link"
             href={busiest ? lineageHref(busiest.node.node_id) : coverageHref('unbound-models')}
           >
-            <span>Lineage</span>
+            <span>{copy.home.lineage}</span>
             <span className="home-link-chevron" aria-hidden="true">
               ›
             </span>
           </a>
           <a className="home-link" href={erdHref()}>
-            <span>ERD</span>
+            <span>{copy.home.erd}</span>
             <span className="home-link-chevron" aria-hidden="true">
               ›
             </span>
@@ -100,7 +101,7 @@ export function HomePage({ searchInputRef }: { searchInputRef: RefObject<HTMLInp
 
         <div className="coverage-block">
           <div className="coverage-head">
-            <span>Coverage</span>
+            <span>{copy.home.coverage}</span>
             {percent !== null && <span className="coverage-percent">{percent}%</span>}
           </div>
           {percent !== null && (

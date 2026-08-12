@@ -11,6 +11,7 @@
 import type { StagedDescription, StagedRelationship } from '../lib/staging'
 import { displayModelName } from '../lib/present'
 import { descriptionLabel, descriptionPreview, type WorkspaceView } from '../lib/workspace'
+import { copy } from '../copy'
 
 export function StagedWorkspace({
   view,
@@ -39,14 +40,14 @@ export function StagedWorkspace({
   onApply: () => void
 }) {
   return (
-    <aside className="staged-panel" aria-label="Staged changes">
+    <aside className="staged-panel" aria-label={copy.staged.panelLabel}>
       <div className="staged-panel-head">
-        <span className="staged-panel-title">Staged changes ({view.total})</span>
+        <span className="staged-panel-title">{copy.staged.title(view.total)}</span>
         <button
           type="button"
           className="ghost-button"
           onClick={onClose}
-          aria-label="Hide staged changes"
+          aria-label={copy.staged.hide}
         >
           ✕
         </button>
@@ -54,16 +55,13 @@ export function StagedWorkspace({
 
       <div className="staged-panel-body">
         {view.total === 0 ? (
-          <p className="muted staged-empty">
-            Nothing staged yet — drag a column handle onto another, accept a suggestion, or edit a
-            description on a table’s page.
-          </p>
+          <p className="muted staged-empty">{copy.staged.empty}</p>
         ) : (
           <>
             {view.relationships.length > 0 && (
               <section className="staged-section">
                 <h3 className="staged-section-head">
-                  Relationships
+                  {copy.staged.relationships}
                   <span className="muted">
                     {view.relationships.reduce((n, group) => n + group.entries.length, 0)}
                   </span>
@@ -87,8 +85,8 @@ export function StagedWorkspace({
                           </code>
                           <span className="muted staged-cardinality">{entry.cardinality}</span>
                           {unresolvedIds.includes(entry.id) && (
-                            <span className="muted" title="its model is not in this graph">
-                              not in this graph
+                            <span className="muted" title={copy.staged.unresolvedTitle}>
+                              {copy.staged.unresolved}
                             </span>
                           )}
                           <button
@@ -96,18 +94,18 @@ export function StagedWorkspace({
                             className="ghost-button staged-edit"
                             onClick={() => onEditRelationship(entry)}
                             disabled={busy}
-                            title="change the columns or the cardinality"
-                            aria-label={`Edit staged relationship ${entry.from_model}.${entry.from_column}`}
+                            title={copy.staged.editRelationshipTitle}
+                            aria-label={copy.staged.editRelationshipLabel(entry.from_model, entry.from_column)}
                           >
-                            edit
+                            {copy.staged.edit}
                           </button>
                           <button
                             type="button"
                             className="ghost-button staged-remove"
                             onClick={() => onDiscardRelationship(entry.id)}
                             disabled={busy}
-                            title="discard this staged relationship"
-                            aria-label={`Discard staged relationship ${entry.from_model}.${entry.from_column}`}
+                            title={copy.staged.discardRelationshipTitle}
+                            aria-label={copy.staged.discardRelationshipLabel(entry.from_model, entry.from_column)}
                           >
                             ✕
                           </button>
@@ -122,7 +120,7 @@ export function StagedWorkspace({
             {view.descriptions.length > 0 && (
               <section className="staged-section">
                 <h3 className="staged-section-head">
-                  Description edits
+                  {copy.staged.descriptions}
                   <span className="muted">
                     {view.descriptions.reduce((n, group) => n + group.entries.length, 0)}
                   </span>
@@ -144,17 +142,17 @@ export function StagedWorkspace({
                             className="ghost-button staged-edit"
                             onClick={() => onEditDescription(entry)}
                             disabled={busy}
-                            title="open the table’s page to re-edit this description"
+                            title={copy.staged.editDescriptionTitle}
                           >
-                            edit
+                            {copy.staged.edit}
                           </button>
                           <button
                             type="button"
                             className="ghost-button staged-remove"
                             onClick={() => onDiscardDescription(entry.id)}
                             disabled={busy}
-                            title="discard this staged edit"
-                            aria-label={`Discard staged description ${descriptionLabel(entry)}`}
+                            title={copy.staged.discardDescriptionTitle}
+                            aria-label={copy.staged.discardDescriptionLabel(descriptionLabel(entry))}
                           >
                             ✕
                           </button>
@@ -180,20 +178,16 @@ export function StagedWorkspace({
               disabled={busy || view.total === 0}
               title={
                 view.total === 0
-                  ? 'nothing staged'
-                  : 'review the exact YAML changes, then write them'
+                  ? copy.staged.applyNothing
+                  : copy.staged.applyTitle
               }
             >
-              Review &amp; apply…
+              {copy.staged.apply}
             </button>
-            <span className="muted">
-              nothing touches the repo until you confirm in the preview
-            </span>
+            <span className="muted">{copy.staged.applyReassurance}</span>
           </>
         ) : (
-          <span className="muted">
-            run <code>stitch apply</code> to write these into the dbt repo
-          </span>
+          <span className="muted">{copy.staged.cliOnly()}</span>
         )}
       </div>
     </aside>

@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react'
 import { SearchPanel } from './SearchPanel'
+import { copy } from '../copy'
 
 export function CommandPalette({ onClose }: { onClose: () => void }) {
   useEffect(() => {
@@ -15,8 +16,8 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
   return (
     <div className="palette-backdrop" onMouseDown={onClose} role="dialog" aria-modal="true">
       <div className="palette" onMouseDown={(e) => e.stopPropagation()}>
-        <SearchPanel autoFocus placeholder="Jump to anything…" onNavigate={onClose} />
-        <div className="palette-hint">↑↓ navigate · ↵ open · esc close</div>
+        <SearchPanel autoFocus placeholder={copy.palette.placeholder} onNavigate={onClose} />
+        <div className="palette-hint">{copy.palette.hint}</div>
       </div>
     </div>
   )

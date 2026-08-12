@@ -97,12 +97,13 @@ import {
 } from '../lib/suggestions'
 import { workspaceView } from '../lib/workspace'
 import { erdHref, navigate, nodeHref } from '../router'
+import { copy } from '../copy'
 
 const COLLAPSED_LIMIT = 8
-const OPEN_HINT = 'Open details · ⌘/Ctrl-click for lineage'
-const FOCUS_HINT = 'Show only this table and what it joins · click again for the whole scope'
-const UNFOCUS_HINT = 'Back to the whole scope'
-const RELATE_HINT = 'Drag onto another column to declare a relationship'
+const OPEN_HINT = copy.erd.openHint
+const FOCUS_HINT = copy.erd.focusHint
+const UNFOCUS_HINT = copy.erd.unfocusHint
+const RELATE_HINT = copy.erd.relateHint
 
 type ErdFlowNode = Node<
   {
@@ -205,7 +206,7 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
           <span className="erd-node-name" title={name}>
             {name}
           </span>
-          {model.external && <span className="erd-external-tag">other scope</span>}
+          {model.external && <span className="erd-external-tag">{copy.erd.externalTag}</span>}
           {/* the header click now focuses, so the panel gets its own target rather
               than losing its one-click route off the canvas (#163) */}
           <span
@@ -226,7 +227,7 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
           {table && table !== name ? (
             <span
               className="erd-node-relation"
-              title={`${model.node.table} — physical table in the warehouse`}
+              title={copy.erd.physicalTable(String(model.node.table))}
             >
               {table}
             </span>
@@ -242,7 +243,7 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
             }`}
             role="link"
             tabIndex={0}
-            title={column.phantom ? `${OPEN_HINT} · declared by a relationship, not in the catalog` : OPEN_HINT}
+            title={column.phantom ? copy.erd.phantomColumn(OPEN_HINT) : OPEN_HINT}
             onClick={open(column.nodeId)}
             onKeyDown={openOnEnter(column.nodeId)}
           >
@@ -900,7 +901,7 @@ export function ErdPage({
   if (!active || !erd || !counts) {
     return (
       <main className="graph-page">
-        <p className="muted panel">No models in the graph — nothing to draw.</p>
+        <p className="muted panel">{copy.erd.empty}</p>
       </main>
     )
   }
@@ -909,7 +910,7 @@ export function ErdPage({
     <main className="graph-page">
       <div className="graph-toolbar">
         <label className="scope-label" htmlFor="erd-scope">
-          Scope
+          {copy.erd.scope}
         </label>
         <select
           id="erd-scope"
@@ -938,7 +939,7 @@ export function ErdPage({
           className="muted"
           title={
             counts.external > 0
-              ? `${counts.external} model${counts.external === 1 ? '' : 's'} from other scopes, drawn because a relationship in this one points at them`
+              ? copy.erd.externalCount(counts.external)
               : undefined
           }
         >
@@ -949,11 +950,11 @@ export function ErdPage({
             : ''}
         </span>
         {active.internal && (
-          <span className="muted">tooling schema — not part of the analytics model</span>
+          <span className="muted">{copy.erd.internalScope}</span>
         )}
         {unknownConfigured && (
-          <span className="scope-warning" title="serve.erd_default_scope in stitch.yml">
-            configured scope <code>{unknownConfigured}</code> is not in this graph
+          <span className="scope-warning" title={copy.erd.configuredScopeTitle}>
+            {copy.erd.configuredScopeMissing(unknownConfigured)}
           </span>
         )}
         <button
@@ -962,26 +963,26 @@ export function ErdPage({
           onClick={resetView}
           title={
             layoutStale
-              ? 'the relationships changed — reset to lay the scope out again'
-              : 'lay the scope out again and fit it to the window (drops dragged positions)'
+              ? copy.erd.resetStale
+              : copy.erd.reset
           }
         >
-          Reset view
-          {movedCount > 0 ? ` (${movedCount} moved)` : ''}
+          {copy.erd.resetView}
+          {movedCount > 0 ? copy.erd.resetMoved(movedCount) : ''}
         </button>
         {canStage && !stagedOpen && workspace.total > 0 && (
           <button
             type="button"
             className="ghost-button"
             onClick={() => setStagedOpen(true)}
-            title="everything waiting for `stitch apply` — relationships and description edits"
+            title={copy.erd.stagedTitle}
           >
-            Staged changes ({workspace.total})
+            {copy.erd.stagedButton(workspace.total)}
           </button>
         )}
         {canSuggest && !panelOpen && (
           <button type="button" className="ghost-button" onClick={() => setPanelOpen(true)}>
-            Suggested ({scopedSuggestions.length})
+            {copy.erd.suggestedButton(scopedSuggestions.length)}
           </button>
         )}
         {focusedModel && (
@@ -991,18 +992,13 @@ export function ErdPage({
             onClick={() => toggleFocus(focusedModel.node_id)}
             title={UNFOCUS_HINT}
           >
-            Showing {displayName(focusedModel)} + relations — show all
+            {copy.erd.showingFocus(displayName(focusedModel))}
           </button>
         )}
         {canStage ? (
-          <span className="muted graph-toolbar-hint">
-            click a table to see only what it joins · drag from a column's edge onto another
-            column to declare a relationship · ↗ for details
-          </span>
+          <span className="muted graph-toolbar-hint">{copy.erd.hintStaging}</span>
         ) : (
-          <span className="muted graph-toolbar-hint">
-            click a table to see only what it joins · ↗ or a column for details
-          </span>
+          <span className="muted graph-toolbar-hint">{copy.erd.hintReadOnly}</span>
         )}
       </div>
       <div
@@ -1085,53 +1081,53 @@ export function ErdPage({
           />
         )}
         {canSuggest && panelOpen && (
-          <aside className="suggest-panel" aria-label="Suggested relationships">
+          <aside className="suggest-panel" aria-label={copy.erd.suggestPanelLabel}>
             <div className="suggest-panel-head">
-              <span className="suggest-panel-title">Suggested ({shownSuggestions.length})</span>
+              <span className="suggest-panel-title">{copy.erd.suggestTitle(shownSuggestions.length)}</span>
               {erd.suggestedHidden > 0 && (
-                <span className="muted suggest-cap" title="the panel lists them all; the canvas draws the strongest">
-                  {erd.suggestedHidden} not drawn
+                <span className="muted suggest-cap" title={copy.erd.suggestCapTitle}>
+                  {copy.erd.suggestNotDrawnCount(erd.suggestedHidden)}
                 </span>
               )}
               <button
                 type="button"
                 className="ghost-button"
                 onClick={() => setPanelOpen(false)}
-                aria-label="Hide suggestions"
+                aria-label={copy.erd.hideSuggestions}
               >
                 ✕
               </button>
             </div>
             {/* Which candidates are on the table at all — the canvas keeps drawing
                 only what it can place, but the list is no longer limited to it. */}
-            <div className="suggest-filter" role="group" aria-label="Suggestion reach">
+            <div className="suggest-filter" role="group" aria-label={copy.erd.suggestReachLabel}>
               <button
                 type="button"
                 className={`suggest-filter-option${scopeFilter === 'scope' ? ' active' : ''}`}
                 onClick={() => setPickedScope('scope')}
-                title={`candidates with both models in ${active.value} — the ones this canvas draws`}
+                title={copy.erd.suggestInScopeTitle(active.value)}
               >
-                in {active.value} ({scopedSuggestions.length})
+                {copy.erd.suggestInScope(active.value, scopedSuggestions.length)}
               </button>
               <button
                 type="button"
                 className={`suggest-filter-option${scopeFilter === 'all' ? ' active' : ''}`}
                 onClick={() => setPickedScope('all')}
-                title="every candidate in the graph, including pairs that join a model in another scope — accepting one does not need it drawn"
+                title={copy.erd.suggestAllScopesTitle}
               >
-                all scopes ({suggestions.length})
+                {copy.erd.suggestAllScopes(suggestions.length)}
               </button>
             </div>
-            <div className="suggest-filter" role="group" aria-label="Suggestion source">
+            <div className="suggest-filter" role="group" aria-label={copy.erd.suggestSourceLabel}>
               {(['implicit_join', 'naming', 'all'] as const).map((value) => (
                 <button
                   key={value}
                   type="button"
                   className={`suggest-filter-option${sourceFilter === value ? ' active' : ''}`}
                   onClick={() => setPickedSource(value)}
-                  title={value === 'all' ? 'every candidate' : SOURCE_HELP[value]}
+                  title={value === 'all' ? copy.erd.suggestEveryCandidate : SOURCE_HELP[value]}
                 >
-                  {value === 'all' ? 'all' : SOURCE_LABEL[value]} ({sourceCounts[value]})
+                  {value === 'all' ? copy.erd.suggestAll : SOURCE_LABEL[value]} ({sourceCounts[value]})
                 </button>
               ))}
             </div>
@@ -1170,14 +1166,14 @@ export function ErdPage({
                         <span className="muted">{scoreLabel(entry)}</span>
                         <span className="muted">{entry.cardinality_guess}</span>
                         {notDrawn && (
-                          <span className="muted" title="listed here, but not drawn on this canvas">
-                            not drawn
+                          <span className="muted" title={copy.erd.notDrawnTitle}>
+                            {copy.erd.notDrawn}
                           </span>
                         )}
                         {elsewhere && (
                           <span
                             className="muted suggest-elsewhere"
-                            title={`this pair lives in ${elsewhere} — accepting it stages the columns by name, no drawing needed`}
+                            title={copy.erd.elsewhereTitle(elsewhere)}
                           >
                             {elsewhere}
                           </span>
@@ -1189,15 +1185,15 @@ export function ErdPage({
                           className="button"
                           onClick={() => acceptSuggestion(entry)}
                         >
-                          Accept…
+                          {copy.erd.accept}
                         </button>
                         <button
                           type="button"
                           className="ghost-button"
                           onClick={() => void dismiss(entry.id)}
-                          title="dismissed permanently — it will not be suggested again"
+                          title={copy.erd.dismissTitle}
                         >
-                          Dismiss
+                          {copy.erd.dismiss}
                         </button>
                       </div>
                     </li>

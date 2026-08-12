@@ -17,6 +17,7 @@ import { displayName } from '../lib/present'
 import { nodeHref } from '../router'
 import { SystemBadge } from './badges'
 import { ConfidenceTag } from './bits'
+import { copy } from '../copy'
 
 function hops(depth: number): string {
   return depth === 1 ? 'direct' : `${depth} hops`
@@ -43,7 +44,7 @@ export function LayerGroups({ groups, empty }: { groups: LayerGroup[]; empty: st
                 <a className="dep-row-name" href={nodeHref(entry.node.node_id)}>
                   {displayName(entry.node)}
                 </a>
-                <span className="muted dep-row-hops" title="steps along the dependency chain">
+                <span className="muted dep-row-hops" title={copy.fanout.hops}>
                   {hops(entry.depth)}
                 </span>
                 {entry.confidence !== 'exact' && <ConfidenceTag confidence={entry.confidence} />}
@@ -75,8 +76,8 @@ export function DashboardGroups({ groups, empty }: { groups: DashboardUsage[]; e
               {group.dashboard ? (
                 <span className="group-name">{displayName(group.dashboard)}</span>
               ) : (
-                <span className="group-name muted" title="not pinned to any dashboard">
-                  cards on no dashboard
+                <span className="group-name muted" title={copy.fanout.noDashboard}>
+                  {copy.fanout.cardsOnNoDashboard}
                 </span>
               )}
               <span className="muted group-count">
@@ -85,12 +86,12 @@ export function DashboardGroups({ groups, empty }: { groups: DashboardUsage[]; e
               {/* the two ways out of a closed row: the dashboard here, or its cards inside */}
               {group.dashboard && (
                 <a className="group-link" href={nodeHref(group.dashboard.node_id)}>
-                  details
+                  {copy.fanout.details}
                 </a>
               )}
               {link && (
                 <a className="group-link bi-group-link" href={link} target="_blank" rel="noreferrer">
-                  open ↗
+                  {copy.fanout.openExternal}
                 </a>
               )}
             </summary>
@@ -106,7 +107,7 @@ export function DashboardGroups({ groups, empty }: { groups: DashboardUsage[]; e
                     {card.confidence !== 'exact' && <ConfidenceTag confidence={card.confidence} />}
                     {cardLink && (
                       <a className="bi-card-link" href={cardLink} target="_blank" rel="noreferrer">
-                        open ↗
+                        {copy.fanout.openExternal}
                       </a>
                     )}
                   </li>

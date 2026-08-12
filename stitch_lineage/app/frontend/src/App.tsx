@@ -6,6 +6,7 @@ import { CoveragePage } from './pages/CoveragePage'
 import { HomePage } from './pages/HomePage'
 import { NodePage } from './pages/NodePage'
 import { useRoute } from './router'
+import { copy } from './copy'
 
 // The React Flow canvases are the heavy chunk; keep search/detail first-load light.
 const LineagePage = lazy(() => import('./pages/LineagePage').then((m) => ({ default: m.LineagePage })))
@@ -53,7 +54,7 @@ function Shell() {
   return (
     <div className="app">
       <Header onOpenPalette={() => setPaletteOpen(true)} />
-      <Suspense fallback={<div className="app-loading">Loading view…</div>}>
+      <Suspense fallback={<div className="app-loading">{copy.app.loadingView}</div>}>
         {route.page === 'home' && <HomePage searchInputRef={homeSearchRef} />}
         {route.page === 'node' && (
           <main className="detail-page">
@@ -69,7 +70,7 @@ function Shell() {
         {route.page === 'erd' && <ErdPage scopeKind={route.scopeKind} scopeValue={route.scopeValue} />}
       </Suspense>
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
-      {origin === 'dev-fixture' && <div className="dev-banner">dev fixture graph (no API)</div>}
+      {origin === 'dev-fixture' && <div className="dev-banner">{copy.app.devFixtureBanner}</div>}
     </div>
   )
 }
@@ -79,17 +80,14 @@ export function App() {
     <DataProvider
       fallback={({ loading, error }) =>
         loading ? (
-          <div className="app-loading">Loading graph…</div>
+          <div className="app-loading">{copy.app.loadingGraph}</div>
         ) : (
           <div className="app-error">
-            <h1>Couldn’t load the lineage graph</h1>
+            <h1>{copy.app.loadErrorTitle}</h1>
             <p>
               <code>{error}</code>
             </p>
-            <p>
-              Expected either <code>window.__STITCH_GRAPH__</code> (static export) or a local API at{' '}
-              <code>api/graph</code> — run <code>stitch serve</code> from your dbt repo.
-            </p>
+            <p>{copy.app.loadErrorDetail()}</p>
           </div>
         )
       }

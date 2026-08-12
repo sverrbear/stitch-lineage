@@ -35,24 +35,7 @@ import {
 } from '../lib/workspace'
 import { Spinner } from './bits'
 import { DiffView } from './DiffView'
-
-/**
- * What `relationships.write_to` means, in the words the reader would use (#134).
- * The raw config value told them the setting's name, not what lands in their repo.
- */
-const WRITE_FORM: Record<string, ReactNode> = {
-  relationships_test: (
-    <>
-      a dbt <code>relationships</code> test at <code>severity: warn</code>
-    </>
-  ),
-  meta: (
-    <>
-      <code>metabase.fk_*</code> meta keys
-    </>
-  ),
-  contract_constraint: <>a model contract foreign-key constraint</>,
-}
+import { copy } from '../copy'
 
 /** One line saying what is running, with the spinner beside it. */
 function Working({ children }: { children: ReactNode }) {
@@ -163,7 +146,7 @@ export function ApplyDialog({
         aria-busy={busy}
         onClick={(event) => event.stopPropagation()}
       >
-        <h2 id="apply-modal-title">{outcome ? 'Applied' : 'Apply staged changes'}</h2>
+        <h2 id="apply-modal-title">{outcome ? copy.apply.titleDone : copy.apply.title}</h2>
 
         {!outcome && (
           <>
@@ -171,25 +154,25 @@ export function ApplyDialog({
             {preview && (
               <>
                 <p className="apply-lead">
-                  {total} staged change{total === 1 ? '' : 's'} ({staged?.relationships ?? 0}{' '}
-                  relationship{staged?.relationships === 1 ? '' : 's'},{' '}
-                  {staged?.descriptions ?? 0} description edit
-                  {staged?.descriptions === 1 ? '' : 's'}) →{' '}
-                  {files.length} file{files.length === 1 ? '' : 's'}. Relationships are
-                  written as {WRITE_FORM[preview.write_to] ?? <code>{preview.write_to}</code>}.
+                  {copy.apply.lead(
+                    total,
+                    staged?.relationships ?? 0,
+                    staged?.descriptions ?? 0,
+                    files.length,
+                    copy.apply.writeForm[preview.write_to as keyof typeof copy.apply.writeForm]?.() ?? (
+                      <code>{preview.write_to}</code>
+                    ),
+                  )}
                 </p>
                 <div className="apply-scroll">
                   <DiffView files={files} />
-                  <ProblemList title="Cannot be written" problems={preview.unappliable} />
-                  <ProblemList title="Already true in the repo" problems={preview.unchanged} />
+                  <ProblemList title={copy.apply.unappliable} problems={preview.unappliable} />
+                  <ProblemList title={copy.apply.unchanged} problems={preview.unchanged} />
                 </div>
                 {phase === 'applying' ? (
                   <Working>{status}</Working>
                 ) : (
-                  <p className="muted modal-note">
-                    This writes the files above in your dbt repo. A file with uncommitted changes is
-                    refused and reported — forcing stays in the CLI.
-                  </p>
+                  <p className="muted modal-note">{copy.apply.note}</p>
                 )}
               </>
             )}
@@ -204,7 +187,7 @@ export function ApplyDialog({
             {phase === 'refreshing' && <Working>{status}</Working>}
             {outcome.written.length > 0 && (
               <section>
-                <h3 className="subhead">Written</h3>
+                <h3 className="subhead">{copy.apply.written}</h3>
                 <ul className="apply-file-rows">
                   {outcome.written.map((path) => (
                     <li key={path} className="apply-written">
@@ -217,7 +200,7 @@ export function ApplyDialog({
             )}
             {outcome.refused.length > 0 && (
               <section>
-                <h3 className="subhead">Refused — {outcome.refused.length}</h3>
+                <h3 className="subhead">{copy.apply.refused(outcome.refused.length)}</h3>
                 <ul className="apply-file-rows">
                   {outcome.refused.map((refusal) => (
                     <li key={refusal.path} className="apply-refused">
@@ -227,20 +210,16 @@ export function ApplyDialog({
                     </li>
                   ))}
                 </ul>
-                <p className="muted">
-                  Those changes are still staged. Commit or stash the file and apply again — or run{' '}
-                  <code>stitch apply --force</code> in a terminal.
-                </p>
+                <p className="muted">{copy.apply.refusedNote()}</p>
               </section>
             )}
-            <ProblemList title="Could not be written" problems={outcome.unappliable} />
+            <ProblemList title={copy.apply.couldNotWrite} problems={outcome.unappliable} />
             {outcome.graph.patched && (
               <p className="muted">
-                Graph updated in place: {outcome.graph.edges_added ?? 0} relationship
-                {outcome.graph.edges_added === 1 ? '' : 's'},{' '}
-                {outcome.graph.descriptions_updated ?? 0} description
-                {outcome.graph.descriptions_updated === 1 ? '' : 's'} — the canvas and the panels
-                already show it.
+                {copy.apply.graphPatched(
+                  outcome.graph.edges_added ?? 0,
+                  outcome.graph.descriptions_updated ?? 0,
+                )}
               </p>
             )}
           </div>
@@ -250,7 +229,7 @@ export function ApplyDialog({
 
         <div className="modal-actions">
           <button type="button" className="ghost-button" onClick={onClose} disabled={busy}>
-            {outcome ? 'Close' : 'Cancel'}
+            {outcome ? copy.apply.close : copy.apply.cancel}
           </button>
           {!outcome && (
             <button
@@ -260,8 +239,8 @@ export function ApplyDialog({
               disabled={busy || !preview || (files.length === 0 && preview.unappliable.length === 0)}
               title={
                 files.length === 0
-                  ? 'nothing to write — the repo already says all of this'
-                  : 'write these files in the dbt repo'
+                  ? copy.apply.nothingToWrite
+                  : copy.apply.writeTitle
               }
             >
               {phase === 'applying' && <Spinner />}
