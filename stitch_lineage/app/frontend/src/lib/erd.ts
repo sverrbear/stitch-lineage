@@ -582,10 +582,25 @@ export function autoExpandedModels(
 }
 
 /**
+ * Rows a collapsed card shows: keys, then the rest up to this budget (#192).
+ *
+ * Thirteen rather than eight. A diagram of tables is read for what is in them, and
+ * eight rows of a sixty-column fact table said too little to be worth reading — the
+ * card was mostly its own `+ N more columns` link. Five more rows is the size that
+ * shows a table's shape (its ids, its dates, the first measures) without turning
+ * every scope into a wall of columns; expanding is still one click, per table.
+ */
+export const COLLAPSED_LIMIT = 13
+
+/**
  * The column rows to draw: key columns are never hidden, the rest fill the row
  * budget until the reader expands the table.
  */
-export function visibleColumns(model: ErdModel, expanded: boolean, limit: number): ErdColumn[] {
+export function visibleColumns(
+  model: ErdModel,
+  expanded: boolean,
+  limit: number = COLLAPSED_LIMIT,
+): ErdColumn[] {
   if (expanded) return model.columns
   const keys = model.columns.filter((column) => column.isKey)
   const rest = model.columns.filter((column) => !column.isKey)
