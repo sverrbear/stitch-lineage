@@ -17,6 +17,7 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { isErdTable } from '../lib/erd'
 import { layoutErd } from '../lib/erdLayout'
 import {
   STAR_CARD_WIDTH,
@@ -197,9 +198,12 @@ export function ModelStar({ star }: { star: ModelStarData | null }) {
   if (!flow) {
     return (
       <p className="muted star-empty">
-        {copy.star.empty(
-          erdHref(star.hub.schema ? 'schema' : undefined, star.hub.schema ?? undefined),
-        )}
+        {/* no canvas holds this table, so there is nowhere to send the reader (#191) */}
+        {isErdTable(star.hub)
+          ? copy.star.empty(
+              erdHref(star.hub.schema ? 'schema' : undefined, star.hub.schema ?? undefined),
+            )
+          : copy.star.emptyNotDrawn}
       </p>
     )
   }

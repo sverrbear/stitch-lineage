@@ -15,6 +15,7 @@ import {
   focusErd,
   relatedModelIds,
   initialScope,
+  isErdTable,
   listScopes,
   relationshipScopeLabel,
   scopeModelIds,
@@ -60,6 +61,88 @@ describe('listScopes / defaultScope', () => {
 
   it('never auto-opens an internal schema', () => {
     expect(defaultScope(listScopes(index))?.internal).toBe(false)
+  })
+})
+
+// #191: a Snowflake semantic view is a semantic-layer definition over the facts
+// and dims beneath it, not a relation you join to. The fixture's `sv_revenue`
+// sits in `marts` and carries `core`, so every assertion here is about a count or
+// a card the ERD used to get wrong — while its lineage stays untouched.
+describe('semantic views are not ERD tables (#191)', () => {
+  const SV = 'model.demo.sv_revenue'
+
+  it('is not an ERD table, while an ordinary model is', () => {
+    expect(isErdTable(index.nodesById.get(SV)!)).toBe(false)
+    expect(isErdTable(index.nodesById.get('model.demo.fct_revenue')!)).toBe(true)
+    expect(isErdTable(index.nodesById.get('source.demo.app.events')!)).toBe(true)
+  })
+
+  it('is left out of the scope counts the picker offers', () => {
+    const scopes = listScopes(index)
+    const marts = scopes.find((s) => s.kind === 'schema' && s.value === 'marts')!
+    const core = scopes.find((s) => s.kind === 'tag' && s.value === 'core')!
+    expect(marts.modelCount).toBe(3) // fct_revenue, dim_users, mart_board
+    expect(core.modelCount).toBe(3) // stg_payments, fct_revenue, dim_users
+    // a tag only semantic views carry stops being a scope at all
+    expect(scopes.some((s) => s.kind === 'tag' && s.value === 'semantic')).toBe(false)
+  })
+
+  it('is not in the scope, so it is never drawn or auto-expanded', () => {
+    const marts = listScopes(index).find((s) => s.kind === 'schema' && s.value === 'marts')!
+    expect(scopeModelIds(index, marts).has(SV)).toBe(false)
+    const erd = erdForScope(index, marts)
+    expect(erd.models.map((m) => m.node.node_id)).not.toContain(SV)
+    expect(autoExpandedModels(erd.models).has(SV)).toBe(false)
+  })
+
+  it('still resolves by name, so a staged entry on one is not reported missing', () => {
+    const { drawable, unresolvedIds } = resolveStaged(index, [
+      {
+        id: 'staged-on-sv',
+        from_model: 'fct_revenue',
+        from_column: 'user_id',
+        to_model: 'sv_revenue',
+        to_column: 'user_id',
+      },
+    ])
+    expect(unresolvedIds).toEqual([])
+    expect(drawable[0].toModelId).toBe(SV)
+  })
+
+  it('never lands an edge on a card the canvas will not draw', () => {
+    const marts = listScopes(index).find((s) => s.kind === 'schema' && s.value === 'marts')!
+    const { drawable } = resolveStaged(index, [
+      {
+        id: 'staged-on-sv',
+        from_model: 'fct_revenue',
+        from_column: 'user_id',
+        to_model: 'sv_revenue',
+        to_column: 'user_id',
+      },
+    ])
+    const erd = erdForScope(index, marts, drawable, drawable)
+    expect(erd.staged).toEqual([])
+    expect(erd.suggested).toEqual([])
+    // and it is not pulled in as an external endpoint to hold the dropped edge
+    expect(erd.models.map((m) => m.node.node_id)).not.toContain(SV)
+  })
+
+  it('keeps a declared relationship off the canvas at both ends', () => {
+    const withRel = fixtureGraph()
+    withRel.edges.push({
+      from: 'model.demo.dim_users::user_id',
+      to: `${SV}::user_id`,
+      edge_type: 'relates_to',
+      confidence: 'declared',
+      evidence: {},
+    })
+    const relIndex = buildIndex(withRel)
+    const marts = listScopes(relIndex).find((s) => s.kind === 'schema' && s.value === 'marts')!
+    // the picker's count and the canvas agree, and neither counts the semantic view
+    expect(marts.relationshipCount).toBe(1)
+    const erd = erdForScope(relIndex, marts)
+    expect(erd.relationships).toHaveLength(1)
+    expect(erd.models.map((m) => m.node.node_id)).not.toContain(SV)
   })
 })
 

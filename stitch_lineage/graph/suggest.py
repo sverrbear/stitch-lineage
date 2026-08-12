@@ -33,6 +33,7 @@ from stitch_lineage.graph.schema import (
     NodeType,
     relationship_id,
 )
+from stitch_lineage.graph.scopes import is_erd_table
 
 __all__ = ["NAMING_SCORE", "Suggestion", "suggest"]
 
@@ -117,8 +118,16 @@ def _model_columns(graph: Graph) -> tuple[dict[str, Node], dict[str, dict[str, N
     Only NodeType.MODEL owners: a suggestion has to be acceptable, and both the staging
     API and `stitch apply` resolve dbt model names -- a source column could never be
     written back.
+
+    And only models the ERD draws (`is_erd_table`): a suggestion is a candidate EDGE on
+    that canvas, so one naming a semantic view could be listed and accepted but never
+    drawn -- a relationship declared on something with no table to land on (#191).
     """
-    models = {node.node_id: node for node in graph.nodes if node.node_type is NodeType.MODEL}
+    models = {
+        node.node_id: node
+        for node in graph.nodes
+        if node.node_type is NodeType.MODEL and is_erd_table(node)
+    }
     columns: dict[str, dict[str, Node]] = defaultdict(dict)
     for node in graph.nodes:
         if node.node_type is not NodeType.COLUMN:
