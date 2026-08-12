@@ -4,6 +4,8 @@ import { buildIndex } from './graph'
 import {
   displayName,
   displayTableName,
+  managerOf,
+  managerOfNode,
   strippedPrefixes,
   setStripModelPrefixes,
   setTablePrefixes,
@@ -18,7 +20,7 @@ import {
   warehouseColumn,
   warehouseRelation,
 } from './present'
-import type { GraphNode } from '../types'
+import type { GraphNode, NodeType } from '../types'
 
 const index = buildIndex(fixtureGraph())
 const get = (id: string): GraphNode => index.nodesById.get(id)!
@@ -201,5 +203,48 @@ describe('card context and archived flag', () => {
     expect(isArchived(card({ archived: true }))).toBe(true)
     expect(isArchived(card({ archived: false }))).toBe(false)
     expect(isArchived(card({}))).toBe(false)
+  })
+})
+
+// #187: the badge answers "who manages this table", not "which system does it live
+// in". Getting this wrong is invisible — a wrong mark is still a mark — so the rule
+// is pinned per node type here rather than left to a reader of the component.
+describe('who manages a node (#187)', () => {
+  it('gives dbt everything the pipeline produces', () => {
+    expect(managerOf('model')).toBe('dbt')
+    expect(managerOfNode(get('model.demo.stg_payments'))).toBe('dbt')
+  })
+
+  it('gives Snowflake a source: it landed in the warehouse, dbt does not manage it', () => {
+    expect(managerOf('source')).toBe('snowflake')
+    expect(managerOfNode(get('source.demo.app.events'))).toBe('snowflake')
+    expect(managerOfNode(get('source.demo.artifacts.dbt_runs'))).toBe('snowflake')
+  })
+
+  it('gives a column the manager of its own table, either side of the boundary', () => {
+    expect(managerOfNode(get('model.demo.stg_payments::amount'))).toBe('dbt')
+    expect(managerOfNode(get('source.demo.app.events::amount'))).toBe('snowflake')
+  })
+
+  it('leaves the Metabase side alone', () => {
+    expect(managerOf('mb_field')).toBe('metabase')
+    expect(managerOf('mb_card')).toBe('metabase')
+    expect(managerOf('mb_dashboard')).toBe('metabase')
+    expect(managerOfNode(get('mb_card::412'))).toBe('metabase')
+  })
+
+  it('never claims dbt manages a warehouse table it cannot identify', () => {
+    // a column whose owner prefix is neither `model.` nor `source.`, and a column
+    // asked about with no id at all: both are "we do not know", and the honest
+    // answer to that is the mark that claims nothing about the dbt repo.
+    expect(managerOf('column', 'seed.demo.country_codes::code')).toBe('snowflake')
+    expect(managerOf('column')).toBe('snowflake')
+  })
+
+  it('classifies every node type in the schema, so a new one cannot slip through', () => {
+    const types: NodeType[] = ['source', 'model', 'column', 'mb_field', 'mb_card', 'mb_dashboard']
+    for (const type of types) {
+      expect(['dbt', 'snowflake', 'metabase']).toContain(managerOf(type))
+    }
   })
 })

@@ -10,10 +10,11 @@ import {
   CONFIDENCE_LABEL,
   NODE_TYPE_NAME,
   displayName,
+  managerOfNode,
   nodeContext,
 } from '../lib/present'
 import { nodeHref } from '../router'
-import { SystemBadge, MetabaseMark, SnowflakeMark } from './badges'
+import { NodeBadge, DbtMark, MetabaseMark, SnowflakeMark } from './badges'
 import { copy } from '../copy'
 
 /**
@@ -53,7 +54,7 @@ export function NodeChip({
   const shown = context === undefined ? nodeContext(index, node) : context
   return (
     <a className="node-chip" href={nodeHref(node.node_id)} title={node.node_id}>
-      <SystemBadge nodeType={node.node_type} />
+      <NodeBadge node={node} />
       <span className="node-chip-name">{displayName(node)}</span>
       <span className="node-chip-type">{NODE_TYPE_NAME[node.node_type]}</span>
       {shown ? <span className="node-chip-context">{shown}</span> : null}
@@ -93,6 +94,26 @@ export function Fact({ label, children }: { label: string; children?: ReactNode 
   )
 }
 
+/**
+ * Who manages this table, spelled out (#187).
+ *
+ * The badge answers the same question in 14px of brand color, which is the fast
+ * read; this row is the one that survives a colorblind reader, a greyscale
+ * screenshot and someone who has never seen either mark before. Warehouse-side
+ * panels only — on a card or a dashboard the panel's own type already says
+ * Metabase, and a row repeating it is furniture.
+ */
+export function ManagedByFact({ node }: { node: GraphNode }) {
+  return (
+    <Fact label={copy.managedBy.label}>
+      <span className="managed-by">
+        <NodeBadge node={node} size={12} />
+        {copy.managedBy[managerOfNode(node)]}
+      </span>
+    </Fact>
+  )
+}
+
 /** Footer legend for the lineage / ERD / map canvases (spec §9 + confidence styling). */
 export function GraphLegend({
   erd = false,
@@ -107,8 +128,13 @@ export function GraphLegend({
 }) {
   return (
     <div className="graph-legend">
+      {/* Who manages the table, in the order a chain runs: a source lands in the
+          warehouse, dbt builds on it, Metabase reads the result (#187). */}
       <span className="legend-item">
-        <SnowflakeMark size={12} /> {copy.legend.dbt}
+        <SnowflakeMark size={12} /> {copy.legend.snowflake}
+      </span>
+      <span className="legend-item">
+        <DbtMark size={12} /> {copy.legend.dbt}
       </span>
       <span className="legend-item">
         <MetabaseMark size={12} /> {copy.legend.metabase}
