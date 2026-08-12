@@ -23,7 +23,8 @@ import { GraphLegend } from '../components/bits'
 import { useStitch } from '../data'
 import { CLICK_SLOP_PX } from '../lib/canvas'
 import { metabaseLink, type GraphIndex } from '../lib/graph'
-import { lineageFor, layoutLineage } from '../lib/lineage'
+import { LineageRoutedEdge } from '../components/LineageEdge'
+import { edgeFans, lineageFor, layoutLineage } from '../lib/lineage'
 import { CONFIDENCE_HELP, NODE_TYPE_NAME, displayName, nodeContext } from '../lib/present'
 import { entityIdOf, layerEntities, rollUp, type Grain, type RollupEdge } from '../lib/rollup'
 import { lineageHref, navigate, nodeHref } from '../router'
@@ -89,6 +90,9 @@ function LineageNode({ data }: NodeProps<LineageFlowNode>) {
 }
 
 const nodeTypes = { lineage: LineageNode }
+// Fanned ends, and routed around the cards where the drawing is small enough (#176).
+const edgeTypes = { lineage: LineageRoutedEdge }
+const EDGE_TYPE = 'lineage'
 
 /** The same reachable subgraph at table grain, laid out by the shared layerer. */
 function rolledView(
@@ -148,7 +152,13 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
       position: positions.get(node.node_id) ?? { x: 0, y: 0 },
       data: { node, context: nodeContext(index, node), isRoot: node.node_id === focusId },
     }))
-    const flowEdges: Edge[] = view.edges.map((edge) => {
+    // Edges meeting a card at the same pixel are pulled apart, so two relationships
+    // arriving at one column row read as two lines (#176). Computed over the whole
+    // list, because a fan is a property of the group and not of any one edge.
+    const fans = edgeFans(
+      view.edges.map((edge) => ({ source: edge.from, target: edge.to })),
+    )
+    const flowEdges: Edge[] = view.edges.map((edge, i) => {
       const dashed = DASHED.has(edge.confidence)
       const rollupWeight = 'weight' in edge ? (edge as RollupEdge).weight : null
       const evidence =
@@ -162,6 +172,7 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
         id: `${edge.from}->${edge.to}:${kind}`,
         source: edge.from,
         target: edge.to,
+        type: EDGE_TYPE,
         className: `lineage-edge conf-${edge.confidence}`,
         style: {
           strokeDasharray: dashed ? '6 4' : undefined,
@@ -169,6 +180,7 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
         },
         data: {
           tooltip: `${kind} · ${edge.confidence}\n${CONFIDENCE_HELP[edge.confidence]}${evidence ? `\n${evidence}` : ''}`,
+          fan: fans.get(i),
         },
       }
     })
@@ -271,6 +283,7 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
           onNodesChange={onNodesChange}
           edges={edges}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           fitView
           minZoom={0.05}
           nodesConnectable={false}

@@ -24,9 +24,10 @@
 // `.erd-edge.validated` in styles.css. A glyph pinned to a midpoint is a caption by
 // another name, and at fit zoom over 30 relationships it was a field of ticks.
 
-import { BaseEdge, Position, useStore, type EdgeProps } from '@xyflow/react'
+import { BaseEdge, Position, type EdgeProps } from '@xyflow/react'
 import { useMemo } from 'react'
 import { chooseAnchors } from '../lib/edgeAnchors'
+import { useCardRects } from './useCardRects'
 import { roundedPath, routeEdge, type AnchorSide, type RoutingRect } from '../lib/edgeRouting'
 
 /**
@@ -34,44 +35,6 @@ import { roundedPath, routeEdge, type AnchorSide, type RoutingRect } from '../li
  * corner reads as a curve at the zoom levels a big scope is actually viewed at.
  */
 const CORNER_PX = 0
-
-/**
- * Every card on the canvas, in flow coordinates. Positions are quantised so a
- * drag re-routes on real movement rather than on every sub-pixel frame.
- */
-function useCardRects(): RoutingRect[] {
-  return useStore(
-    (state) => {
-      const rects: RoutingRect[] = []
-      for (const [id, node] of state.nodeLookup) {
-        const width = node.measured?.width
-        const height = node.measured?.height
-        if (!width || !height) continue
-        const { x, y } = node.internals.positionAbsolute
-        rects.push({
-          id,
-          x: Math.round(x / 4) * 4,
-          y: Math.round(y / 4) * 4,
-          width: Math.round(width),
-          height: Math.round(height),
-        })
-      }
-      return rects
-    },
-    (a, b) =>
-      a.length === b.length &&
-      a.every((rect, i) => {
-        const other = b[i]
-        return (
-          rect.id === other.id &&
-          rect.x === other.x &&
-          rect.y === other.y &&
-          rect.width === other.width &&
-          rect.height === other.height
-        )
-      }),
-  )
-}
 
 function sideOf(position: Position | undefined, fallback: AnchorSide): AnchorSide {
   if (position === Position.Left) return 'left'
