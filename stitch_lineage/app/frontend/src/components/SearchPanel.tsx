@@ -8,7 +8,7 @@ import { consequenceLabel } from '../lib/consequence'
 import { groupHits, type SearchHit } from '../lib/search'
 import { NODE_TYPE_NAME, displayName, isArchived } from '../lib/present'
 import { navigate, nodeHref } from '../router'
-import { SystemBadge } from './badges'
+import { NodeBadge } from './badges'
 import { copy } from '../copy'
 
 export interface SearchPanelProps {
@@ -103,7 +103,7 @@ export function SearchPanel({
                     onClick={() => go(hit)}
                     title={hit.node.node_id}
                   >
-                    <SystemBadge nodeType={hit.node.node_type} />
+                    <NodeBadge node={hit.node} />
                     <span className="search-hit-name">{displayName(hit.node)}</span>
                     <span className="search-hit-type">{NODE_TYPE_NAME[hit.node.node_type]}</span>
                     {hit.context && <span className="search-hit-context">{hit.context}</span>}

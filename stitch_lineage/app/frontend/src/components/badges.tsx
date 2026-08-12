@@ -1,13 +1,20 @@
-// System badges (spec §9): every node carries the mark of the system it lives
-// in — Snowflake for dbt sources/models/columns (the warehouse side), Metabase
-// for fields/cards/dashboards (the BI side). SVG path data inlined from
-// assets/logos/{snowflake,metabase}.svg (nominative use; marks belong to
-// their owners). Fill defaults to the brand color; pass color="currentColor"
-// to inherit.
-
-import type { NodeType } from '../types'
+// Manager badges (spec §9, #187): every node carries the mark of whoever MANAGES
+// it, not of the system it happens to sit in. The dbt mark on everything the dbt
+// pipeline produces (models, and the seeds/snapshots that reach the app as their
+// dependents' upstreams); the Snowflake mark on dbt sources, which land in the
+// warehouse by something nobody in this repo controls; the Metabase mark on the BI
+// side, unchanged. `managerOf` in lib/present is the one classifier — a badge never
+// decides this for itself.
+//
+// SVG path data inlined from assets/logos/{dbt,snowflake,metabase}.svg (nominative
+// use; the marks belong to their owners). Fill defaults to the brand color; pass
+// color="currentColor" to inherit.
+import type { ReactElement } from 'react'
+import type { GraphNode, NodeType } from '../types'
+import { type Manager, managerOf } from '../lib/present'
 import { copy } from '../copy'
 
+export const DBT_ORANGE = '#FF694B'
 export const SNOWFLAKE_BLUE = '#29B5E8'
 export const METABASE_BLUE = '#509EE3'
 
@@ -17,55 +24,112 @@ interface MarkProps {
   className?: string
 }
 
+const DBT_PATH =
+  'M17.9004 9.3763a8.1488 8.1488 0 0 0-3.0421-3.1206l1.7708.8385a10.2874 10.2874 0 0 1 3.74 3.0007l3.234-5.9295a2.8546 2.8546 0 0 0-.0611-2.9604C22.7566.0371 21.2112-.3409 19.9754.3327l-5.8749 3.2101a4.3612 4.3612 0 0 1-4.1761 0L4.1769.408a2.8545 2.8545 0 0 0-2.9592.0632c-1.1673.7853-1.5452 2.33-.8723 3.5655L3.55 9.9106a4.3612 4.3612 0 0 1 0 4.1772l-3.1272 5.743a2.86 2.86 0 0 0 .085 2.9974c.794 1.1438 2.3225 1.5054 3.5448.8385l6.0581-3.3049a10.2877 10.2877 0 0 1-3.0051-3.7454l-.8374-1.7708a8.148 8.148 0 0 0 3.1206 3.0421l10.5832 5.779c1.2213.666 2.7481.3055 3.5426-.8363a2.8699 2.8699 0 0 0 .0796-3.0018L17.9004 9.3763zm3.3801-7.7351c.6022 0 1.0904.4882 1.0904 1.0904s-.4882 1.0904-1.0904 1.0904-1.0904-.4882-1.0904-1.0904.4882-1.0904 1.0904-1.0904zM2.7442 3.822c-.6022 0-1.0904-.4882-1.0904-1.0904s.4882-1.0904 1.0904-1.0904 1.0904.4882 1.0904 1.0904S3.3464 3.822 2.7442 3.822zm0 18.5363c-.6022 0-1.0904-.4882-1.0904-1.0904 0-.6022.4882-1.0904 1.0904-1.0904s1.0904.4882 1.0904 1.0904c0 .6022-.4882 1.0904-1.0904 1.0904zm10.3585-11.4489c-1.2008-.0035-2.177.9672-2.1805 2.1679a2.1738 2.1738 0 0 0 .7052 1.6091c-1.4872-.2091-2.5234-1.5843-2.3142-3.0716.2091-1.4872 1.5843-2.5234 3.0716-2.3142a2.7194 2.7194 0 0 1 2.3142 2.3142 2.1623 2.1623 0 0 0-1.5963-.7054zm8.1778 11.4489c-.6022 0-1.0904-.4882-1.0904-1.0904 0-.6022.4882-1.0904 1.0904-1.0904s1.0904.4882 1.0904 1.0904c0 .6022-.4882 1.0904-1.0904 1.0904z'
+
 const SNOWFLAKE_PATH =
   'M24 3.459c0 .646-.418 1.18-1.141 1.18-.723 0-1.142-.534-1.142-1.18 0-.647.419-1.18 1.142-1.18.723 0 1.141.533 1.141 1.18zm-.228 0c0-.533-.38-.951-.913-.951s-.913.38-.913.95c0 .533.38.952.913.952.57 0 .913-.419.913-.951zm-1.37-.533h.495c.266 0 .456.152.456.38 0 .153-.076.229-.19.305l.19.266v.038h-.266l-.19-.266h-.229v.266h-.266zm.495.228h-.229v.267h.229c.114 0 .152-.038.152-.114.038-.077-.038-.153-.152-.153zM7.602 12.4c.038-.151.076-.304.076-.456 0-.114-.038-.228-.038-.342-.114-.343-.304-.647-.646-.838l-4.87-2.777c-.685-.38-1.56-.152-1.94.533-.381.685-.153 1.56.532 1.94l2.701 1.56-2.701 1.56c-.685.38-.913 1.256-.533 1.94.38.685 1.256.914 1.94.533l4.832-2.777c.343-.267.571-.533.647-.876zm1.332 2.626c-.266-.038-.57.038-.837.19l-4.832 2.777c-.685.38-.913 1.256-.532 1.94.38.686 1.255.914 1.94.533l2.701-1.56v3.12c0 .8.647 1.408 1.446 1.408.799 0 1.407-.647 1.407-1.408v-5.592c0-.761-.57-1.37-1.293-1.408zm4.946-6.088c.266.038.57-.038.837-.19l4.832-2.777c.685-.38.913-1.256.532-1.94-.38-.686-1.255-.914-1.94-.533l-2.701 1.56V1.975c0-.799-.647-1.408-1.446-1.408-.799 0-1.446.609-1.446 1.408V7.53c0 .76.609 1.37 1.332 1.407zM3.265 5.97l4.832 2.777c.266.152.533.19.837.19.723-.038 1.331-.684 1.331-1.407V1.975c0-.799-.646-1.408-1.407-1.408-.799 0-1.446.647-1.446 1.408v3.12l-2.701-1.56c-.685-.38-1.56-.152-1.94.533-.419.646-.19 1.521.494 1.902zm9.093 6.011a.412.412 0 00-.114-.266l-.57-.571a.346.346 0 00-.267-.114.412.412 0 00-.266.114l-.571.57a.411.411 0 00-.114.267c0 .076.038.19.114.267l.57.57a.345.345 0 00.267.114c.076 0 .19-.038.266-.114l.571-.57a.412.412 0 00.114-.267zm1.598.533L11.94 14.53c-.039.038-.153.114-.229.114h-.608a.411.411 0 01-.267-.114L8.82 12.514a.408.408 0 01-.076-.229v-.608c0-.076.038-.19.114-.267l2.016-2.016a.41.41 0 01.267-.114h.608a.41.41 0 01.267.114l2.016 2.016a.347.347 0 01.114.267v.608c-.076.077-.114.19-.19.229zm5.593 5.44l-4.832-2.777c-.266-.152-.57-.19-.837-.152-.723.038-1.332.684-1.332 1.408v5.554c0 .8.647 1.408 1.408 1.408.799 0 1.446-.647 1.446-1.408v-3.12l2.7 1.56c.686.38 1.561.152 1.941-.533.419-.646.19-1.521-.494-1.94zm2.549-7.533l-2.701 1.56 2.7 1.56c.686.38.914 1.256.533 1.94-.38.685-1.255.913-1.94.533l-4.832-2.778a1.644 1.644 0 01-.647-.798c-.037-.153-.076-.305-.076-.457 0-.114.039-.228.039-.342.114-.343.342-.647.646-.837l4.832-2.778c.685-.38 1.56-.152 1.94.533.457.609.19 1.484-.494 1.864'
 
 const METABASE_PATH =
   'M5.385 6.136c0 .807-.644 1.461-1.438 1.461s-1.438-.654-1.438-1.461.644-1.461 1.438-1.461 1.438.654 1.438 1.461zm-1.438 2.63c-.794 0-1.438.654-1.438 1.461s.644 1.461 1.438 1.461 1.438-.654 1.438-1.461-.644-1.461-1.438-1.461zm5.465-2.63c0 .807-.644 1.461-1.438 1.461s-1.438-.654-1.438-1.461.644-1.461 1.438-1.461 1.438.654 1.438 1.461zm-.35 0c0-.613-.488-1.111-1.088-1.111s-1.088.499-1.088 1.111.488 1.111 1.088 1.111 1.088-.498 1.088-1.111zm-1.088 5.592c.794 0 1.438-.654 1.438-1.461s-.644-1.461-1.438-1.461-1.438.654-1.438 1.461.643 1.461 1.438 1.461zm5.464-5.592c0 .807-.644 1.461-1.438 1.461s-1.438-.654-1.438-1.461.644-1.461 1.438-1.461 1.438.654 1.438 1.461zm-.35 0c0-.613-.488-1.111-1.088-1.111s-1.088.498-1.088 1.111S11.4 7.247 12 7.247s1.088-.498 1.088-1.111zm.35-4.675c0 .807-.644 1.461-1.438 1.461s-1.438-.654-1.438-1.461S11.206 0 12 0s1.438.654 1.438 1.461zm-.35 0C13.088.848 12.6.35 12 .35s-1.088.498-1.088 1.111S11.4 2.572 12 2.572s1.088-.498 1.088-1.111zm.35 8.806c0 .807-.644 1.461-1.438 1.461s-1.438-.654-1.438-1.461.644-1.461 1.438-1.461 1.438.654 1.438 1.461zm-.35 0c0-.613-.488-1.111-1.088-1.111s-1.088.498-1.088 1.111.488 1.111 1.088 1.111 1.088-.499 1.088-1.111zm4.376-4.131c0 .807-.644 1.461-1.438 1.461s-1.438-.654-1.438-1.461.644-1.461 1.438-1.461 1.438.654 1.438 1.461zm-.35 0c0-.613-.488-1.111-1.088-1.111s-1.088.498-1.088 1.111.488 1.111 1.088 1.111 1.088-.498 1.088-1.111zm2.939 1.461c.794 0 1.438-.654 1.438-1.461s-.644-1.461-1.438-1.461-1.438.654-1.438 1.461.644 1.461 1.438 1.461zm-4.027 1.209c-.794 0-1.438.654-1.438 1.461s.644 1.461 1.438 1.461 1.438-.654 1.438-1.461-.643-1.461-1.438-1.461zm4.027 0c-.794 0-1.438.654-1.438 1.461s.644 1.461 1.438 1.461 1.438-.654 1.438-1.461-.644-1.461-1.438-1.461zM3.947 12.857a1.45 1.45 0 0 0-1.438 1.461c0 .807.644 1.461 1.438 1.461s1.438-.654 1.438-1.461a1.45 1.45 0 0 0-1.438-1.461zm5.465 1.5c0 .807-.644 1.461-1.438 1.461s-1.438-.654-1.438-1.461.644-1.461 1.438-1.461 1.438.655 1.438 1.461zm-.35 0c0-.613-.488-1.111-1.088-1.111s-1.088.498-1.088 1.111.488 1.111 1.088 1.111 1.088-.498 1.088-1.111zM12 12.896c-.794 0-1.438.654-1.438 1.461s.644 1.461 1.438 1.461 1.438-.654 1.438-1.461-.644-1.461-1.438-1.461zm5.464 1.461c0 .807-.644 1.461-1.438 1.461s-1.438-.654-1.438-1.461.644-1.461 1.438-1.461 1.438.655 1.438 1.461zm-.35 0c0-.613-.488-1.111-1.088-1.111s-1.088.498-1.088 1.111.488 1.111 1.088 1.111 1.088-.498 1.088-1.111zm2.939-1.461c-.794 0-1.438.654-1.438 1.461s.644 1.461 1.438 1.461 1.438-.654 1.438-1.461-.644-1.461-1.438-1.461zM3.947 16.948c-.794 0-1.438.654-1.438 1.461s.644 1.461 1.438 1.461 1.438-.654 1.438-1.461-.644-1.461-1.438-1.461zm5.465 1.5c0 .807-.644 1.461-1.438 1.461s-1.438-.654-1.438-1.461.644-1.461 1.438-1.461 1.438.654 1.438 1.461zm-.35 0c0-.613-.488-1.111-1.088-1.111s-1.088.498-1.088 1.111.488 1.111 1.088 1.111 1.088-.498 1.088-1.111zm4.376 0c0 .807-.644 1.461-1.438 1.461s-1.438-.654-1.438-1.461.644-1.461 1.438-1.461 1.438.654 1.438 1.461zm-.35 0c0-.613-.488-1.111-1.088-1.111s-1.088.498-1.088 1.111.488 1.111 1.088 1.111 1.088-.498 1.088-1.111zm.35 4.091c0 .807-.644 1.461-1.438 1.461s-1.438-.654-1.438-1.461.644-1.461 1.438-1.461 1.438.654 1.438 1.461zm-.35 0c0-.613-.488-1.111-1.088-1.111s-1.088.498-1.088 1.111S11.4 23.65 12 23.65s1.088-.498 1.088-1.111zm4.376-4.091c0 .807-.644 1.461-1.438 1.461s-1.438-.654-1.438-1.461.644-1.461 1.438-1.461 1.438.654 1.438 1.461zm-.35 0c0-.613-.488-1.111-1.088-1.111s-1.088.498-1.088 1.111.488 1.111 1.088 1.111 1.088-.498 1.088-1.111zm2.939-1.461c-.794 0-1.438.654-1.438 1.461s.644 1.461 1.438 1.461 1.438-.654 1.438-1.461-.644-1.461-1.438-1.461z'
 
-export function SnowflakeMark({ size = 14, color = SNOWFLAKE_BLUE, className }: MarkProps) {
+/**
+ * A mark is 14px of color, so the words are what actually report the management —
+ * and they have to arrive both ways: `<title>` is the native hover tooltip, the
+ * matching `aria-label` is the accessible name. Same string in both, so a reader
+ * who hovers and a reader who listens are told exactly the same thing, and neither
+ * has to tell dbt-orange from Snowflake-blue to learn it.
+ */
+function Mark({
+  path,
+  label,
+  size,
+  color,
+  className,
+}: MarkProps & { path: string; label: string }) {
   return (
     <svg
       viewBox="0 0 24 24"
-      width={size}
-      height={size}
+      width={size ?? 14}
+      height={size ?? 14}
       fill={color}
       className={className}
       role="img"
-      aria-label={copy.badges.snowflake}
+      aria-label={label}
     >
-      <path d={SNOWFLAKE_PATH} />
+      <title>{label}</title>
+      <path d={path} />
     </svg>
   )
 }
 
-export function MetabaseMark({ size = 14, color = METABASE_BLUE, className }: MarkProps) {
+/** Produced by the dbt pipeline — a model, seed or snapshot. */
+export function DbtMark({ size, color = DBT_ORANGE, className }: MarkProps) {
   return (
-    <svg
-      viewBox="0 0 24 24"
-      width={size}
-      height={size}
-      fill={color}
+    <Mark path={DBT_PATH} label={copy.badges.dbt} size={size} color={color} className={className} />
+  )
+}
+
+/** Landed in Snowflake by something else — a dbt source, which dbt does not manage. */
+export function SnowflakeMark({ size, color = SNOWFLAKE_BLUE, className }: MarkProps) {
+  return (
+    <Mark
+      path={SNOWFLAKE_PATH}
+      label={copy.badges.snowflake}
+      size={size}
+      color={color}
       className={className}
-      role="img"
-      aria-label={copy.badges.metabase}
-    >
-      <path d={METABASE_PATH} />
-    </svg>
+    />
   )
 }
 
-export function systemOf(nodeType: NodeType): 'snowflake' | 'metabase' {
-  return nodeType.startsWith('mb_') ? 'metabase' : 'snowflake'
-}
-
-/** The badge used everywhere: search results, panels, lineage nodes, ERD headers. */
-export function SystemBadge({ nodeType, size = 14 }: { nodeType: NodeType; size?: number }) {
-  return systemOf(nodeType) === 'metabase' ? (
-    <MetabaseMark size={size} />
-  ) : (
-    <SnowflakeMark size={size} />
+export function MetabaseMark({ size, color = METABASE_BLUE, className }: MarkProps) {
+  return (
+    <Mark
+      path={METABASE_PATH}
+      label={copy.badges.metabase}
+      size={size}
+      color={color}
+      className={className}
+    />
   )
 }
 
-// NODE_TYPE_NAME lives in lib/present with the rest of the naming rules.
+const MARK: Record<Manager, (props: MarkProps) => ReactElement> = {
+  dbt: DbtMark,
+  snowflake: SnowflakeMark,
+  metabase: MetabaseMark,
+}
+
+/**
+ * The badge used everywhere: search results, panels, lineage nodes, ERD headers.
+ *
+ * `nodeId` is what makes a COLUMN answerable — a column's manager is its parent
+ * table's, and the id is where the parent is written. Pass it whenever there is one;
+ * only the two Metabase literals in the fan-out lists do not have one to pass.
+ */
+export function ManagerBadge({
+  nodeType,
+  nodeId,
+  size = 14,
+}: {
+  nodeType: NodeType
+  nodeId?: string
+  size?: number
+}) {
+  const Chosen = MARK[managerOf(nodeType, nodeId)]
+  return <Chosen size={size} />
+}
+
+/** The same badge from a node in hand — the form every call site with a node wants. */
+export function NodeBadge({
+  node,
+  size = 14,
+}: {
+  node: Pick<GraphNode, 'node_type' | 'node_id'>
+  size?: number
+}) {
+  return <ManagerBadge nodeType={node.node_type} nodeId={node.node_id} size={size} />
+}
+
+// NODE_TYPE_NAME and managerOf live in lib/present with the rest of the naming rules.
