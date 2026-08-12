@@ -74,23 +74,41 @@ function classCount(selector: string): number {
   return (selector.match(/\./g) ?? []).length
 }
 
+/** The comma-separated parts of a rule's selector that this element matches. */
+function matchingParts(selector: string, classes: readonly string[]): string[] {
+  return selector.split(',').filter((one) => {
+    const named = one.trim().match(/\.[\w-]+/g) ?? []
+    return named.length > 0 && named.every((name) => classes.includes(name.slice(1)))
+  })
+}
+
+/**
+ * How specifically this rule reaches this element.
+ *
+ * Per PART, not per rule: a selector LIST has no single specificity — each part
+ * carries its own, and the part that matched is the one that competes. Counting the
+ * dots across `a, b, c` as one number would let a three-way list beat every single
+ * selector in the file on arithmetic the cascade never does. (#186 added the first
+ * list this file has to reason about, which is what surfaced it.)
+ */
+function specificity(rule: Rule, classes: readonly string[]): number {
+  return Math.max(...matchingParts(rule.selector, classes).map(classCount))
+}
+
 /**
  * Of the rules that set `property` on an element carrying every class in
  * `classes`, the one the cascade actually applies: highest specificity, then
  * latest in source.
  */
 function winning(property: string, classes: readonly string[]): Rule | null {
-  const applicable = topLevelRules(CSS).filter((rule) => {
-    if (declaration(rule.body, property) === null) return false
-    return rule.selector.split(',').some((one) => {
-      const named = one.trim().match(/\.[\w-]+/g) ?? []
-      return named.length > 0 && named.every((name) => classes.includes(name.slice(1)))
-    })
-  })
+  const applicable = topLevelRules(CSS).filter(
+    (rule) =>
+      declaration(rule.body, property) !== null && matchingParts(rule.selector, classes).length > 0,
+  )
   if (applicable.length === 0) return null
   return applicable.reduce((best, rule) =>
-    classCount(rule.selector) > classCount(best.selector) ||
-    (classCount(rule.selector) === classCount(best.selector) && rule.at > best.at)
+    specificity(rule, classes) > specificity(best, classes) ||
+    (specificity(rule, classes) === specificity(best, classes) && rule.at > best.at)
       ? rule
       : best,
   )
@@ -187,5 +205,46 @@ describe('a validated relationship reads off the line (#164)', () => {
     const solid = Number(declaration(winning('stroke-width', ['legend-line-solid'])?.body ?? '', 'stroke-width'))
     const strong = Number(declaration(winning('stroke-width', ['legend-line-strong'])?.body ?? '', 'stroke-width'))
     expect(strong).toBeGreaterThan(solid)
+  })
+})
+
+describe('a pointed-at relationship still lights, after the class moved (#186)', () => {
+  // The ERD canvas used to put `hovered`/`picked` on the wrapping <g>; it now puts
+  // them on the <path>, because a path can subscribe to its own state and a <g>
+  // owned by React Flow cannot. Nothing about the DRAWING was meant to change, and
+  // the cascade is where that promise gets kept or quietly broken.
+  const HOVERED_PATH = [...EDGE_PATH, 'hovered']
+
+  it('takes the accent stroke when the class is on the path', () => {
+    const rule = winning('stroke', HOVERED_PATH)
+    expect(rule?.selector).toContain('.hovered')
+    expect(declaration(rule?.body ?? '', 'stroke')).toBe('var(--accent)')
+  })
+
+  it('does the same for the clicked one', () => {
+    const rule = winning('stroke', [...EDGE_PATH, 'picked'])
+    expect(rule?.selector).toContain('.picked')
+    expect(declaration(rule?.body ?? '', 'stroke')).toBe('var(--accent)')
+  })
+
+  it('leaves a plain relationship the ordinary stroke', () => {
+    expect(declaration(winning('stroke', EDGE_PATH)?.body ?? '', 'stroke')).toBe(
+      'var(--edge-strong)',
+    )
+  })
+
+  it('keeps the model star working, which still writes the class onto the <g>', () => {
+    // the lineage page shares this edge component but not the ERD's store, so the
+    // old spelling has to stay live — in the SAME rule, so the two cannot drift
+    const onGroup = winning('stroke', ['erd-edge', 'hovered', 'react-flow__edge-path'])
+    expect(onGroup?.selector).toContain('.erd-edge.hovered .react-flow__edge-path')
+    expect(onGroup?.selector).toContain('.erd-edge .react-flow__edge-path.hovered')
+  })
+
+  it('still lets a validated relationship keep its weight while pointed at', () => {
+    // it did before the move (the .validated rule is declared later at equal
+    // specificity) and it has to still, or hovering would visibly thin the line
+    const rule = winning('stroke-width', [...HOVERED_PATH, 'validated'])
+    expect(rule?.selector).toContain('.validated')
   })
 })

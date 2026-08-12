@@ -2802,8 +2802,16 @@ kbd {
   cursor: pointer;
 }
 
+/* Two ways in, on purpose (#186). The ERD's own canvas puts `hovered`/`picked` on
+   the PATH, because the line asks the highlight store for its own state — putting
+   it on the wrapping <g> meant the page had to rebuild every edge object to light
+   one. The lineage page's model star still writes the class onto the <g>, and it
+   shares this edge component, so both selectors are live. Equal specificity, one
+   rule, so a line drawn either way looks the same. */
 .erd-edge.hovered .react-flow__edge-path,
-.erd-edge.picked .react-flow__edge-path {
+.erd-edge.picked .react-flow__edge-path,
+.erd-edge .react-flow__edge-path.hovered,
+.erd-edge .react-flow__edge-path.picked {
   stroke: var(--accent);
   stroke-width: 4;
   opacity: 1;
