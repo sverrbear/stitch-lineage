@@ -18,14 +18,20 @@ import {
   type NodeProps,
 } from '@xyflow/react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { SystemBadge } from '../components/badges'
+import { NodeBadge } from '../components/badges'
 import { GraphLegend } from '../components/bits'
 import { useStitch } from '../data'
 import { CLICK_SLOP_PX } from '../lib/canvas'
 import { metabaseLink, type GraphIndex } from '../lib/graph'
 import { LineageRoutedEdge } from '../components/LineageEdge'
 import { edgeFans, lineageFor, layoutLineage } from '../lib/lineage'
-import { CONFIDENCE_HELP, NODE_TYPE_NAME, displayName, nodeContext } from '../lib/present'
+import {
+  CONFIDENCE_HELP,
+  NODE_TYPE_NAME,
+  displayName,
+  managerOfNode,
+  nodeContext,
+} from '../lib/present'
 import { entityIdOf, layerEntities, rollUp, type Grain, type RollupEdge } from '../lib/rollup'
 import { lineageHref, navigate, nodeHref } from '../router'
 import type { Confidence, GraphEdge, GraphNode } from '../types'
@@ -56,10 +62,13 @@ function LineageNode({ data }: NodeProps<LineageFlowNode>) {
   const name = displayName(node)
   const target = titleTarget(node, meta.metabase_url)
   return (
-    <div className={`flow-node system-${node.node_type.startsWith('mb_') ? 'mb' : 'dbt'}${isRoot ? ' root' : ''}`}>
+    // The card's edge stripe carries the same answer as its badge — who manages this
+    // (#187) — so a chain reads as three bands: Snowflake-blue where the data landed,
+    // dbt-orange through the pipeline, Metabase-blue once BI picks it up.
+    <div className={`flow-node system-${managerOfNode(node)}${isRoot ? ' root' : ''}`}>
       <Handle type="target" position={Position.Left} className="flow-handle" />
       <div className="flow-node-title">
-        <SystemBadge nodeType={node.node_type} />
+        <NodeBadge node={node} />
         {/* The name is the ONLY part of the card that navigates; the body re-roots
             the trace. stopPropagation is what keeps the two apart — React Flow's
             onNodeClick sits on the wrapper, so a click that reaches it is a click
@@ -226,7 +235,7 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
     <main className="graph-page">
       <div className="graph-toolbar">
         <span className="graph-toolbar-title">
-          <SystemBadge nodeType={root.node_type} />
+          <NodeBadge node={root} />
           {/* a column is qualified by its model, because a bare column name is
               the ambiguity that costs an afternoon (principle 02) */}
           <span className="graph-toolbar-name" title={root.node_id}>

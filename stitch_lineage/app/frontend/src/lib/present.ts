@@ -9,6 +9,10 @@
 // never a label. Metabase entities read as their Metabase display name with the
 // Metabase table/collection as context.
 //
+// `managerOf` lives here for the same reason: who manages a table is one rule the
+// whole app has to agree on, and like every other identity question on this page it
+// is answered from the node id.
+//
 // Pure TS, unit-tested.
 
 import type { Confidence, GraphNode, NodeType } from '../types'
@@ -95,6 +99,44 @@ export const NODE_TYPE_NAME: Record<NodeType, string> = {
   mb_field: 'field',
   mb_card: 'card',
   mb_dashboard: 'dashboard',
+}
+
+/**
+ * Who MANAGES the thing behind a node — the question the badge answers (#187).
+ *
+ * Not "which system does it live in": a source table lands in Snowflake by something
+ * nobody in the dbt repo controls, so a `dbt run` neither creates it nor can change
+ * it, and badging it with the same mark as a mart it feeds hid the one distinction a
+ * reader is actually asking about. So the warehouse side splits:
+ *
+ * - `dbt` — the dbt pipeline produces it: models, and the seeds and snapshots that
+ *   are pipeline output too (they carry no node type of their own today, so they
+ *   arrive here as their dependents' upstreams — see resolve/dbt.py).
+ * - `snowflake` — a dbt `source`: landed in the warehouse, not managed by dbt. Also
+ *   the fallback for a warehouse node whose owner cannot be read, because claiming
+ *   dbt manages something we could not identify is the wrong way to be wrong.
+ * - `metabase` — the BI side, unchanged.
+ *
+ * A COLUMN inherits its parent table's manager, read off the node id (always
+ * `{dbt unique_id}::{column}`) rather than the graph index, so this stays pure and
+ * usable from a component with no index in hand. `nodeId` is therefore required in
+ * practice for columns; without it a column falls back to `snowflake`.
+ */
+export type Manager = 'dbt' | 'snowflake' | 'metabase'
+
+export function managerOf(nodeType: NodeType, nodeId?: string): Manager {
+  if (nodeType.startsWith('mb_')) return 'metabase'
+  if (nodeType === 'model') return 'dbt'
+  if (nodeType === 'source') return 'snowflake'
+  // column: whoever manages the table it belongs to
+  const owner = nodeId ? modelIdOfColumn(nodeId) : null
+  if (owner?.startsWith('model.')) return 'dbt'
+  return 'snowflake'
+}
+
+/** The same question for a node in hand — the form every call site actually wants. */
+export function managerOfNode(node: Pick<GraphNode, 'node_type' | 'node_id'>): Manager {
+  return managerOf(node.node_type, node.node_id)
 }
 
 /** dbt package of a unique_id: `model.smitten.fct_matches::user_id` -> `smitten`. */
