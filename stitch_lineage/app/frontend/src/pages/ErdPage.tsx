@@ -467,9 +467,14 @@ export function ErdPage({
    *
    * Deliberately NOT React state (#186). This page derives the entire canvas from
    * its state, so a hover held here rebuilt every card and every edge object to
-   * tint two rows — ~17ms of script for a colour change, which is the flicker the
-   * issue is about. The store notifies the two rows and the one line that changed
-   * and nothing else; see lib/erdHighlight.
+   * tint two rows: 851 component renders and ~16ms of script for a colour change,
+   * measured on the real graph. The store notifies the two rows and the one line
+   * that changed and nothing else — 4 renders; see lib/erdHighlight.
+   *
+   * No flicker was ever visible from this, and the issue's report of one turned out
+   * to be a stale cached bundle. It is wasted work, not a broken picture: 16ms is a
+   * whole frame at 60Hz, so it had no headroom left for a bigger scope or a busy
+   * machine. Worth saying, so nobody goes looking for the visual bug it was not.
    */
   const highlight = useErdHighlight()
   const measuredHeights = useRef<Record<string, number>>({})
@@ -584,9 +589,13 @@ export function ErdPage({
 
   /**
    * Putting the hover out is not left to the edge's own `mouseleave` alone, because
-   * React Flow rebuilds an edge's SVG wrapper when a node it touches changes shape —
-   * measured on the real graph, expanding one table replaces 3 of the 29 edge
-   * elements, and a pointer sitting on one of those never sees it leave.
+   * React Flow rebuilds an edge's SVG wrapper when a node it touches changes shape,
+   * and a pointer sitting on one of those never sees it leave.
+   *
+   * How many it rebuilds, measured on the real graph rather than assumed — the note
+   * that used to sit here said "all 35" and that was never true of anything:
+   * expanding a table replaces 4 of the 39 edge elements, dragging one replaces
+   * none, and hovering replaces none.
    *
    * Lighting the rows no longer does that (#186): it changes no node, so hovering
    * destroys nothing and `mouseleave` is reliable for hover itself. This stays for
