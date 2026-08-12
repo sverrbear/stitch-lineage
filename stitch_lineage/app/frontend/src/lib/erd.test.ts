@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   AUTO_EXPAND_MAX_MODELS,
+  COLLAPSED_LIMIT,
   MAX_DRAWN_SUGGESTIONS,
   autoExpandedModels,
   resolveStaged,
@@ -210,6 +211,20 @@ describe('visibleColumns', () => {
   const marts = listScopes(index).find((s) => s.kind === 'schema' && s.value === 'marts')!
   const fct = erdForScope(index, marts).models.find((m) => m.node.name === 'fct_revenue')!
 
+  /** A wide fact table, shape only: one relationship key and 39 plain columns. */
+  const wide = {
+    ...fct,
+    columns: [
+      { ...fct.columns.find((c) => c.isKey)!, key: 'user_id' },
+      ...Array.from({ length: 39 }, (_, i) => ({
+        ...fct.columns.find((c) => !c.isKey)!,
+        key: `metric_${i}`,
+        name: `metric_${i}`,
+        isKey: false,
+      })),
+    ],
+  }
+
   it('never hides a key column, even under the budget', () => {
     const shown = visibleColumns(fct, false, 1)
     expect(shown.map((c) => c.key)).toEqual(['user_id'])
@@ -217,6 +232,22 @@ describe('visibleColumns', () => {
 
   it('shows everything when expanded', () => {
     expect(visibleColumns(fct, true, 1)).toHaveLength(fct.columns.length)
+  })
+
+  // The budget is the number this card's "+ N more columns" is measured against, so
+  // it is asserted here rather than left to whatever the component happens to pass.
+  it('draws a collapsed card up to the row budget, keys first (#192)', () => {
+    expect(COLLAPSED_LIMIT).toBe(13)
+    const shown = visibleColumns(wide, false)
+    expect(shown).toHaveLength(COLLAPSED_LIMIT)
+    expect(shown[0].key).toBe('user_id')
+    // ...and what is left is what the card offers to expand
+    expect(wide.columns.length - shown.length).toBe(27)
+  })
+
+  it('keeps a card narrower than the budget whole, with nothing to expand', () => {
+    expect(fct.columns.length).toBeLessThan(COLLAPSED_LIMIT)
+    expect(visibleColumns(fct, false)).toHaveLength(fct.columns.length)
   })
 
   it('scopes by dbt tag', () => {
