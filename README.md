@@ -8,6 +8,7 @@
 </p>
 
 [![image](https://img.shields.io/github/license/sverrbear/stitch-lineage.svg)](https://github.com/sverrbear/stitch-lineage/blob/main/LICENSE)
+[![image](https://img.shields.io/pypi/v/stitch-lineage.svg)](https://pypi.org/project/stitch-lineage/)
 [![image](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://github.com/sverrbear/stitch-lineage/blob/main/pyproject.toml)
 [![image](https://img.shields.io/github/actions/workflow/status/sverrbear/stitch-lineage/ci.yml?branch=main&label=test)](https://github.com/sverrbear/stitch-lineage/actions/workflows/ci.yml)
 
@@ -27,7 +28,7 @@ tool touches Metabase with anything but a GET.
 Requires **Python 3.11+**, a dbt project whose artifacts you can generate, and **Metabase 49 or
 newer** (the first release with API keys).
 
-This project is in active development — v0.2.1, alpha. Full design in
+This project is alpha, in active development — the badge above is the released version. Full design in
 [SPEC.md](https://github.com/sverrbear/stitch-lineage/blob/main/SPEC.md) (v0.5); work is tracked as
 [GitHub issues](https://github.com/sverrbear/stitch-lineage/issues).
 
@@ -236,8 +237,9 @@ plan, Slack notice, apply, summary, in one job — is
 
 `stitch serve` opens a local browser app over the same file: search everything with `/` and `⌘K`,
 per-node detail panels, the end-to-end lineage view above, and a scoped ERD. Every node carries the
-badge of the system it lives in — Snowflake on the warehouse side, Metabase on the BI side — so a
-glance shows where one ends and the other begins. Cards deep-link back into Metabase.
+badge of who manages it — dbt on what the pipeline builds, Snowflake on the source tables your
+loaders land, Metabase on the BI side — so a glance separates the columns you can rename from the
+ones that arrive as somebody else's decision. Cards deep-link back into Metabase.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/sverrbear/stitch-lineage/main/assets/erd.png" alt="The stitch ERD: two scoped models with a validated relationship drawn between their key columns" width="100%">
@@ -464,7 +466,7 @@ PyPI unless you have a reason not to: `pip install stitch-lineage` gets you the 
 which is the version the docs describe. Install from git when you want a fix that has landed on
 `main` but has not been tagged yet.
 
-There was no PyPI package until 2026-08-11 — the SPEC called git-install deliberate, on the grounds
+There was no PyPI package until 2026-08-12 — the SPEC called git-install deliberate, on the grounds
 that pinning to a ref you chose keeps you in control of when the tool changes. That reasoning
 applies to a ref, not to a registry: a tagged PyPI release is just as pinnable and far easier to
 install. Releases publish from a `v*` tag through PyPI Trusted Publishing (OIDC, no API tokens), and
