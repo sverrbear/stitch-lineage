@@ -80,10 +80,23 @@ export const copy = {
     hint: '↑↓ navigate · ↵ open · esc close',
   },
 
-  /** The system marks, for anyone reading with a screen reader. */
+  /**
+   * The manager marks (#187) — hover tooltip and accessible name, the same string in
+   * both. They say who manages the table in WORDS, because 14px of brand color is not
+   * something a reader should have to decode, and some readers cannot.
+   */
   badges: {
-    snowflake: 'Snowflake (dbt / warehouse)',
+    dbt: 'managed by dbt — produced by the dbt pipeline',
+    snowflake: 'source table — landed in Snowflake, not managed by dbt',
     metabase: 'Metabase (BI)',
+  },
+
+  /** The same fact as a row in the detail panel, where there is room for a sentence. */
+  managedBy: {
+    label: 'managed by',
+    dbt: 'dbt — the pipeline builds this table',
+    snowflake: 'nothing in dbt — a source table, landed in Snowflake',
+    metabase: 'Metabase',
   },
 
   /** Dependency and BI fan-out lists on a detail page. */
@@ -431,9 +444,11 @@ export const copy = {
     stageRelationship: 'Stage relationship',
   },
 
-  /** The legend under each canvas: what a line means. */
+  /** The legend under each canvas: what a mark and what a line mean. */
   legend: {
-    dbt: 'dbt / warehouse',
+    /** The three marks. The warehouse side splits by who manages it (#187). */
+    dbt: 'managed by dbt',
+    snowflake: 'source — landed in Snowflake, not dbt-managed',
     metabase: 'Metabase / BI',
     rollupThickness: 'thickness = contributing columns',
     declared: 'declared relationship — hover or click it to light the columns it joins',

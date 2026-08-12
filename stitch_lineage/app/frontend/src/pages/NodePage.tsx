@@ -1,12 +1,19 @@
 // Routed detail panels (spec §9): column / card / dashboard / model / source /
-// field. Every panel links to the lineage view and carries system badges.
+// field. Every panel links to the lineage view and carries manager badges (#187).
 // Naming follows lib/present: dbt entities read as dbt names, Metabase entities
 // as their Metabase display name, and the physical warehouse relation is only
 // ever a secondary fact row.
 
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { SystemBadge } from '../components/badges'
-import { ChipList, ConfidenceTag, Fact, NodeChip, Section } from '../components/bits'
+import { NodeBadge } from '../components/badges'
+import {
+  ChipList,
+  ConfidenceTag,
+  Fact,
+  ManagedByFact,
+  NodeChip,
+  Section,
+} from '../components/bits'
 import { DescriptionEditor } from '../components/DescriptionEditor'
 import { DashboardGroups, LayerGroups } from '../components/fanout'
 import { useStitch } from '../data'
@@ -161,7 +168,7 @@ function PanelHeader({
   return (
     <div className="panel-header">
       <div className="panel-title">
-        <SystemBadge nodeType={node.node_type} size={20} />
+        <NodeBadge node={node} size={20} />
         <h2 title={node.node_id}>
           {owner && <span className="panel-name-owner">{owner}.</span>}
           {displayName(node)}
@@ -272,6 +279,9 @@ function ColumnPanel({ nodeId }: { nodeId: string }) {
         }
       />
       <dl className="fact-list">
+        {/* A column inherits its table's manager, so it is answered here too — the
+            question "can I change this" is asked of columns more than of tables. */}
+        <ManagedByFact node={node} />
         <Fact label={detail.model?.node_type === 'source' ? 'source' : 'model'}>
           {detail.model ? <NodeChip node={detail.model} /> : '—'}
         </Fact>
@@ -512,6 +522,9 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
         }
       />
       <dl className="fact-list">
+        {/* The first fact about a table is who manages it: it decides whether a
+            change is yours to make at all (#187). */}
+        <ManagedByFact node={node} />
         <Fact label={node.node_type === 'source' ? 'dbt source' : 'schema'}>
           {nodeContext(index, node)}
         </Fact>

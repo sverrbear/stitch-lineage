@@ -30,7 +30,7 @@ import {
   type PointerEvent,
 } from 'react'
 import { ApplyDialog } from '../components/ApplyDialog'
-import { SystemBadge } from '../components/badges'
+import { NodeBadge } from '../components/badges'
 import { GraphLegend } from '../components/bits'
 import { ErdRoutedEdge } from '../components/ErdEdge'
 import { StageRelationshipModal, type StageTarget } from '../components/StageRelationshipModal'
@@ -68,6 +68,7 @@ import {
   displayName,
   displayTableName,
   fullName,
+  managerOfNode,
 } from '../lib/present'
 import {
   editRelationship,
@@ -212,7 +213,7 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
             shove the type tag out of the card, so the tag moved down to the detail line
             and the name gets the full width, ellipsised with a tooltip (#80). */}
         <div className="erd-node-header">
-          <SystemBadge nodeType={model.node.node_type} />
+          <NodeBadge node={model.node} />
           <span className="erd-node-name" title={name}>
             {name}
           </span>
@@ -232,7 +233,11 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
           </span>
         </div>
         <div className="erd-node-schema">
-          <span className="erd-node-kind">{NODE_TYPE_NAME[model.node.node_type]}</span>
+          {/* `source` vs `model` is already the answer to who manages this card; the
+              tooltip is the answer for a reader who has not learned that yet (#187). */}
+          <span className="erd-node-kind" title={copy.managedBy[managerOfNode(model.node)]}>
+            {NODE_TYPE_NAME[model.node.node_type]}
+          </span>
           <span className="erd-node-scope">{model.node.schema ?? ''}</span>
           {table && table !== name ? (
             <span

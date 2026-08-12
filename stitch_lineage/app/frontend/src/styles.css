@@ -24,6 +24,10 @@
   --accent-soft: rgba(55, 48, 196, 0.1);
   --amber: #8a3d12;
   --amber-soft: #fbeadb;
+  /* Brand marks, theme-independent: the same three hexes the SVGs carry. They stand
+     for WHO MANAGES a table (#187), not where it lives — dbt builds it, Snowflake is
+     where a source landed, Metabase reads the result. */
+  --dbt: #ff694b;
   --snowflake: #29b5e8;
   --metabase: #509ee3;
   --edge: #c8c8ca;
@@ -1036,6 +1040,15 @@ kbd {
   padding: 7px 0;
   border-bottom: 1px solid var(--border);
   overflow-wrap: anywhere;
+}
+
+/* "managed by" (#187): the mark and the sentence on one line, because the point of
+   the row is that the two say the same thing — a reader who cannot use the color
+   still gets the answer, and a reader who can learns what the color means. */
+.managed-by {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
 }
 
 /* Provenance under a resolved data type (#149). It sits BELOW the type rather than
@@ -2529,11 +2542,18 @@ kbd {
   max-width: 250px;
 }
 
+/* The stripe says who manages the table, same as the badge (#187): the warehouse
+   side is two answers, not one. Class names are the Manager values verbatim, so
+   LineagePage builds them as `system-${managerOfNode(node)}` with no mapping. */
 .flow-node.system-dbt {
+  border-left: 3px solid var(--dbt);
+}
+
+.flow-node.system-snowflake {
   border-left: 3px solid var(--snowflake);
 }
 
-.flow-node.system-mb {
+.flow-node.system-metabase {
   border-left: 3px solid var(--metabase);
 }
 
