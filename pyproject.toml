@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stitch-lineage"
-version = "0.3.0"
+version = "0.3.1"
 description = "dbt <-> Metabase column lineage and interactive ERD"
 readme = "README.md"
 license = "MIT"
