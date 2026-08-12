@@ -81,8 +81,46 @@ export interface ErdData {
   suggestedHidden: number
 }
 
-function isErdModel(node: GraphNode): boolean {
+/** A dbt entity, whatever it materializes as — what the staging API can name. */
+function isDbtEntity(node: GraphNode): boolean {
   return node.node_type === 'model' || node.node_type === 'source'
+}
+
+/**
+ * Materializations that are not relations, so the ERD never draws them (#191).
+ * A Snowflake semantic view is a semantic-layer DEFINITION — tables, joins and
+ * metrics declared as DDL over the facts and dims underneath it — not a table
+ * with columns you join on, so an ERD card would state a shape it does not have.
+ */
+const NON_TABLE_MATERIALIZATIONS = new Set(['semantic_view'])
+
+/**
+ * Whether the ERD draws this node as a table card — the ONE rule for ERD
+ * membership. Scope listing, scope counts, the relationships drawn and the
+ * external endpoints pulled in all key on it, so a node the canvas will not draw
+ * is never counted in a scope and never leaves an edge without a card to land
+ * on. Excluded here is excluded from the ERD only: the node keeps its lineage,
+ * its search hit and its node page, because its `references` are real.
+ *
+ * Mirrored by `is_erd_table` in `graph/scopes.py` (the CLI's scope check).
+ */
+export function isErdTable(node: GraphNode): boolean {
+  if (!isDbtEntity(node)) return false
+  const materialization = node.properties?.materialization
+  return !(typeof materialization === 'string' && NON_TABLE_MATERIALIZATIONS.has(materialization))
+}
+
+/** An ERD edge lands on a card or it lands nowhere: both endpoints must be drawable. */
+function bothDrawable(
+  index: GraphIndex,
+  rel: { fromModelId: string; toModelId: string },
+): boolean {
+  return [rel.fromModelId, rel.toModelId].every((id) => {
+    const node = index.nodesById.get(id)
+    // an endpoint the graph does not hold is synthesized by buildIndex, so this is
+    // only ever a node — but an absent one is not a reason to hide the relationship
+    return !node || isErdTable(node)
+  })
 }
 
 function tagsOf(node: GraphNode): string[] {
@@ -102,6 +140,7 @@ function relationships(index: GraphIndex): ErdRelationship[] {
     const fromModelId = modelIdOfColumn(edge.from)
     const toModelId = modelIdOfColumn(edge.to)
     if (!fromModelId || !toModelId) continue
+    if (!bothDrawable(index, { fromModelId, toModelId })) continue
     rels.push({
       edge,
       fromModelId,
@@ -180,7 +219,7 @@ export function listScopes(index: GraphIndex): ErdScope[] {
   const schemaOwnModels = new Map<string, number>()
   const tagCounts = new Map<string, number>()
   for (const node of index.nodes) {
-    if (!isErdModel(node)) continue
+    if (!isErdTable(node)) continue
     const schema = node.schema ?? ''
     if (schema) {
       schemaCounts.set(schema, (schemaCounts.get(schema) ?? 0) + 1)
@@ -270,7 +309,7 @@ export const MAX_DRAWN_SUGGESTIONS = 30
 export function scopeModelIds(index: GraphIndex, scope: ErdScope): Set<string> {
   const ids = new Set<string>()
   for (const node of index.nodes) {
-    if (isErdModel(node) && modelInScope(node, scope)) ids.add(node.node_id)
+    if (isErdTable(node) && modelInScope(node, scope)) ids.add(node.node_id)
   }
   return ids
 }
@@ -309,7 +348,7 @@ export function erdForScope(
     (rel) => inScope.has(rel.fromModelId) || inScope.has(rel.toModelId),
   )
   const touchesScope = (rel: ErdStagedRelationship) =>
-    inScope.has(rel.fromModelId) || inScope.has(rel.toModelId)
+    (inScope.has(rel.fromModelId) || inScope.has(rel.toModelId)) && bothDrawable(index, rel)
   const scopedStaged = staged.filter(touchesScope)
   // a suggestion already staged is no longer a suggestion, whatever the server said
   const stagedIds = new Set(scopedStaged.map((rel) => rel.id))
@@ -478,6 +517,10 @@ export function erdCountsLabel(counts: ErdCounts): string {
  * model is not in this graph come back as `unresolved` rather than vanishing —
  * a staged declaration the user cannot see is a staged declaration they will be
  * surprised by at `stitch apply`.
+ *
+ * Resolution spans every dbt entity, not only the ones the ERD draws: an entry
+ * naming a semantic view IS in the graph, and reporting it unresolved would be a
+ * lie about why it is not on the canvas. `erdForScope` is what declines to draw it.
  */
 export function resolveStaged(
   index: GraphIndex,
@@ -492,7 +535,7 @@ export function resolveStaged(
 ): { drawable: ErdStagedRelationship[]; unresolvedIds: string[] } {
   const byName = new Map<string, string>()
   for (const node of index.nodes) {
-    if (!isErdModel(node)) continue
+    if (!isDbtEntity(node)) continue
     // the staging API speaks real dbt names, so match on those, never on a
     // display name that may have had a routing prefix hidden (#69)
     const key = fullName(node).toLowerCase()

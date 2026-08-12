@@ -71,6 +71,18 @@ export function fixtureGraph(): StitchGraph {
     }),
     node({ node_id: `${M}.mart_board::net_revenue`, node_type: 'column', name: 'net_revenue', column: 'net_revenue', data_type: 'number', schema: 'marts', table: 'mart_board' }),
 
+    // A Snowflake semantic view: a dbt model, a real lineage consumer of
+    // fct_revenue, and never an ERD table (#191). It sits in `marts` and carries
+    // `core`, so any ERD count that includes it is a count that is wrong.
+    node({
+      node_id: `${M}.sv_revenue`,
+      node_type: 'model',
+      name: 'sv_revenue',
+      schema: 'marts',
+      table: 'sv_revenue',
+      properties: { tags: ['core', 'semantic'], materialization: 'semantic_view' },
+    }),
+
     // Models shipped by an installed dbt package, in a schema nobody browses:
     // the ERD scope picker must not offer these ahead of the analytics schemas.
     node({
@@ -127,6 +139,8 @@ export function fixtureGraph(): StitchGraph {
     edge({ from: `${S}.app.events`, to: `${M}.stg_payments`, edge_type: 'references', confidence: 'exact' }),
     edge({ from: `${M}.stg_payments`, to: `${M}.fct_revenue`, edge_type: 'references', confidence: 'exact' }),
     edge({ from: `${M}.fct_revenue`, to: `${M}.mart_board`, edge_type: 'references', confidence: 'exact' }),
+    // The semantic view's dependency is real lineage, drawn like any other.
+    edge({ from: `${M}.fct_revenue`, to: `${M}.sv_revenue`, edge_type: 'references', confidence: 'exact' }),
 
     edge({ from: `${S}.app.events::amount`, to: `${M}.stg_payments::amount`, edge_type: 'feeds', confidence: 'exact' }),
     edge({

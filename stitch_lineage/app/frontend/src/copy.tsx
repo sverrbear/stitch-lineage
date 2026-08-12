@@ -402,6 +402,12 @@ export const copy = {
         up here.
       </>
     ),
+    /**
+     * The hub is a table the ERD does not draw (#191), so there is no canvas to
+     * send anyone to — sending them anyway would be an invitation they cannot take.
+     */
+    emptyNotDrawn:
+      'A semantic view declares its own tables and joins, so the ERD draws the models underneath it instead of this one.',
     seeAll: 'see them all in the ERD →',
   },
 
