@@ -37,7 +37,13 @@ import { ErdHighlightProvider, useErdHighlight, useLitColumn } from '../componen
 import { StageRelationshipModal, type StageTarget } from '../components/StageRelationshipModal'
 import { StagedWorkspace } from '../components/StagedWorkspace'
 import { useStitch } from '../data'
-import { CLICK_SLOP_PX, isClickNotDrag, mergeCanvasNodes, type Point } from '../lib/canvas'
+import {
+  CLICK_SLOP_PX,
+  canvasSettled,
+  isClickNotDrag,
+  mergeCanvasNodes,
+  type Point,
+} from '../lib/canvas'
 import {
   autoExpandedModels,
   erdClickHref,
@@ -103,6 +109,10 @@ import { erdHref, navigate, nodeHref } from '../router'
 import { copy } from '../copy'
 
 const COLLAPSED_LIMIT = 8
+/** Breathing room around the whole arrangement, as React Flow reads padding. */
+const FIT_PADDING = 0.12
+/** The .suggest-panel / .staged-panel strip (320px in styles.css), plus a gutter. */
+const OVERLAY_PADDING = '344px' as const
 const OPEN_HINT = copy.erd.openHint
 const FOCUS_HINT = copy.erd.focusHint
 const UNFOCUS_HINT = copy.erd.unfocusHint
@@ -334,6 +344,28 @@ function edgePick(edge: Edge): ErdEdgePick {
   return { id: edge.id, columns: data?.columns ?? [] }
 }
 
+/**
+ * How the canvas frames an arrangement, wherever a fit is asked for.
+ *
+ * The suggestion panel and the staged drawer are drawn OVER the canvas — React Flow
+ * sizes its own root element with an inline width, so `.with-panel`'s stylesheet rule
+ * never takes the 320px out of it — and the panel opens BY ITSELF a second or two into a
+ * scope, when `stitch serve` answers with the candidates. So the strip each one covers is
+ * reserved here: fitting to the full width instead parks tables underneath the panel, and
+ * the reader has to close it to find out they were ever there (#185).
+ */
+function fitOptions(panelCovers: boolean, drawerCovers: boolean) {
+  return {
+    padding: {
+      x: FIT_PADDING,
+      y: FIT_PADDING,
+      ...(panelCovers ? { right: OVERLAY_PADDING } : null),
+      ...(drawerCovers ? { left: OVERLAY_PADDING } : null),
+    },
+    duration: 320,
+  }
+}
+
 function scopeKey(scope: ErdScope): string {
   return `${scope.kind}:${scope.value}`
 }
@@ -409,6 +441,18 @@ export function ErdPage({
   /** The one table the canvas is narrowed to, or null for the whole scope (#163). */
   const [focused, setFocused] = useState<string | null>(null)
   const movedCount = Object.keys(manual).length
+  /**
+   * Whether the auto-layout still owns the VIEWPORT, not just the coordinates (#185).
+   *
+   * True from the moment a scope opens until the reader takes the canvas over — which is
+   * any deliberate act on it: dragging a table, expanding one, panning or zooming. While
+   * it holds, every arrangement the layout produces gets framed (see the fit effect
+   * below); once the reader has arranged or aimed the canvas themselves, the viewport is
+   * theirs and only an explicit reset takes it back.
+   */
+  const [autoFit, setAutoFit] = useState(true)
+  /** The arrangement the viewport was last fitted to, so each one is framed once. */
+  const fittedTo = useRef<unknown>(null)
 
   // Rendered node heights, keyed by table AND expansion state, so the layout
   // spaces tables by what they actually measure rather than by an estimate of
@@ -432,15 +476,22 @@ export function ErdPage({
   const measuredWidths = useRef<Record<string, number>>({})
   const [measuredVersion, setMeasuredVersion] = useState(0)
 
-  const fitSoon = () => {
+  // How much of the canvas an overlay is covering right now — the fit has to know.
+  const panelCovers = canSuggest && panelOpen
+  const drawerCovers = canStage && stagedOpen
+
+  const fitSoon = useCallback(() => {
     // let React Flow measure the new nodes before it fits them
-    window.setTimeout(() => void flow.current?.fitView({ padding: 0.12, duration: 320 }), 80)
-  }
+    const options = fitOptions(panelCovers, drawerCovers)
+    window.setTimeout(() => void flow.current?.fitView(options), 80)
+  }, [panelCovers, drawerCovers])
 
   /** Reset: back to the auto-layout, fitted, with every dragged table let go. */
   const resetView = () => {
     setManual({})
     setLayoutStale(false)
+    // the layout owns the viewport again, so a later arrangement gets framed too
+    setAutoFit(true)
     fitSoon()
   }
 
@@ -470,7 +521,7 @@ export function ErdPage({
       highlight.clear()
       fitSoon()
     },
-    [highlight],
+    [fitSoon, highlight],
   )
 
   const refreshStaged = useCallback(async () => {
@@ -768,13 +819,17 @@ export function ErdPage({
 
   const baseNodes = useMemo(() => {
     if (!erd) return [] as ErdFlowNode[]
-    const onToggle = (id: string) =>
+    const onToggle = (id: string) => {
+      // expanding is the reader arranging the canvas: the layout still reflows around
+      // the grown card (#62), but it stops re-aiming the viewport at them (#185)
+      setAutoFit(false)
       setExpanded((prev) => {
         const next = new Set(prev)
         if (next.has(id)) next.delete(id)
         else next.add(id)
         return next
       })
+    }
 
     return erd.models.map((model, i) => ({
       id: model.node.node_id,
@@ -898,6 +953,48 @@ export function ErdPage({
     [],
   )
 
+  /**
+   * Everything a fit depends on: which arrangement to frame, and how much of the canvas
+   * is covered while framing it. Its identity is the "has this been fitted" question.
+   */
+  const frame = useMemo(
+    () => ({ positions, panelCovers, drawerCovers }),
+    [positions, panelCovers, drawerCovers],
+  )
+
+  /**
+   * Frame the arrangement that is actually on the canvas — every arrangement, not the
+   * first one to exist 80ms after mount (#185).
+   *
+   * Opening a scope lays the tables out more than once before it settles. The first pass
+   * spaces them by an ESTIMATE of each card's height, because nothing has been rendered
+   * yet; the second by what the cards measured (#62); and a third lands a second or two
+   * later, when `stitch serve` answers with the staged and suggested relationships —
+   * those are layout input (they place tables, see `positions`), so every table moves
+   * again after the diagram has appeared and been read.
+   *
+   * The same answer opens the suggestion panel, which covers 320px of the canvas the fit
+   * had just used all of (see `fitOptions`).
+   *
+   * The fit used to be a lone `fitSoon()` on scope change, so it framed whichever pass
+   * happened to be current at 80ms and never looked again. On the real graph that is the
+   * SECOND pass, and the third one then moved every table underneath a viewport aimed at
+   * the second: the reader entered the ERD and found the diagram sitting off-centre with
+   * tables clipped outside the canvas, which no amount of waiting fixed and any action
+   * that refits — Reset view, a drag — appeared to fix.
+   *
+   * So the fit is keyed on the arrangement rather than on a clock: each `frame` is fitted
+   * exactly once, as soon as React Flow is rendering that arrangement and has measured it
+   * (`canvasSettled` — fitting before that frames the previous arrangement, or a
+   * degenerate box), and never again. `fitSoon` stays for the fits the reader ASKS for.
+   */
+  useEffect(() => {
+    if (!autoFit || fittedTo.current === frame) return
+    if (!flow.current || !canvasSettled(nodes, baseNodes)) return
+    fittedTo.current = frame
+    void flow.current.fitView(fitOptions(frame.panelCovers, frame.drawerCovers))
+  }, [autoFit, frame, nodes, baseNodes])
+
   // What a table actually measures, per expansion state — the layout's input.
   useEffect(() => {
     let changed = false
@@ -933,6 +1030,8 @@ export function ErdPage({
     // rather than carrying a choice made about a different set of candidates
     setPickedSource(null)
     setPickedScope(null)
+    // a new diagram is the layout's to frame, however many passes it takes to settle
+    setAutoFit(true)
     fitSoon()
   }, [activeKey])
 
@@ -1075,9 +1174,17 @@ export function ErdPage({
             onInit={(instance) => {
               flow.current = instance
             }}
-            onNodeDragStop={(_event, node) =>
+            onNodeDragStop={(_event, node) => {
+              // the reader has arranged this canvas themselves: stop re-aiming it at the
+              // layout's arrangements from here on (#185)
+              setAutoFit(false)
               setManual((current) => ({ ...current, [node.id]: node.position }))
-            }
+            }}
+            // ...and so has aiming it by hand. A programmatic move — our own fitView —
+            // arrives with no event, and must not read as the reader taking over.
+            onMoveStart={(event) => {
+              if (event) setAutoFit(false)
+            }}
             nodeClickDistance={CLICK_SLOP_PX}
             proOptions={{ hideAttribution: true }}
             onConnect={(connection) => {

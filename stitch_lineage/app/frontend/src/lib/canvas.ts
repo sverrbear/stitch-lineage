@@ -78,3 +78,30 @@ export function mergeCanvasNodes<T extends CanvasNode>(
     }
   })
 }
+
+/**
+ * True when React Flow is rendering exactly `target` — every card measured and at the
+ * coordinate the layout gave it (#185).
+ *
+ * This is the precondition for fitting the viewport, and it is a fact about the canvas
+ * rather than an amount of time to wait. React Flow computes the bounds it fits from
+ * each card's `measured` box, so a fit fired before it has measured them frames a
+ * degenerate box; and a fit fired while the cards still sit at the PREVIOUS
+ * arrangement's coordinates frames the previous arrangement. Entering the ERD does
+ * several rounds of both — cards measure, then the layout is recomputed from what they
+ * measured, then again when staged and suggested relationships arrive — so "fit 80ms
+ * after mount" framed whichever round happened to be current and never looked again.
+ */
+export function canvasSettled<T extends CanvasNode>(
+  rendered: readonly T[],
+  target: readonly T[],
+): boolean {
+  // an empty canvas has no arrangement to frame
+  if (target.length === 0 || rendered.length !== target.length) return false
+  const byId = new Map(rendered.map((node) => [node.id, node]))
+  return target.every((want) => {
+    const node = byId.get(want.id)
+    if (!node?.measured?.width || !node.measured.height) return false
+    return node.position.x === want.position.x && node.position.y === want.position.y
+  })
+}
