@@ -235,7 +235,7 @@ export const copy = {
     biUsage: (cards: string, dashboards: string) => `BI usage — ${cards} on ${dashboards}`,
     columns: (count: number) => `Columns — ${count}`,
     nothingUpstreamSource: 'Nothing upstream.',
-    nothingUpstream: 'Nothing upstream,
+    nothingUpstream: 'Nothing upstream',
     nothingDownstream: 'Nothing downstream',
     noBiUsage: 'No Metabase card reads this table in this graph',
     references: 'References',
