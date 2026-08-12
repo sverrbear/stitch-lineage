@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CLICK_SLOP_PX, isClickNotDrag, mergeCanvasNodes } from './canvas'
+import { CLICK_SLOP_PX, canvasSettled, isClickNotDrag, mergeCanvasNodes } from './canvas'
 
 describe('isClickNotDrag', () => {
   it('treats a stationary press-release as a click', () => {
@@ -134,5 +134,57 @@ describe('mergeCanvasNodes', () => {
     const merged = merge(current, [card('a'), card('c')])
     expect(merged.map((n) => n.id)).toEqual(['a', 'c'])
     expect(merged[1].measured).toEqual({ width: 300, height: 200 })
+  })
+})
+
+// --- the viewport frames the arrangement that is on screen (#185) -------------
+
+describe('canvasSettled', () => {
+  it('is true when every card is measured and where the layout put it', () => {
+    const target = [card('a'), card('b', 400)]
+    expect(canvasSettled(target, target)).toBe(true)
+  })
+
+  it('is false while a card still sits at the previous arrangement’s coordinate', () => {
+    // this is the bug: the layout is recomputed several times on entry (estimated card
+    // heights, then measured ones, then staged/suggested relationships arriving), and a
+    // fit fired now would frame the arrangement the reader is about to stop seeing
+    const rendered = [card('a'), card('b', 400)]
+    const target = [card('a'), card('b', 980)]
+    expect(canvasSettled(rendered, target)).toBe(false)
+  })
+
+  it('is false until React Flow has measured the cards', () => {
+    // React Flow fits the bounds it computes from `measured`, so fitting before it has
+    // them frames a degenerate box — which is what a fixed timer could not know
+    const target = [card('a'), card('b', 400)]
+    for (const measured of [undefined, {}, { width: 300 }, { width: 300, height: 0 }]) {
+      const rendered = [{ ...card('a'), measured }, card('b', 400)]
+      expect(canvasSettled(rendered, target), `measured ${JSON.stringify(measured)}`).toBe(false)
+    }
+  })
+
+  it('is false while the canvas holds a different set of cards', () => {
+    // mid-scope-change the old scope's cards are still rendered, measured and settled:
+    // agreeing on the count is not agreeing on the drawing
+    expect(canvasSettled([card('a'), card('b')], [card('a'), card('c')])).toBe(false)
+    expect(canvasSettled([card('a')], [card('a'), card('b')])).toBe(false)
+    expect(canvasSettled([card('a'), card('b')], [card('a')])).toBe(false)
+  })
+
+  it('is false for an empty drawing — there is no arrangement to frame', () => {
+    expect(canvasSettled([], [])).toBe(false)
+  })
+
+  it('does not care what order the canvas holds the cards in', () => {
+    const rendered = [card('b', 400), card('a')]
+    expect(canvasSettled(rendered, [card('a'), card('b', 400)])).toBe(true)
+  })
+
+  it('ignores everything about a card except where it is and whether it measured', () => {
+    // a hovered relationship lights two rows, which rewrites every card's `data`; that
+    // must not read as an arrangement change and refit the canvas under the pointer
+    const rendered = [{ ...card('a'), data: { expanded: false, label: 'lit' } }]
+    expect(canvasSettled(rendered, [card('a')])).toBe(true)
   })
 })
