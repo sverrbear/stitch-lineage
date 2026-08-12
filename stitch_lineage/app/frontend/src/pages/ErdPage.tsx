@@ -33,6 +33,7 @@ import { ApplyDialog } from '../components/ApplyDialog'
 import { NodeBadge } from '../components/badges'
 import { GraphLegend } from '../components/bits'
 import { ErdRoutedEdge } from '../components/ErdEdge'
+import { ErdHighlightProvider, useErdHighlight, useLitColumn } from '../components/erdHighlight'
 import { StageRelationshipModal, type StageTarget } from '../components/StageRelationshipModal'
 import { StagedWorkspace } from '../components/StagedWorkspace'
 import { useStitch } from '../data'
@@ -59,9 +60,11 @@ import {
   scopeModelIds,
   suggestionsInScope,
   visibleColumns,
+  type ErdColumn,
   type ErdModel,
   type ErdScope,
 } from '../lib/erd'
+import { type ErdEdgePick } from '../lib/erdHighlight'
 import { erdNodeHeight, layoutErd } from '../lib/erdLayout'
 import {
   NODE_TYPE_NAME,
@@ -123,8 +126,6 @@ type ErdFlowNode = Node<
     onToggle: (id: string) => void
     /** Handles are inert (and invisible) unless this build can stage. */
     connectable: boolean
-    /** `model::column` keys the hovered relationship joins — lit up in the card. */
-    lit: ReadonlySet<string>
     /** Narrow the canvas to this table and its relations, or widen it again (#163). */
     onFocus: (id: string) => void
     /** True on the one table the canvas is currently narrowed to. */
@@ -133,8 +134,69 @@ type ErdFlowNode = Node<
   'erdModel'
 >
 
+/**
+ * One column of a table card, which lights when a relationship it joins is pointed
+ * at (#118).
+ *
+ * A row of its own, rather than markup inside the card, because "am I lit" is the
+ * only thing about it that a hover changes — and a component can subscribe to just
+ * that (#186). The set of lit rows used to travel in the card's `data`, so pointing
+ * at one relationship handed React Flow 41 new cards and re-rendered every one of
+ * them to tint two rows.
+ */
+function ErdColumnRow({
+  column,
+  connectable,
+  onOpen,
+  onOpenKey,
+}: {
+  column: ErdColumn
+  connectable: boolean
+  onOpen: (event: MouseEvent) => void
+  onOpenKey: (event: KeyboardEvent) => void
+}) {
+  const lit = useLitColumn(column.nodeId)
+  return (
+    <li
+      className={`erd-column${column.isKey ? ' key' : ''}${column.phantom ? ' phantom' : ''}${
+        lit ? ' lit' : ''
+      }`}
+      role="link"
+      tabIndex={0}
+      title={column.phantom ? copy.erd.phantomColumn(OPEN_HINT) : OPEN_HINT}
+      onClick={onOpen}
+      onKeyDown={onOpenKey}
+    >
+      {/* Grab strips run the full height of the row and sit INSIDE the card.
+          A 9px dot centred on the card's edge was half-clipped by the card's
+          `overflow: hidden` — not hit-testable at its own centre, 1-2px wide
+          at ERD zoom — which is why drawing a relationship read as broken (#64). */}
+      <Handle
+        type="target"
+        id={column.key}
+        position={Position.Left}
+        className={`erd-handle${connectable ? ' drawable' : ''}`}
+        isConnectable={connectable}
+        title={connectable ? RELATE_HINT : undefined}
+      />
+      <span className="erd-column-name" title={column.name}>
+        {column.name}
+      </span>
+      <span className="erd-column-type">{column.dataType ?? ''}</span>
+      <Handle
+        type="source"
+        id={column.key}
+        position={Position.Right}
+        className={`erd-handle${connectable ? ' drawable' : ''}`}
+        isConnectable={connectable}
+        title={connectable ? RELATE_HINT : undefined}
+      />
+    </li>
+  )
+}
+
 function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
-  const { model, expanded, onToggle, connectable, lit, onFocus, focused } = data
+  const { model, expanded, onToggle, connectable, onFocus, focused } = data
   const pressedAt = useRef<Point | null>(null)
 
   const onPointerDown = (event: PointerEvent) => {
@@ -251,42 +313,13 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
       </div>
       <ul className="erd-columns">
         {visible.map((column) => (
-          <li
+          <ErdColumnRow
             key={column.nodeId}
-            className={`erd-column${column.isKey ? ' key' : ''}${column.phantom ? ' phantom' : ''}${
-              lit.has(column.nodeId) ? ' lit' : ''
-            }`}
-            role="link"
-            tabIndex={0}
-            title={column.phantom ? copy.erd.phantomColumn(OPEN_HINT) : OPEN_HINT}
-            onClick={open(column.nodeId)}
-            onKeyDown={openOnEnter(column.nodeId)}
-          >
-            {/* Grab strips run the full height of the row and sit INSIDE the card.
-                A 9px dot centred on the card's edge was half-clipped by the card's
-                `overflow: hidden` — not hit-testable at its own centre, 1-2px wide
-                at ERD zoom — which is why drawing a relationship read as broken (#64). */}
-            <Handle
-              type="target"
-              id={column.key}
-              position={Position.Left}
-              className={`erd-handle${connectable ? ' drawable' : ''}`}
-              isConnectable={connectable}
-              title={connectable ? RELATE_HINT : undefined}
-            />
-            <span className="erd-column-name" title={column.name}>
-              {column.name}
-            </span>
-            <span className="erd-column-type">{column.dataType ?? ''}</span>
-            <Handle
-              type="source"
-              id={column.key}
-              position={Position.Right}
-              className={`erd-handle${connectable ? ' drawable' : ''}`}
-              isConnectable={connectable}
-              title={connectable ? RELATE_HINT : undefined}
-            />
-          </li>
+            column={column}
+            connectable={connectable}
+            onOpen={open(column.nodeId)}
+            onOpenKey={openOnEnter(column.nodeId)}
+          />
         ))}
       </ul>
       {collapsible && (hidden > 0 || expanded) && (
@@ -309,9 +342,6 @@ const nodeTypes = { erdModel: ErdModelNode }
 // every relationship is routed around the cards rather than drawn through them (#79)
 const edgeTypes = { erdRouted: ErdRoutedEdge }
 const EDGE_TYPE = 'erdRouted'
-
-/** A relationship the reader is pointing at or has clicked, and the rows it lights. */
-type ErdEdgePick = { id: string; columns: string[] }
 
 /** What an edge lights up, read back off the edge React Flow hands to the handler. */
 function edgePick(edge: Edge): ErdEdgePick {
@@ -439,9 +469,19 @@ export function ErdPage({
    * on a real scope even one edge at a time (#65, #118). What a relationship joins
    * is shown where the columns actually are — the two rows light up in their cards.
    * Hover is the glance; the click is what keeps them lit while you read elsewhere.
+   *
+   * Deliberately NOT React state (#186). This page derives the entire canvas from
+   * its state, so a hover held here rebuilt every card and every edge object to
+   * tint two rows: 851 component renders and ~16ms of script for a colour change,
+   * measured on the real graph. The store notifies the two rows and the one line
+   * that changed and nothing else — 4 renders; see lib/erdHighlight.
+   *
+   * No flicker was ever visible from this, and the issue's report of one turned out
+   * to be a stale cached bundle. It is wasted work, not a broken picture: 16ms is a
+   * whole frame at 60Hz, so it had no headroom left for a bigger scope or a busy
+   * machine. Worth saying, so nobody goes looking for the visual bug it was not.
    */
-  const [hovered, setHovered] = useState<ErdEdgePick | null>(null)
-  const [picked, setPicked] = useState<ErdEdgePick | null>(null)
+  const highlight = useErdHighlight()
   const measuredHeights = useRef<Record<string, number>>({})
   const measuredWidths = useRef<Record<string, number>>({})
   const [measuredVersion, setMeasuredVersion] = useState(0)
@@ -484,13 +524,15 @@ export function ErdPage({
    * leave a five-table neighbourhood scattered across a hundred-table arrangement.
    * The drags are kept, so widening again puts them back where the reader left them.
    */
-  const toggleFocus = useCallback((modelId: string) => {
-    setFocused((current) => (current === modelId ? null : modelId))
-    // a relationship picked in the wider view may not be drawn in the narrower one
-    setPicked(null)
-    setHovered(null)
-    fitSoon()
-  }, [fitSoon])
+  const toggleFocus = useCallback(
+    (modelId: string) => {
+      setFocused((current) => (current === modelId ? null : modelId))
+      // a relationship picked in the wider view may not be drawn in the narrower one
+      highlight.clear()
+      fitSoon()
+    },
+    [fitSoon, highlight],
+  )
 
   const refreshStaged = useCallback(async () => {
     try {
@@ -549,22 +591,24 @@ export function ErdPage({
 
   const resolved = useMemo(() => resolveStaged(index, staged), [index, staged])
   const workspace = useMemo(() => workspaceView(staged, descriptions), [staged, descriptions])
-  const litColumns = useMemo<ReadonlySet<string>>(
-    () => new Set([...(picked?.columns ?? []), ...(hovered?.columns ?? [])]),
-    [picked, hovered],
-  )
 
   /**
-   * Putting the hover out is not the edge's own job, because its `mouseleave`
-   * cannot be trusted: React Flow rebuilds every edge's SVG wrapper whenever any
-   * node changes — and lighting two rows changes their cards, so the element the
-   * pointer is over is destroyed the instant it is hovered and never reports the
-   * pointer leaving. Measured on the real graph: expanding or dragging one table
-   * replaces all 35 edge elements. So the canvas clears it instead — any pointer
-   * move that is not over a relationship. The updater returns the same value when
-   * there is nothing lit, which is what keeps a pointer-move handler cheap.
+   * Putting the hover out is not left to the edge's own `mouseleave` alone, because
+   * React Flow rebuilds an edge's SVG wrapper when a node it touches changes shape,
+   * and a pointer sitting on one of those never sees it leave.
+   *
+   * How many it rebuilds, measured on the real graph rather than assumed — the note
+   * that used to sit here said "all 35" and that was never true of anything:
+   * expanding a table replaces 4 of the 39 edge elements, dragging one replaces
+   * none, and hovering replaces none.
+   *
+   * Lighting the rows no longer does that (#186): it changes no node, so hovering
+   * destroys nothing and `mouseleave` is reliable for hover itself. This stays for
+   * the cases that DO rebuild an edge under the pointer — expanding a table, a
+   * relationship landing — and it is now free: the store returns without notifying
+   * anyone when there is nothing lit, so a pointer-move handler costs a null check.
    */
-  const clearHover = useCallback(() => setHovered((current) => (current ? null : current)), [])
+  const clearHover = highlight.clearHover
 
   // Suggestions arrive graph-wide (hundreds on a real project). Scope them to the
   // ERD first: both endpoints inside it, which is exactly what the canvas can draw.
@@ -812,19 +856,23 @@ export function ErdPage({
         expanded: expanded.has(model.node.node_id),
         onToggle,
         connectable: canStage,
-        lit: litColumns,
         onFocus: toggleFocus,
         focused: focused === model.node.node_id,
       },
     }))
-  }, [erd, expanded, canStage, positions, manual, litColumns, focused, toggleFocus])
+  }, [erd, expanded, canStage, positions, manual, focused, toggleFocus])
 
+  /**
+   * The relationships this scope draws — a function of the DRAWING only.
+   *
+   * Nothing about the pointer is in here (#186). Hovered/picked used to be baked
+   * into each edge's `className`, so pointing at one line minted a fresh object for
+   * every line, React Flow re-adopted all of them, and all of them re-rendered. The
+   * class is now applied by the edge itself, from the highlight store — so this
+   * array is rebuilt when the drawing changes, and never when the pointer moves.
+   */
   const edges = useMemo(() => {
     if (!erd) return [] as Edge[]
-    // Which two rows an edge lights is the whole of what it says now, so every edge
-    // carries them and nothing carries a caption (#118).
-    const state = (id: string) =>
-      `${hovered?.id === id ? ' hovered' : ''}${picked?.id === id ? ' picked' : ''}`
 
     const edges: Edge[] = erd.relationships.map((rel, i) => ({
       id: `rel-${i}`,
@@ -834,7 +882,7 @@ export function ErdPage({
       targetHandle: rel.toColumn,
       type: EDGE_TYPE,
       // validated-ness is the stroke's job now, not a glyph's (#164)
-      className: `erd-edge${rel.validated ? ' validated' : ''}${state(`rel-${i}`)}`,
+      className: `erd-edge${rel.validated ? ' validated' : ''}`,
       data: {
         columns: [
           erdColumnNodeId(rel.fromModelId, rel.fromColumn),
@@ -853,7 +901,7 @@ export function ErdPage({
         target: rel.toModelId,
         targetHandle: rel.toColumn,
         type: EDGE_TYPE,
-        className: `erd-edge suggested${state(`suggested-${rel.id}`)}`,
+        className: 'erd-edge suggested',
         style: { strokeDasharray: '2 5', strokeWidth: 1.6 },
         data: {
           columns: [
@@ -873,7 +921,7 @@ export function ErdPage({
         target: rel.toModelId,
         targetHandle: rel.toColumn,
         type: EDGE_TYPE,
-        className: `erd-edge staged${state(`staged-${rel.id}`)}`,
+        className: 'erd-edge staged',
         style: { strokeDasharray: '5 4' },
         data: {
           columns: [
@@ -884,7 +932,7 @@ export function ErdPage({
       })
     }
     return edges
-  }, [erd, hovered, picked])
+  }, [erd])
 
   // React Flow owns node positions while a drag is in flight; the layout owns them
   // otherwise. `manual` is the reader's overrides, and resetting the view drops it.
@@ -988,8 +1036,7 @@ export function ErdPage({
     setManual({})
     setLayoutStale(false)
     // a relationship picked in the old scope is not on this canvas: put it out
-    setPicked(null)
-    setHovered(null)
+    highlight.clear()
     // ...and neither is a table focused in it (#163)
     setFocused(null)
     setExpanded(autoExpandedModels(erd?.models ?? []))
@@ -1110,73 +1157,75 @@ export function ErdPage({
           canStage && stagedOpen ? ' with-staged' : ''
         }`}
       >
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          nodeTypes={nodeTypes}
-          edgeTypes={edgeTypes}
-          fitView
-          minZoom={0.05}
-          nodesConnectable={canStage}
-          // generous snap on the drop side: releasing near a column's strip counts
-          connectionRadius={40}
-          nodesDraggable
-          onNodesChange={onNodesChange}
-          onEdgeMouseEnter={(_event, edge) => setHovered(edgePick(edge))}
-          onEdgeMouseLeave={clearHover}
-          // the pointer moved somewhere on the canvas that is not a relationship —
-          // over the background, over a card — so nothing is being pointed at
-          onPaneMouseMove={(event) => {
-            if (!(event.target as Element | null)?.closest?.('.react-flow__edge')) clearHover()
-          }}
-          onPaneMouseLeave={clearHover}
-          // Clicking a relationship keeps its two rows lit after the pointer has
-          // moved on — which is what you need to compare the columns it joins with
-          // the rest of either card. The same edge again, or the canvas, puts it out.
-          onEdgeClick={(_event, edge) =>
-            setPicked((current) => (current?.id === edge.id ? null : edgePick(edge)))
-          }
-          onPaneClick={() => setPicked(null)}
-          onInit={(instance) => {
-            flow.current = instance
-          }}
-          onNodeDragStop={(_event, node) => {
-            // the reader has arranged this canvas themselves: stop re-aiming it at the
-            // layout's arrangements from here on (#185)
-            setAutoFit(false)
-            setManual((current) => ({ ...current, [node.id]: node.position }))
-          }}
-          // ...and so has aiming it by hand. A programmatic move — our own fitView —
-          // arrives with no event, and must not read as the reader taking over.
-          onMoveStart={(event) => {
-            if (event) setAutoFit(false)
-          }}
-          nodeClickDistance={CLICK_SLOP_PX}
-          proOptions={{ hideAttribution: true }}
-          onConnect={(connection) => {
-            const fromModel = modelNameOf(connection.source)
-            const toModel = modelNameOf(connection.target)
-            if (!fromModel || !toModel || !connection.sourceHandle || !connection.targetHandle) return
-            // The declaration is written into the SOURCE model's schema file, so a file
-            // apply could never write is refused here rather than at apply time (#132).
-            const refusal = refusalFor(writeability, fromModel)
-            if (refusal) {
-              setNotice(`${fromModel}: ${refusal}`)
-              return
-            }
-            setNotice(null)
-            setDraft({
-              fromModel,
-              fromColumn: connection.sourceHandle,
-              toModel,
-              toColumn: connection.targetHandle,
-            })
-          }}
-        >
-          <Background gap={24} />
-          <Controls showInteractive={false} />
-          <MiniMap pannable zoomable />
-        </ReactFlow>
+        {/* The rows and the lines read what is lit from here, rather than the page
+            writing it into every card and every edge (#186). */}
+        <ErdHighlightProvider highlight={highlight}>
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
+            fitView
+            minZoom={0.05}
+            nodesConnectable={canStage}
+            // generous snap on the drop side: releasing near a column's strip counts
+            connectionRadius={40}
+            nodesDraggable
+            onNodesChange={onNodesChange}
+            onEdgeMouseEnter={(_event, edge) => highlight.hover(edgePick(edge))}
+            onEdgeMouseLeave={clearHover}
+            // the pointer moved somewhere on the canvas that is not a relationship —
+            // over the background, over a card — so nothing is being pointed at
+            onPaneMouseMove={(event) => {
+              if (!(event.target as Element | null)?.closest?.('.react-flow__edge')) clearHover()
+            }}
+            onPaneMouseLeave={clearHover}
+            // Clicking a relationship keeps its two rows lit after the pointer has
+            // moved on — which is what you need to compare the columns it joins with
+            // the rest of either card. The same edge again, or the canvas, puts it out.
+            onEdgeClick={(_event, edge) => highlight.togglePicked(edgePick(edge))}
+            onPaneClick={highlight.clearPicked}
+            onInit={(instance) => {
+              flow.current = instance
+            }}
+            onNodeDragStop={(_event, node) => {
+              // the reader has arranged this canvas themselves: stop re-aiming it at the
+              // layout's arrangements from here on (#185)
+              setAutoFit(false)
+              setManual((current) => ({ ...current, [node.id]: node.position }))
+            }}
+            // ...and so has aiming it by hand. A programmatic move — our own fitView —
+            // arrives with no event, and must not read as the reader taking over.
+            onMoveStart={(event) => {
+              if (event) setAutoFit(false)
+            }}
+            nodeClickDistance={CLICK_SLOP_PX}
+            proOptions={{ hideAttribution: true }}
+            onConnect={(connection) => {
+              const fromModel = modelNameOf(connection.source)
+              const toModel = modelNameOf(connection.target)
+              if (!fromModel || !toModel || !connection.sourceHandle || !connection.targetHandle) return
+              // The declaration is written into the SOURCE model's schema file, so a file
+              // apply could never write is refused here rather than at apply time (#132).
+              const refusal = refusalFor(writeability, fromModel)
+              if (refusal) {
+                setNotice(`${fromModel}: ${refusal}`)
+                return
+              }
+              setNotice(null)
+              setDraft({
+                fromModel,
+                fromColumn: connection.sourceHandle,
+                toModel,
+                toColumn: connection.targetHandle,
+              })
+            }}
+          >
+            <Background gap={24} />
+            <Controls showInteractive={false} />
+            <MiniMap pannable zoomable />
+          </ReactFlow>
+        </ErdHighlightProvider>
         {canStage && stagedOpen && (
           <StagedWorkspace
             view={workspace}

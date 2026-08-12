@@ -27,6 +27,7 @@
 import { BaseEdge, Position, type EdgeProps } from '@xyflow/react'
 import { useMemo } from 'react'
 import { chooseAnchors } from '../lib/edgeAnchors'
+import { useEdgeHighlight } from './erdHighlight'
 import { useCardRects } from './useCardRects'
 import { roundedPath, routeEdge, type AnchorSide, type RoutingRect } from '../lib/edgeRouting'
 
@@ -43,6 +44,7 @@ function sideOf(position: Position | undefined, fallback: AnchorSide): AnchorSid
 }
 
 export function ErdRoutedEdge({
+  id,
   source,
   target,
   sourceX,
@@ -55,6 +57,12 @@ export function ErdRoutedEdge({
   interactionWidth,
 }: EdgeProps) {
   const cards = useCardRects()
+  // Pointed-at / clicked is read here rather than written into the edge object by
+  // the page (#186). It used to be part of the edge's own className, which meant
+  // lighting ONE relationship minted a new object for every relationship on the
+  // canvas and re-rendered all of them. Now the line asks for its own state, so
+  // hovering re-renders the line that changed and no other.
+  const highlight = useEdgeHighlight(id)
   // Sides first, then the route: which border each end attaches to is decided for
   // this pair of cards (#100), and the router is handed the result. React Flow's own
   // handle positions stay left/right — they are where a relationship is DRAWN from,
@@ -93,6 +101,7 @@ export function ErdRoutedEdge({
   // the edge lights in their cards (#118), and validated-ness off the stroke (#164).
   return (
     <BaseEdge
+      className={highlight}
       path={roundedPath(points, CORNER_PX)}
       style={style}
       interactionWidth={interactionWidth}
