@@ -1,5 +1,7 @@
+import pytest
+
 from stitch_lineage.graph.schema import Graph, Node, NodeType
-from stitch_lineage.graph.scopes import erd_scopes
+from stitch_lineage.graph.scopes import erd_scopes, is_erd_table
 
 
 def _graph(*nodes: Node) -> Graph:
@@ -54,3 +56,49 @@ def test_schemaless_and_malformed_tags_are_skipped():
         ),
     )
     assert erd_scopes(graph) == {"schema:marts"}
+
+
+# --- semantic views (#191) --------------------------------------------------------------
+
+
+def _semantic_view(uid="model.demo.sv_revenue", schema="marts", **properties):
+    return Node(
+        node_id=uid,
+        node_type=NodeType.MODEL,
+        name=uid.rpartition(".")[2],
+        schema_=schema,
+        properties={"materialization": "semantic_view", **properties},
+    )
+
+
+def test_a_semantic_view_is_not_an_erd_table():
+    assert is_erd_table(_semantic_view()) is False
+
+
+@pytest.mark.parametrize("materialization", ["table", "view", "incremental", "ephemeral", None])
+def test_every_other_materialization_is(materialization):
+    """The rule is the materialization, never the `sv_` name prefix."""
+    node = Node(
+        node_id="model.demo.sv_looks_like_one",
+        node_type=NodeType.MODEL,
+        name="sv_looks_like_one",
+        schema_="marts",
+        properties={"materialization": materialization},
+    )
+    assert is_erd_table(node) is True
+
+
+def test_a_semantic_view_contributes_no_scope():
+    """A schema and a tag only semantic views carry are not scopes the ERD can open."""
+    graph = _graph(
+        Node(
+            node_id="model.demo.fct",
+            node_type=NodeType.MODEL,
+            name="fct",
+            schema_="marts",
+            properties={"materialization": "table", "tags": ["core"]},
+        ),
+        _semantic_view(tags=["core", "semantic"]),
+        _semantic_view("model.demo.sv_users", schema="semantic_layer", tags=["semantic"]),
+    )
+    assert erd_scopes(graph) == {"schema:marts", "tag:core"}

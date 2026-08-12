@@ -109,7 +109,12 @@ describe('modelDetail', () => {
     ])
     // the hop distance rides along, so the layers can be ordered by it (#82)
     expect(detail.upstream.find((r) => r.node.name === 'events')!.depth).toBe(2)
-    expect(detail.downstream.map((r) => r.node.node_id)).toEqual(['model.demo.mart_board'])
+    // the semantic view is downstream like anything else: the ERD stops drawing it
+    // as a table (#191), the lineage never stops reporting the dependency
+    expect(detail.downstream.map((r) => r.node.node_id).sort()).toEqual([
+      'model.demo.mart_board',
+      'model.demo.sv_revenue',
+    ])
     expect(detail.cards.length).toBe(2)
     expect(detail.dashboards.length).toBe(1)
     expect(detail.relationships).toHaveLength(1)

@@ -409,3 +409,36 @@ def test_results_sort_by_score_then_deterministically(implicit_join_graph):
 
 def test_an_empty_graph_suggests_nothing():
     assert suggest(Graph()) == []
+
+
+# --- semantic views (#191) --------------------------------------------------------------
+
+
+def test_a_semantic_view_is_never_a_suggestion_endpoint():
+    """A suggestion is a candidate ERD edge, and the ERD draws no semantic view -- so
+    proposing one is proposing a relationship with no table to land on."""
+    graph = Graph(
+        nodes=[
+            _model(ORDERS, "fct_orders"),
+            _column(ORDERS, "order_id"),
+            _column(ORDERS, "customer_id"),
+            _model(
+                "model.demo.sv_customers",
+                "sv_customers",
+                properties={"materialization": "semantic_view"},
+            ),
+            _column("model.demo.sv_customers", "customer_id"),
+        ]
+    )
+    assert suggest(graph) == []
+
+
+@pytest.mark.parametrize("materialization", ["table", "view", "incremental", "ephemeral", None])
+def test_every_other_materialization_still_suggests(materialization):
+    """The rule is the materialization, never the `sv_` name: a table-materialized
+    model is a candidate whatever it is called."""
+    graph = _naming_graph()
+    for node in graph.nodes:
+        if node.node_type is NodeType.MODEL:
+            node.properties["materialization"] = materialization
+    assert len(_only(suggest(graph), "naming")) == 1
