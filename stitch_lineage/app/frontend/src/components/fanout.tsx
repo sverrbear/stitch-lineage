@@ -15,7 +15,7 @@ import { hopRange, type DashboardUsage, type LayerGroup } from '../lib/fanout'
 import { metabaseLink } from '../lib/graph'
 import { displayName } from '../lib/present'
 import { nodeHref } from '../router'
-import { SystemBadge } from './badges'
+import { ManagerBadge, NodeBadge } from './badges'
 import { ConfidenceTag } from './bits'
 import { copy } from '../copy'
 
@@ -40,7 +40,7 @@ export function LayerGroups({ groups, empty }: { groups: LayerGroup[]; empty: st
           <ul className="dep-rows">
             {group.entries.map((entry) => (
               <li key={entry.node.node_id} className="dep-row">
-                <SystemBadge nodeType={entry.node.node_type} />
+                <NodeBadge node={entry.node} />
                 <a className="dep-row-name" href={nodeHref(entry.node.node_id)}>
                   {displayName(entry.node)}
                 </a>
@@ -72,7 +72,7 @@ export function DashboardGroups({ groups, empty }: { groups: DashboardUsage[]; e
         return (
           <details key={group.dashboard?.node_id ?? 'no-dashboard'} className="group-panel bi-group">
             <summary className="group-head">
-              <SystemBadge nodeType="mb_dashboard" />
+              <ManagerBadge nodeType="mb_dashboard" />
               {group.dashboard ? (
                 <span className="group-name">{displayName(group.dashboard)}</span>
               ) : (
@@ -100,7 +100,7 @@ export function DashboardGroups({ groups, empty }: { groups: DashboardUsage[]; e
                 const cardLink = metabaseLink(meta.metabase_url, card.node)
                 return (
                   <li key={card.node.node_id} className="bi-card">
-                    <SystemBadge nodeType="mb_card" />
+                    <NodeBadge node={card.node} />
                     <a className="bi-card-name" href={nodeHref(card.node.node_id)}>
                       {displayName(card.node)}
                     </a>
