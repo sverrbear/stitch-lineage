@@ -6,6 +6,7 @@
 // to inherit.
 
 import type { NodeType } from '../types'
+import { copy } from '../copy'
 
 export const SNOWFLAKE_BLUE = '#29B5E8'
 export const METABASE_BLUE = '#509EE3'
@@ -31,7 +32,7 @@ export function SnowflakeMark({ size = 14, color = SNOWFLAKE_BLUE, className }: 
       fill={color}
       className={className}
       role="img"
-      aria-label="Snowflake (dbt / warehouse)"
+      aria-label={copy.badges.snowflake}
     >
       <path d={SNOWFLAKE_PATH} />
     </svg>
@@ -47,7 +48,7 @@ export function MetabaseMark({ size = 14, color = METABASE_BLUE, className }: Ma
       fill={color}
       className={className}
       role="img"
-      aria-label="Metabase (BI)"
+      aria-label={copy.badges.metabase}
     >
       <path d={METABASE_PATH} />
     </svg>

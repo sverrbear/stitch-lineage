@@ -6,6 +6,7 @@
 // does each entry read, and what does a unified diff look like as rows — and the
 // components stay presentation only.
 
+import { copy, plural } from '../copy'
 import { groupStagedByTarget, type StagedDescription, type StagedGroup } from './staging'
 import type { StagedRelationship } from './staging'
 import { displayModelName } from './present'
@@ -115,18 +116,18 @@ export function outcomeSummary(outcome: {
   applied: number
   still_staged: number
 }): string {
-  const files = `${outcome.written.length} file${outcome.written.length === 1 ? '' : 's'}`
-  const changes = `${outcome.applied} change${outcome.applied === 1 ? '' : 's'}`
+  const files = plural(outcome.written.length, 'file')
+  const changes = plural(outcome.applied, 'change')
   if (outcome.refused.length > 0) {
-    const refused = `${outcome.refused.length} file${outcome.refused.length === 1 ? '' : 's'}`
-    return `Wrote ${changes} to ${files}; ${refused} refused, ${outcome.still_staged} still staged.`
+    const refused = plural(outcome.refused.length, 'file')
+    return copy.apply.outcomeRefused(changes, files, refused, outcome.still_staged)
   }
   if (outcome.written.length === 0) {
     return outcome.applied > 0
-      ? `Nothing to write — the repo already said all ${changes}; staged entries cleared.`
-      : 'Nothing to write.'
+      ? copy.apply.outcomeNothingApplied(changes)
+      : copy.apply.outcomeNothing
   }
-  return `Wrote ${changes} to ${files}. ${outcome.still_staged} still staged.`
+  return copy.apply.outcomeWrote(changes, files, outcome.still_staged)
 }
 
 /**
@@ -154,11 +155,9 @@ export function isWorking(phase: ApplyPhase): boolean {
  * about what they interrupted.
  */
 export function applyStatus(phase: ApplyPhase, files: number): string | null {
-  if (phase === 'planning') return 'Planning the writes…'
-  if (phase === 'applying') {
-    return `Writing ${files} file${files === 1 ? '' : 's'} in your dbt repo…`
-  }
-  if (phase === 'refreshing') return 'Re-reading the graph…'
+  if (phase === 'planning') return copy.apply.statusPlanning
+  if (phase === 'applying') return copy.apply.statusApplying(plural(files, 'file'))
+  if (phase === 'refreshing') return copy.apply.statusRefreshing
   return null
 }
 
@@ -168,7 +167,7 @@ export function applyStatus(phase: ApplyPhase, files: number): string | null {
  * zero nobody has established yet, which is the same overclaim in smaller print.
  */
 export function applyButtonLabel(phase: ApplyPhase, files: number): string {
-  if (phase === 'applying') return 'Applying…'
-  if (phase === 'planning') return 'Apply'
-  return `Apply ${files} file${files === 1 ? '' : 's'}`
+  if (phase === 'applying') return copy.apply.buttonApplying
+  if (phase === 'planning') return copy.apply.buttonApply
+  return copy.apply.buttonApplyFiles(plural(files, 'file'))
 }

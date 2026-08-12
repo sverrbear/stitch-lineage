@@ -23,6 +23,7 @@
 // and ~950 cards + ~60 dashboards fit in 32 words per node — under a megabyte for
 // the whole graph, in one flat allocation that is dropped once the counts are in.
 
+import { plural } from '../copy'
 import { isFlowEdge, type GraphIndex } from './graph'
 import type { GraphNode } from '../types'
 
@@ -188,6 +189,3 @@ export function consequenceLabel(node: GraphNode, counts: Consequence): string |
   return parts.length > 0 ? parts.join(' · ') : null
 }
 
-function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? '' : 's'}`
-}

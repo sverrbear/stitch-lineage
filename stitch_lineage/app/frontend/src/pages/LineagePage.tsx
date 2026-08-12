@@ -28,6 +28,7 @@ import { CONFIDENCE_HELP, NODE_TYPE_NAME, displayName, nodeContext } from '../li
 import { entityIdOf, layerEntities, rollUp, type Grain, type RollupEdge } from '../lib/rollup'
 import { lineageHref, navigate, nodeHref } from '../router'
 import type { Confidence, GraphEdge, GraphNode } from '../types'
+import { copy } from '../copy'
 
 /** One card shape for all six node types: badge + name + type · context. */
 type LineageFlowNode = Node<{ node: GraphNode; context: string | null; isRoot: boolean }, 'lineage'>
@@ -67,8 +68,8 @@ function LineageNode({ data }: NodeProps<LineageFlowNode>) {
           href={target.href}
           title={
             target.external
-              ? `Open “${name}” in Metabase`
-              : `Open the ${NODE_TYPE_NAME[node.node_type]} page for ${name}`
+              ? copy.lineage.openInMetabase(name)
+              : copy.lineage.openDetail(NODE_TYPE_NAME[node.node_type], name)
           }
           target={target.external ? '_blank' : undefined}
           rel={target.external ? 'noreferrer' : undefined}
@@ -204,7 +205,7 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
   if (!root) {
     return (
       <main className="graph-page">
-        <p className="muted panel">Unknown node: {nodeId}</p>
+        <p className="muted panel">{copy.lineage.unknownNode(nodeId)}</p>
       </main>
     )
   }
@@ -233,7 +234,7 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
           className={`graph-toolbar-impact${truncated ? ' partial' : ''}`}
           title={
             truncated
-              ? 'This walk hit its node cap, so these are lower bounds — the real counts are higher.'
+              ? copy.lineage.truncatedCounts
               : undefined
           }
         >
@@ -242,7 +243,7 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
           {impact.dashboards.toLocaleString()}
           {truncated ? '+' : ''} dashboard{impact.dashboards === 1 && !truncated ? '' : 's'}
         </span>
-        <div className="grain-toggle" role="group" aria-label="Lineage grain">
+        <div className="grain-toggle" role="group" aria-label={copy.lineage.grainLabel}>
           {(['column', 'table'] as const).map((option) => (
             <a
               key={option}
@@ -250,8 +251,8 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
               href={lineageHref(nodeId, option)}
               title={
                 option === 'column'
-                  ? 'Which columns feed which fields'
-                  : 'Which models feed which cards — the same subgraph rolled up'
+                  ? copy.lineage.grainColumn
+                  : copy.lineage.grainTable
               }
             >
               {option}
@@ -259,12 +260,10 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
           ))}
         </div>
         <a className="button" href={nodeHref(nodeId)}>
-          Details
+          {copy.lineage.details}
         </a>
-        {truncated && <span className="muted">large fan-out truncated</span>}
-        <span className="muted graph-toolbar-hint">
-          click a node to re-trace from it · click its name to open it
-        </span>
+        {truncated && <span className="muted">{copy.lineage.truncated}</span>}
+        <span className="muted graph-toolbar-hint">{copy.lineage.hint}</span>
       </div>
       <div className="graph-canvas">
         <ReactFlow

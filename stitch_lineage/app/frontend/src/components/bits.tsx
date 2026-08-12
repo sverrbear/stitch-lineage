@@ -14,6 +14,7 @@ import {
 } from '../lib/present'
 import { nodeHref } from '../router'
 import { SystemBadge, MetabaseMark, SnowflakeMark } from './badges'
+import { copy } from '../copy'
 
 /**
  * Work is happening (#160). Decoration only: it carries no text, so every use must
@@ -107,17 +108,17 @@ export function GraphLegend({
   return (
     <div className="graph-legend">
       <span className="legend-item">
-        <SnowflakeMark size={12} /> dbt / warehouse
+        <SnowflakeMark size={12} /> {copy.legend.dbt}
       </span>
       <span className="legend-item">
-        <MetabaseMark size={12} /> Metabase / BI
+        <MetabaseMark size={12} /> {copy.legend.metabase}
       </span>
       {rollup && (
         <span className="legend-item">
           <svg width="26" height="10">
             <line x1="0" y1="5" x2="26" y2="5" className="legend-line-solid" strokeWidth={4} />
           </svg>
-          thickness = contributing columns
+          {copy.legend.rollupThickness}
         </span>
       )}
       {erd ? (
@@ -126,7 +127,7 @@ export function GraphLegend({
             <svg width="26" height="8">
               <line x1="0" y1="4" x2="26" y2="4" className="legend-line-solid" />
             </svg>
-            declared relationship — hover or click it to light the columns it joins
+            {copy.legend.declared}
           </span>
           {/* Weight only reads against something, so the legend holds the pair: this
               is the reference the lines on the canvas are compared to (#164). */}
@@ -134,14 +135,14 @@ export function GraphLegend({
             <svg width="26" height="8">
               <line x1="0" y1="4" x2="26" y2="4" className="legend-line-strong" />
             </svg>
-            heavier line — validated by a dbt <code>relationships</code> test
+            {copy.legend.validated()}
           </span>
           {staged && (
             <span className="legend-item">
               <svg width="26" height="8">
                 <line x1="0" y1="4" x2="26" y2="4" className="legend-line-dashed" />
               </svg>
-              staged — not in the repo until <code>stitch apply</code>
+              {copy.legend.staged()}
             </span>
           )}
           {suggested && (
@@ -149,7 +150,7 @@ export function GraphLegend({
               <svg width="26" height="8">
                 <line x1="0" y1="4" x2="26" y2="4" className="legend-line-dotted" />
               </svg>
-              suggested — nobody has declared this yet
+              {copy.legend.suggested}
             </span>
           )}
         </>
@@ -159,13 +160,13 @@ export function GraphLegend({
             <svg width="26" height="8">
               <line x1="0" y1="4" x2="26" y2="4" className="legend-line-solid" />
             </svg>
-            exact
+            {copy.legend.exact}
           </span>
           <span className="legend-item">
             <svg width="26" height="8">
               <line x1="0" y1="4" x2="26" y2="4" className="legend-line-dashed" />
             </svg>
-            parsed / inferred / name match — hover an edge for evidence
+            {copy.legend.inexact}
           </span>
         </>
       )}

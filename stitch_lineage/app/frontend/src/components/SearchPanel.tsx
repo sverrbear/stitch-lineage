@@ -9,6 +9,7 @@ import { groupHits, type SearchHit } from '../lib/search'
 import { NODE_TYPE_NAME, displayName, isArchived } from '../lib/present'
 import { navigate, nodeHref } from '../router'
 import { SystemBadge } from './badges'
+import { copy } from '../copy'
 
 export interface SearchPanelProps {
   autoFocus?: boolean
@@ -73,15 +74,15 @@ export function SearchPanel({
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onKeyDown={onKeyDown}
-        placeholder={placeholder ?? 'Search models, columns, cards, dashboards…'}
+        placeholder={placeholder ?? copy.search.placeholder}
         autoFocus={autoFocus}
         spellCheck={false}
         autoComplete="off"
-        aria-label="Search the lineage graph"
+        aria-label={copy.search.ariaLabel}
       />
       {query.trim() !== '' && (
         <div className="search-results" ref={listRef}>
-          {flat.length === 0 && <p className="muted search-empty">No matches.</p>}
+          {flat.length === 0 && <p className="muted search-empty">{copy.search.empty}</p>}
           {groups.map((group) => (
             <div key={group.type} className="search-group">
               <div className="search-group-label">{group.label}</div>
@@ -110,12 +111,12 @@ export function SearchPanel({
                     {/* two cards can share a title; the collection and the archived
                         flag are what tell them apart in a list (#122) */}
                     {isArchived(hit.node) && (
-                      <span className="search-hit-archived" title="archived in Metabase">
-                        archived
+                      <span className="search-hit-archived" title={copy.search.archived}>
+                        {copy.search.archivedTag}
                       </span>
                     )}
                     {hit.matchedField !== 'name' && (
-                      <span className="search-hit-field">via {hit.matchedField}</span>
+                      <span className="search-hit-field">{copy.search.viaField(hit.matchedField)}</span>
                     )}
                   </button>
                 )

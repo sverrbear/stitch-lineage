@@ -6,10 +6,11 @@
 
 import type { ApplyFile } from '../lib/staging'
 import { diffLines, diffStat } from '../lib/workspace'
+import { copy } from '../copy'
 
 export function DiffView({ files }: { files: readonly ApplyFile[] }) {
   if (files.length === 0) {
-    return <p className="muted">No file changes — the repo already says all of this.</p>
+    return <p className="muted">{copy.diff.empty}</p>
   }
   return (
     <div className="diff-files">
