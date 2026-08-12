@@ -1,0 +1,1 @@
+function e(e,t,n=4){return!e||Math.hypot(t.x-e.x,t.y-e.y)<=n}function t(e,t,n){if(e.length===0)return[...t];let r=new Map(e.map(e=>[e.id,e]));return t.map(e=>{let t=r.get(e.id);return!t||n(t,e)?e:{...t,...e,measured:t.measured,position:t.dragging?t.position:e.position}})}export{t as n,e as t};

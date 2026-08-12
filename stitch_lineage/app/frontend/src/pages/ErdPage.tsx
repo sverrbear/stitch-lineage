@@ -36,7 +36,7 @@ import { ErdRoutedEdge } from '../components/ErdEdge'
 import { StageRelationshipModal, type StageTarget } from '../components/StageRelationshipModal'
 import { StagedWorkspace } from '../components/StagedWorkspace'
 import { useStitch } from '../data'
-import { CLICK_SLOP_PX, isClickNotDrag, type Point } from '../lib/canvas'
+import { CLICK_SLOP_PX, isClickNotDrag, mergeCanvasNodes, type Point } from '../lib/canvas'
 import {
   autoExpandedModels,
   erdClickHref,
@@ -829,11 +829,30 @@ export function ErdPage({
   // React Flow owns node positions while a drag is in flight; the layout owns them
   // otherwise. `manual` is the reader's overrides, and resetting the view drops it.
   const [nodes, setNodes] = useState<ErdFlowNode[]>(baseNodes)
-  // Rebuilt nodes go to React Flow WITHOUT a carried-over `measured`: that field
-  // is React Flow's own bookkeeping, and handing it back on a fresh object makes
-  // it skip re-measuring — which silently drops every edge on that node, because
-  // handle bounds are measured with it. `measuredHeights` is our copy for layout.
-  useEffect(() => setNodes(baseNodes), [baseNodes])
+  /**
+   * Fold the rebuilt array into what React Flow is already rendering rather than
+   * replacing it (#175).
+   *
+   * `baseNodes` recomputes for anything that touches the drawing — and the reader's
+   * own manual positions are one of its inputs, so nudging ONE card rebuilt all 41.
+   * Replacing the array threw away every card's identity, and with it the `measured`
+   * bounds React Flow keeps on them, to move one of them a few pixels.
+   *
+   * A card that changed SIZE is still handed over fresh: that is the one case where a
+   * carried-over `measured` makes React Flow skip re-measuring and silently drops the
+   * edges on that card, because handle bounds are measured with it. Expansion is the
+   * only thing that changes a card's height here, so it is the only thing that has to
+   * give up its identity — one card, not the whole canvas.
+   */
+  useEffect(() => {
+    setNodes((current) =>
+      mergeCanvasNodes(
+        current,
+        baseNodes,
+        (previous, incoming) => previous.data.expanded !== incoming.data.expanded,
+      ),
+    )
+  }, [baseNodes])
   const onNodesChange = useCallback(
     (changes: NodeChange<ErdFlowNode>[]) =>
       setNodes((current) => applyNodeChanges(changes, current)),
