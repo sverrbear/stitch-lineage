@@ -28,9 +28,10 @@ def post_message(
 ) -> None:
     """Post `text` as Slack mrkdwn. Raises SlackWebhookError on failure.
 
-    Retries on 429 and 5xx only: a webhook post is not idempotent (a retry after a 200
-    would double-post), so a success is never re-sent, and a 4xx -- a revoked or malformed
-    webhook -- is a configuration error that retrying cannot fix.
+    Retries transport failures, 429 and 5xx. HTTP successes and other 4xx responses
+    are never retried. A transport failure can be ambiguous, so retries do not promise
+    exactly-once delivery. Errors expose only safe categories/status codes: exception
+    messages and response bodies can contain the credential-bearing webhook URL.
     """
     body: dict[str, Any] = {"text": text}
     last_error = ""
@@ -38,11 +39,16 @@ def post_message(
         try:
             response = requests.post(webhook_url, json=body, timeout=timeout)
         except requests.RequestException as exc:
-            last_error = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, requests.Timeout):
+                last_error = "request timed out"
+            elif isinstance(exc, requests.ConnectionError):
+                last_error = "connection failed"
+            else:
+                last_error = "request failed"
         else:
             if response.ok:
                 return
-            last_error = f"HTTP {response.status_code}: {response.text.strip()[:200]}"
+            last_error = f"HTTP {response.status_code}"
             if response.status_code != 429 and response.status_code < 500:
                 raise SlackWebhookError(f"Slack webhook rejected the message -- {last_error}")
         if attempt < _RETRY_ATTEMPTS - 1 and backoff:
