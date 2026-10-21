@@ -25,6 +25,7 @@ from stitch_lineage.graph.schema import (
     column_node_id,
 )
 from stitch_lineage.io.artifacts import load_manifest
+from stitch_lineage.io.file_lock import file_lock
 from stitch_lineage.io.graph_store import merge_edges, read_graph, write_graph
 from stitch_lineage.io.staged_store import (
     DESCRIPTIONS_FILENAME,
@@ -32,8 +33,7 @@ from stitch_lineage.io.staged_store import (
     StagedChange,
     StagedDescription,
     StagedRelationship,
-    drop_descriptions,
-    drop_staged,
+    clear_applied,
     read_descriptions,
     read_staged,
 )
@@ -164,8 +164,8 @@ class ApplyPlan:
     def applied_entries(self, paths: set[Path]) -> list[StagedChange]:
         """The staged changes the repo carries once `paths` are written.
 
-        Exactly the set that clears from the stores (WritePlan.ids_for), so the stores and the
-        graph patch can never disagree about what was applied.
+        These are the planned snapshots to patch into the graph. Clearing separately
+        compares each snapshot with the store so a newer same-ID edit survives.
         """
         ids = self.plan.ids_for(paths)
         return [result.entry for result in self.plan.results if result.entry.id in ids]
@@ -275,17 +275,25 @@ def is_dirty(path: Path) -> bool:
 
 @dataclass(frozen=True)
 class ApplyOutcome:
-    """What an executed apply did: files written, files refused, stores cleared, graph patched."""
+    """What an executed apply completed.
+
+    `cleared` contains only IDs actually removed from their staged store. `applied_ids`
+    contains snapshots written to YAML, plus already-declared entries actually cleared;
+    a newer staged version may remain for a written ID. An already-declared snapshot
+    preserved because the store changed counts as neither applied nor cleared.
+    """
 
     written: list[Path] = field(default_factory=list)
     refused: list[Path] = field(default_factory=list)
     cleared: set[str] = field(default_factory=set)
+    applied_ids: set[str] = field(default_factory=set)
     still_staged: int = 0
     graph: GraphPatch | None = None
 
     @property
     def applied(self) -> int:
-        return len(self.cleared)
+        """Completed snapshots, not the number of entries removed from staging."""
+        return len(self.applied_ids)
 
 
 def refusals(plan: ApplyPlan, *, force: bool = False) -> list[FileEdit]:
@@ -305,30 +313,28 @@ def execute(plan: ApplyPlan, refused: list[FileEdit], *, update_graph: bool = Tr
     """Write everything the guard did not refuse, clear what applied, and patch the graph.
 
     `refused` comes from `refusals` -- passed in rather than recomputed so the files the caller
-    reported are exactly the files that are skipped.
+    reported are exactly the files that are skipped. Serialize local execution per graph
+    path so YAML writes and graph patches happen in the same order across applies.
+    Planning and user confirmation happen outside this lock.
     """
-    writable = [edit for edit in plan.edits if edit.changed and edit not in refused]
-
-    written = apply_plan(writable)
-    applied_paths = {edit.path for edit in writable}
-    entries = plan.applied_entries(applied_paths)
-    cleared = {entry.id for entry in entries}
-    drop_staged(
-        {entry.id for entry in entries if isinstance(entry, StagedRelationship)},
-        plan.paths.relationships_store,
-    )
-    drop_descriptions(
-        {entry.id for entry in entries if isinstance(entry, StagedDescription)},
-        plan.paths.descriptions_store,
-    )
-    graph = patch_graph(plan.paths.graph, entries, plan.write_to) if update_graph else None
-    return ApplyOutcome(
-        written=written,
-        refused=[edit.path for edit in refused if edit.changed],
-        cleared=cleared,
-        still_staged=len(read_changes(plan.paths)),
-        graph=graph,
-    )
+    with file_lock(plan.paths.graph):
+        writable = [edit for edit in plan.edits if edit.changed and edit not in refused]
+        written = apply_plan(writable)
+        applied_paths = {edit.path for edit in writable}
+        entries = plan.applied_entries(applied_paths)
+        cleared = clear_applied(
+            entries, plan.paths.relationships_store, plan.paths.descriptions_store
+        )
+        written_ids = {result.entry.id for result in plan.planned if result.path in applied_paths}
+        graph = patch_graph(plan.paths.graph, entries, plan.write_to) if update_graph else None
+        return ApplyOutcome(
+            written=written,
+            refused=[edit.path for edit in refused if edit.changed],
+            cleared=cleared,
+            applied_ids=written_ids | cleared,
+            still_staged=len(read_changes(plan.paths)),
+            graph=graph,
+        )
 
 
 def patch_graph(graph_path: Path, entries: list[StagedChange], write_to: str) -> GraphPatch:
@@ -346,30 +352,31 @@ def patch_graph(graph_path: Path, entries: list[StagedChange], write_to: str) ->
     """
     if not entries:
         return GraphPatch()
-    if not graph_path.is_file():
-        return GraphPatch(
-            note=f"no graph at {graph_path} to update -- run 'stitch build' to see these "
-            "changes in the app"
-        )
-    try:
-        graph = read_graph(graph_path)
-    except ValueError as exc:
-        return GraphPatch(
-            note=f"{graph_path} does not parse ({exc}) -- run 'stitch build' to rebuild it"
-        )
+    with file_lock(graph_path):
+        if not graph_path.is_file():
+            return GraphPatch(
+                note=f"no graph at {graph_path} to update -- run 'stitch build' to see these "
+                "changes in the app"
+            )
+        try:
+            graph = read_graph(graph_path)
+        except ValueError as exc:
+            return GraphPatch(
+                note=f"{graph_path} does not parse ({exc}) -- run 'stitch build' to rebuild it"
+            )
 
-    models = model_node_ids(graph)
-    edges, edge_skips = relates_to_edges(graph, models, entries, write_to)
-    updated, carried_descriptions, description_skips = _set_descriptions(graph, models, entries)
-    added = merge_edges(graph, edges)
-    if added or updated:
-        write_graph(graph, graph_path)
-    return GraphPatch(
-        carried=len(edges) + carried_descriptions,
-        edges_added=added,
-        descriptions_updated=updated,
-        skipped=[*edge_skips, *description_skips],
-    )
+        models = model_node_ids(graph)
+        edges, edge_skips = relates_to_edges(graph, models, entries, write_to)
+        updated, carried_descriptions, description_skips = _set_descriptions(graph, models, entries)
+        added = merge_edges(graph, edges)
+        if added or updated:
+            write_graph(graph, graph_path)
+        return GraphPatch(
+            carried=len(edges) + carried_descriptions,
+            edges_added=added,
+            descriptions_updated=updated,
+            skipped=[*edge_skips, *description_skips],
+        )
 
 
 def model_node_ids(graph: Graph) -> dict[str, str]:

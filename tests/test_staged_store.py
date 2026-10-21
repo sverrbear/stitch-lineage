@@ -166,7 +166,7 @@ def test_an_empty_store_writes_an_empty_list(store):
 
 def test_writes_leave_no_temp_files_behind(store):
     write_staged([_entry()], store)
-    assert [p.name for p in store.parent.iterdir()] == [STAGED_FILENAME]
+    assert {p.name for p in store.parent.iterdir()} == {STAGED_FILENAME, f".{STAGED_FILENAME}.lock"}
 
 
 def test_a_write_never_leaves_a_truncated_file(store, monkeypatch):
@@ -183,7 +183,7 @@ def test_a_write_never_leaves_a_truncated_file(store, monkeypatch):
     with pytest.raises(OSError):
         write_staged([_entry(), _entry(from_column="store_id", to_model="dim_stores")], store)
     assert store.read_text() == before
-    assert [p.name for p in store.parent.iterdir()] == [STAGED_FILENAME]
+    assert {p.name for p in store.parent.iterdir()} == {STAGED_FILENAME, f".{STAGED_FILENAME}.lock"}
 
 
 def test_an_empty_file_reads_as_an_empty_store(store):
@@ -350,3 +350,23 @@ def test_replace_of_an_unknown_id_is_none(store):
     add_staged(_entry(), store)
     assert replace_staged("nosuchid", _entry(cardinality="one-to-one"), store) is None
     assert len(read_staged(store)) == 1
+
+
+def test_drop_preserves_a_relationship_changed_since_the_applied_snapshot(store):
+    original = _entry()
+    add_staged(original, store)
+    newer = original.model_copy(update={"cardinality": "one-to-one"})
+    replace_staged(original.id, newer, store)
+    assert drop_staged({original.id}, store, expected=[original]) == 0
+    assert read_staged(store) == [newer]
+    assert drop_staged({newer.id}, store, expected=[newer]) == 1
+
+
+def test_drop_preserves_a_description_changed_since_the_applied_snapshot(descriptions):
+    original = StagedDescription(entity="orders", new_description="planned")
+    upsert_description(original, descriptions)
+    newer = original.model_copy(update={"new_description": "newer edit"})
+    upsert_description(newer, descriptions)
+    assert drop_descriptions({original.id}, descriptions, expected=[original]) == 0
+    assert read_descriptions(descriptions) == [newer]
+    assert drop_descriptions({newer.id}, descriptions, expected=[newer]) == 1

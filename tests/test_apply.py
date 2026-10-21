@@ -792,3 +792,129 @@ def test_a_corrupt_description_store_names_the_fix(repo):
     result = _run("--yes")
     assert result.exit_code == 1
     assert "delete the file" in plain(result.output)
+
+
+def test_apply_keeps_a_newer_description_staged_while_patching_the_applied_snapshot(
+    repo, monkeypatch
+):
+    from stitch_lineage import apply as apply_service
+    from stitch_lineage.io.staged_store import upsert_description
+
+    planned = _description(text="planned description")
+    newer = _description(text="newer description")
+    _stage_descriptions(repo, planned)
+    original = apply_service.apply_plan
+
+    def stage_newer_after_writing(edits):
+        written = original(edits)
+        upsert_description(newer, descriptions_path(repo / ".stitch"))
+        return written
+
+    monkeypatch.setattr(apply_service, "apply_plan", stage_newer_after_writing)
+    result = _run("--yes")
+    assert result.exit_code == 0, result.output
+    assert _yaml_value(repo, MARTS, "fct_orders", "customer_id") == "planned description"
+    assert read_descriptions(descriptions_path(repo / ".stitch")) == [newer]
+
+    assert "applied 1 description" in plain(result.output)
+    assert "1 change still staged" in plain(result.output)
+
+
+def test_already_declared_newer_description_is_not_reported_as_cleared(repo, monkeypatch):
+    from stitch_lineage import apply as apply_service
+    from stitch_lineage.io.staged_store import upsert_description
+
+    current = _yaml_value(repo, MARTS, "fct_orders", "customer_id")
+    _stage_descriptions(repo, _description(text=current))
+    newer = _description(text="newer description")
+    before = (repo / MARTS).read_bytes()
+
+    def stage_newer(edits):
+        assert edits == []
+        upsert_description(newer, descriptions_path(repo / ".stitch"))
+        return []
+
+    monkeypatch.setattr(apply_service, "apply_plan", stage_newer)
+    result = _run("--yes")
+    assert result.exit_code == 0, result.output
+    assert "nothing to write" in plain(result.output)
+    assert "1 change still staged" in plain(result.output)
+    assert "cleared" not in plain(result.output)
+    assert (repo / MARTS).read_bytes() == before
+    assert read_descriptions(descriptions_path(repo / ".stitch")) == [newer]
+
+
+@pytest.mark.parametrize("already_declared", [False, True])
+def test_outcome_separates_written_snapshots_from_actual_clearings(
+    repo, monkeypatch, already_declared
+):
+    from stitch_lineage import apply as apply_service
+    from stitch_lineage.config import load_config
+    from stitch_lineage.io.staged_store import upsert_description
+
+    current = _yaml_value(repo, MARTS, "fct_orders", "customer_id")
+    planned = _description(text=current if already_declared else "planned description")
+    _stage_descriptions(repo, planned)
+    config = repo / "stitch.yml"
+    plan = apply_service.build_plan(config, load_config(config))
+    newer = _description(text="newer description")
+    upsert_description(newer, descriptions_path(repo / ".stitch"))
+    outcome = apply_service.execute(plan, [], update_graph=False)
+
+    assert outcome.cleared == set()
+    assert outcome.applied_ids == (set() if already_declared else {planned.id})
+    assert outcome.applied == (0 if already_declared else 1)
+    assert outcome.still_staged == 1
+    assert read_descriptions(descriptions_path(repo / ".stitch")) == [newer]
+
+
+def test_concurrent_applies_keep_yaml_and_graph_updates_in_the_same_order(repo, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
+    from threading import Event
+
+    from stitch_lineage import apply as apply_service
+    from stitch_lineage.config import load_config
+
+    graph_path = _graph_file(repo)
+    config = repo / "stitch.yml"
+    cfg = load_config(config)
+    _stage_descriptions(repo, _description(text="first"))
+    first_plan = apply_service.build_plan(config, cfg)
+    patch_started, release, second_started = Event(), Event(), Event()
+    original = apply_service.patch_graph
+    calls = 0
+
+    def pause_first_patch(*args):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            patch_started.set()
+            assert release.wait(5)
+        return original(*args)
+
+    monkeypatch.setattr(apply_service, "patch_graph", pause_first_patch)
+
+    def second_apply(plan):
+        second_started.set()
+        return apply_service.execute(plan, [])
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(apply_service.execute, first_plan, [])
+        try:
+            assert patch_started.wait(5)
+            _stage_descriptions(repo, _description(text="second"))
+            second_plan = apply_service.build_plan(config, cfg)
+            second = pool.submit(second_apply, second_plan)
+            assert second_started.wait(5)
+            with pytest.raises(TimeoutError):
+                second.result(timeout=0.1)
+            assert _yaml_value(repo, MARTS, "fct_orders", "customer_id") == "first"
+        finally:
+            release.set()
+        assert first.result(timeout=5).applied == 1
+        assert second.result(timeout=5).applied == 1
+
+    assert _yaml_value(repo, MARTS, "fct_orders", "customer_id") == "second"
+    nodes = {node.node_id: node for node in read_graph(graph_path).nodes}
+    assert nodes[ORDERS_FK].description == "second"
+    assert read_descriptions(descriptions_path(repo / ".stitch")) == []
