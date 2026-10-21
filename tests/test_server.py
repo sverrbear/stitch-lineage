@@ -120,3 +120,35 @@ def test_api_meta_carries_the_table_prefixes(graph_path):
     graph, and the bindings that stripped it to match, are untouched."""
     client = TestClient(create_app(graph_path, None, table_prefixes=["sis_"]))
     assert client.get("/api/meta").json()["table_prefixes"] == ["sis_"]
+
+
+@pytest.mark.parametrize("bind_host", ["127.0.0.1", "localhost", "::1"])
+def test_loopback_server_rejects_rebound_host_even_on_reads(graph_path, bind_host):
+    client = TestClient(create_app(graph_path, None, bind_host=bind_host))
+    response = client.get("/api/graph", headers={"Host": "attacker.example:8787"})
+    assert response.status_code == 403
+    response = client.post(
+        "/api/staged-relationships",
+        headers={"Host": "attacker.example:8787", "Origin": "http://attacker.example:8787"},
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1:8787", "localhost:8787", "[::1]:8787"])
+def test_loopback_server_accepts_loopback_hosts(graph_path, host):
+    client = TestClient(create_app(graph_path, None, bind_host="127.0.0.1"))
+    assert client.get("/api/graph", headers={"Host": host}).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "host", ["localhost.attacker.example", "127.0.0.1.attacker.example", "localhost:bad"]
+)
+def test_loopback_server_rejects_misleading_or_malformed_hosts(graph_path, host):
+    client = TestClient(create_app(graph_path, None, bind_host="127.0.0.1"))
+    assert client.get("/api/graph", headers={"Host": host}).status_code == 403
+
+
+@pytest.mark.parametrize("bind_host", ["0.0.0.0", "::", "192.0.2.1", "stitch.internal"])
+def test_explicit_network_bind_preserves_custom_hostnames(graph_path, bind_host):
+    client = TestClient(create_app(graph_path, None, bind_host=bind_host))
+    assert client.get("/api/graph", headers={"Host": "stitch.internal:8787"}).status_code == 200
