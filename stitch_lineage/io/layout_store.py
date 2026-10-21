@@ -19,6 +19,8 @@ from typing import Any
 
 from ruamel.yaml import YAML, YAMLError
 
+from stitch_lineage.io.file_lock import file_lock
+
 __all__ = [
     "DISMISSED_KEY",
     "LAYOUT_FILENAME",
@@ -90,25 +92,27 @@ def read_dismissed(path: Path) -> list[str]:
 def write_layout(layout: dict[str, Any], path: Path) -> None:
     """Write the document atomically: schema_version first, then keys sorted, dismissals
     sorted -- so two writers holding the same layout produce the same bytes."""
-    path = Path(path)
-    payload: dict[str, Any] = {"schema_version": layout.get("schema_version", SCHEMA_VERSION)}
-    payload.update({key: layout[key] for key in sorted(layout) if key != "schema_version"})
-    if DISMISSED_KEY in payload:
-        payload[DISMISSED_KEY] = sorted(set(payload[DISMISSED_KEY]))
-    buffer = StringIO()
-    _yaml().dump(payload, buffer)
-    _atomic_write(path, _HEADER + buffer.getvalue())
+    with file_lock(path):
+        path = Path(path)
+        payload: dict[str, Any] = {"schema_version": layout.get("schema_version", SCHEMA_VERSION)}
+        payload.update({key: layout[key] for key in sorted(layout) if key != "schema_version"})
+        if DISMISSED_KEY in payload:
+            payload[DISMISSED_KEY] = sorted(set(payload[DISMISSED_KEY]))
+        buffer = StringIO()
+        _yaml().dump(payload, buffer)
+        _atomic_write(path, _HEADER + buffer.getvalue())
 
 
 def add_dismissed(suggestion_id: str, path: Path) -> bool:
     """Record a dismissal; return whether it was new. Everything else in the file survives."""
-    layout = read_layout(path)
-    dismissed = read_dismissed(path)
-    if suggestion_id in dismissed:
-        return False
-    layout[DISMISSED_KEY] = [*dismissed, suggestion_id]
-    write_layout(layout, path)
-    return True
+    with file_lock(path):
+        layout = read_layout(path)
+        dismissed = read_dismissed(path)
+        if suggestion_id in dismissed:
+            return False
+        layout[DISMISSED_KEY] = [*dismissed, suggestion_id]
+        write_layout(layout, path)
+        return True
 
 
 def _atomic_write(path: Path, text: str) -> None:

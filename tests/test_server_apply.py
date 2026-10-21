@@ -537,6 +537,31 @@ def test_a_read_only_build_has_no_writeability_route(read_only):
     assert read_only.get("/api/writeability").status_code == 404
 
 
+@pytest.mark.parametrize("already_declared", [False, True])
+def test_api_reports_newer_preserved_edits_without_claiming_they_were_cleared(
+    client, repo, stores, monkeypatch, already_declared
+):
+    current = _yaml_description(repo, "fct_orders", "customer_id")
+    text = current if already_declared else "planned description"
+    client.put("/api/staged-descriptions", json={**EDIT, "new_description": text})
+    original = apply_service.apply_plan
+
+    def stage_newer_after_writing(edits):
+        written = original(edits)
+        client.put("/api/staged-descriptions", json={**EDIT, "new_description": "newer"})
+        return written
+
+    monkeypatch.setattr(apply_service, "apply_plan", stage_newer_after_writing)
+    response = client.post("/api/apply")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["written"] == ([] if already_declared else [MARTS])
+    assert payload["applied"] == (0 if already_declared else 1)
+    assert payload["still_staged"] == 1
+    assert _yaml_description(repo, "fct_orders", "customer_id") == text
+    assert read_descriptions(stores[1])[0].new_description == "newer"
+
+
 def test_apply_conflict_returns_409_and_preserves_stores_and_graph(
     client, repo, stores, monkeypatch
 ):

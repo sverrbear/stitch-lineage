@@ -1905,8 +1905,8 @@ _GRAPH_PATCHED = (
 def _applied_label(plan: apply_service.ApplyPlan, outcome: apply_service.ApplyOutcome) -> str:
     """ "2 relationships and 1 description" -- what the closing line counts."""
     counts = (
-        (sum(1 for e in plan.changes.relationships if e.id in outcome.cleared), "relationship"),
-        (sum(1 for e in plan.changes.descriptions if e.id in outcome.cleared), "description"),
+        (sum(1 for e in plan.changes.relationships if e.id in outcome.applied_ids), "relationship"),
+        (sum(1 for e in plan.changes.descriptions if e.id in outcome.applied_ids), "description"),
     )
     parts = [f"{count} {noun}{'s' if count != 1 else ''}" for count, noun in counts if count]
     return " and ".join(parts) or "nothing"
@@ -2082,19 +2082,18 @@ def apply(
         # everything appliable was already in the repo: the entries still clear, and the graph
         # patch is what keeps the change visible once the staged edge leaves the app
         console.print(
-            f"cleared {outcome.applied} already-declared entr"
-            f"{'ies' if outcome.applied != 1 else 'y'} from {staged.parent}",
+            f"cleared {len(outcome.cleared)} already-declared entr"
+            f"{'ies' if len(outcome.cleared) != 1 else 'y'} from {staged.parent}",
             soft_wrap=True,
         )
         _report_graph_patch(outcome.graph, None)
     else:
-        if outcome.still_staged:
-            console.print(
-                f"{outcome.still_staged} change{'s' if outcome.still_staged != 1 else ''} "
-                "still staged",
-                soft_wrap=True,
-            )
         _report_graph_patch(outcome.graph, f"applied {_applied_label(plan, outcome)}")
+    if outcome.still_staged:
+        console.print(
+            f"{outcome.still_staged} change{'s' if outcome.still_staged != 1 else ''} still staged",
+            soft_wrap=True,
+        )
 
     if build_after:
         console.print()

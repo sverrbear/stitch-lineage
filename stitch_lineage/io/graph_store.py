@@ -8,11 +8,14 @@ committed graph diffs cleanly.
 """
 
 import json
+import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from stitch_lineage.graph.schema import Edge, Graph
+from stitch_lineage.io.file_lock import file_lock
 
 _VOLATILE_FIELDS = ("generated_at", "dbt_invocation_id", "metabase_version")
 _HEADER_FIELDS = ("schema_version", *_VOLATILE_FIELDS)
@@ -53,8 +56,17 @@ def serialize_graph(graph: Graph) -> str:
 
 
 def write_graph(graph: Graph, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(serialize_graph(graph), encoding="utf-8")
+    """Publish a complete graph, cooperating with apply's graph transaction."""
+    with file_lock(path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(serialize_graph(graph))
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
 
 
 def read_graph(path: Path) -> Graph:
