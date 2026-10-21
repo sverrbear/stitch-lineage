@@ -14,13 +14,12 @@
     <script>
       // Theme before first paint (no flash). Mirrors src/theme.ts.
       ;(function () {
-        try {
-          var t = localStorage.getItem('stitch-theme')
-          if (t !== 'light' && t !== 'dark') {
-            t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-          }
-          document.documentElement.dataset.theme = t
-        } catch (e) {}
+        var t
+        try { t = localStorage.getItem('stitch-theme') } catch (e) {}
+        if (t !== 'light' && t !== 'dark') {
+          t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+        }
+        document.documentElement.dataset.theme = t
       })()
     </script>
     <!--
@@ -33,8 +32,8 @@
     <script>
       /* __STITCH_INLINE_DATA__ */
     </script>
-    <script type="module" crossorigin src="./assets/index-CNqdxV74.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-Cf7k_4ZH.css">
+    <script type="module" crossorigin src="./assets/index-J_PpCZvU.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-DHSibn6x.css">
   </head>
   <body>
     <div id="root"></div>

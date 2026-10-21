@@ -30,6 +30,8 @@ export const copy = {
   /** The shell: loading, fatal errors, the dev banner. */
   app: {
     loadingView: 'Loading view…',
+    invalidLinkTitle: 'Page not found',
+    invalidLinkDetail: 'This link is invalid. Use search to find a model, column, card or dashboard.',
     loadingGraph: 'Loading graph…',
     devFixtureBanner: 'dev fixture graph (no API)',
     loadErrorTitle: 'Couldn’t load the lineage graph',
@@ -182,7 +184,10 @@ export const copy = {
     definedAs: 'Defined as',
     upstream: (columns: string, sources: string) => `Upstream — ${columns}, ${sources}`,
     downstream: (headline: string) => `Downstream — ${headline}`,
-    fanoutTruncated: '(fan-out truncated for display)',
+    listTruncated: 'Only part of the result is listed below; summary counts are complete.',
+    upstreamListTruncated: 'Only part of the upstream result is listed; summary counts are complete.',
+    downstreamListTruncated: 'Only part of the downstream result is listed; summary counts are complete.',
+    noDisplayedEntries: 'No entries in this displayed portion.',
     declaredRelationships: 'Declared relationships',
     /** The two ways a `binds_to` hop goes missing, and the command that lists them. */
     unboundWhy: (): ReactNode => (
@@ -250,13 +255,13 @@ export const copy = {
     unknownNode: (nodeId: string): ReactNode => <>Unknown node: {nodeId}</>,
     openInMetabase: (name: string) => `Open “${name}” in Metabase`,
     openDetail: (type: string, name: string) => `Open the ${type} page for ${name}`,
-    truncatedCounts:
-      'This walk hit its node cap, so these are lower bounds — the real counts are higher.',
+    downstreamCounts: (cards: number, dashboards: number) =>
+      `Downstream: ${cards.toLocaleString()} card${cards === 1 ? '' : 's'} · ${dashboards.toLocaleString()} dashboard${dashboards === 1 ? '' : 's'}`,
     grainLabel: 'Lineage grain',
     grainColumn: 'Which columns feed which fields',
     grainTable: 'Which models feed which cards — the same subgraph rolled up',
     details: 'Details',
-    truncated: 'large fan-out truncated',
+    truncated: 'drawing truncated; counts are exact',
     hint: 'click a node to re-trace from it · click its name to open it',
   },
 
