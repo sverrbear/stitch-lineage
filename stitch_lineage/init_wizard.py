@@ -27,7 +27,7 @@ import typer
 from rich.console import Console
 from ruamel.yaml import YAML
 
-from stitch_lineage.config import StitchConfigError, load_config
+from stitch_lineage.config import RelationshipsConfig, StitchConfigError, load_config
 from stitch_lineage.io.artifacts import StitchArtifactError, load_manifest
 from stitch_lineage.io.dbt_runner import StitchDbtRunnerError, run_docs_generate
 from stitch_lineage.io.metabase_client import MetabaseAPIError, MetabaseClient
@@ -446,7 +446,8 @@ def render_stitch_yml(
         '  exclude_collections: []  # e.g. ["Personal*", "Archive*"]',
         "",
         "relationships:",
-        "  write_to: meta  # | relationships_test | contract_constraint",
+        f"  write_to: {RelationshipsConfig().write_to}"
+        "  # meta | relationships_test | contract_constraint",
         "  fk_meta_keys: "
         '["metabase.fk_target_table", "metabase.fk_target_field"]  # dbt-metabase interop',
         "  cardinality_meta_key: relationship_type  # dbterd interop",
