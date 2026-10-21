@@ -295,6 +295,8 @@ def _dashcards_by_card(payload: MetabasePayload) -> dict[int, list[_Dashcard]]:
     for dashboard in payload.dashboards:
         if not isinstance(dashboard, dict) or not isinstance(dashboard.get("id"), int):
             continue
+        if dashboard.get("archived"):
+            continue  # estate hygiene may include these; mend must leave them alone
         dashcards = dashboard.get("dashcards")
         if not isinstance(dashcards, list):
             dashcards = dashboard.get("ordered_cards")

@@ -14,9 +14,11 @@ read-only by construction.
 """
 
 from datetime import UTC, datetime
+from ipaddress import ip_address
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
@@ -53,6 +55,66 @@ __all__ = ["StitchAppError", "create_app", "frontend_dist"]
 # shape (SPEC.md section 8.1) -- it is what the ERD renders from two many-to-one edges.
 _CARDINALITIES = ("many-to-one", "one-to-many", "one-to-one")
 _SHAPES = ("simple",)
+
+
+def _origin(value: str) -> tuple[str, str, int] | None:
+    """Parse a serialized HTTP origin without accepting URL paths or opaque origins."""
+    if not value or any(
+        ord(character) <= 32 or ord(character) == 127 or character.isspace() for character in value
+    ):
+        return None
+    try:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or "?" in value
+            or "#" in value
+            or parsed.netloc.endswith(":")
+        ):
+            return None
+        port = parsed.port
+    except ValueError:
+        return None
+    return (
+        parsed.scheme,
+        parsed.hostname,
+        port if port is not None else (443 if parsed.scheme == "https" else 80),
+    )
+
+
+def _loopback_host(host: str) -> bool:
+    if host.lower().rstrip(".") == "localhost":
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _request_refusal(request: Request, *, loopback_only: bool) -> str | None:
+    """Browser writes must originate here; CLI clients need no browser-only headers.
+
+    For a loopback bind, reject arbitrary Host names on reads too: comparing Origin
+    against Host alone would let a DNS-rebinding page read and write local state.
+    Explicit non-loopback binds retain their chosen hostnames and network access.
+    """
+    hosts = request.headers.getlist("host")
+    target = _origin(f"{request.scope['scheme']}://{hosts[0]}") if len(hosts) == 1 else None
+    if loopback_only and (target is None or not _loopback_host(target[1])):
+        return "this local server only accepts localhost or loopback Host headers"
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return None
+    sites = request.headers.getlist("sec-fetch-site")
+    if sites and (len(sites) != 1 or sites[0] not in {"same-origin", "none"}):
+        return "browser changes must come from the same origin as this server"
+    origins = request.headers.getlist("origin")
+    if origins and (len(origins) != 1 or target is None or _origin(origins[0]) != target):
+        return "browser changes must come from the same origin as this server"
+    return None
 
 
 class StagedRelationshipRequest(BaseModel):
@@ -236,6 +298,7 @@ def create_app(
     apply_context: apply_service.ApplyContext | None = None,
     strip_model_prefixes: list[str] | None = None,
     table_prefixes: list[str] | None = None,
+    bind_host: str | None = None,
 ) -> FastAPI:
     """Build the local app serving `graph_path`; `metabase_url` powers card deep links.
 
@@ -259,6 +322,9 @@ def create_app(
     `table_prefixes` are the per-database metabase.databases[].table_prefix values. Binding
     already strips them (resolve/bind.py); passing them on lets the app hide them from the
     physical names it DISPLAYS too, which on a dev target are the reader's own initials.
+    `bind_host` is the interface passed to uvicorn by `stitch serve`. Loopback binds
+    also restrict Host headers to loopback names/addresses to prevent DNS rebinding.
+    Browser mutation requests always require same-origin request metadata.
     """
     dist = frontend_dist()
     layout = layout_path or (staged_path.parent / LAYOUT_FILENAME if staged_path else None)
@@ -266,6 +332,15 @@ def create_app(
         staged_path.parent / DESCRIPTIONS_FILENAME if staged_path else None
     )
     api = FastAPI(title="stitch", docs_url=None, redoc_url=None, openapi_url=None)
+
+    @api.middleware("http")
+    async def guard_browser_requests(request: Request, call_next):
+        refusal = _request_refusal(
+            request, loopback_only=bind_host is not None and _loopback_host(bind_host)
+        )
+        if refusal is not None:
+            return JSONResponse({"detail": refusal}, status_code=403)
+        return await call_next(request)
 
     @api.get("/api/graph")
     def api_graph() -> JSONResponse:
@@ -449,7 +524,10 @@ def create_app(
             # no force from the app, ever: a target file with uncommitted edits is refused and
             # reported, and overwriting it stays a `stitch apply --force` decision
             refused = apply_service.refusals(plan)
-            outcome = apply_service.execute(plan, refused)
+            try:
+                outcome = apply_service.execute(plan, refused)
+            except apply_service.YamlWriteConflict as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             graph = outcome.graph
             return JSONResponse(
                 {

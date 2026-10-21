@@ -23,6 +23,13 @@ _PAYLOAD_FILE = "payload.json"
 class MetabaseAPIError(Exception):
     """Metabase unreachable, auth rejected, version below minimum, or a non-2xx response."""
 
+    def __init__(
+        self, message: str, *, status_code: int | None = None, error_code: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
+
 
 def _version_tuple(tag: str) -> tuple[int, ...]:
     """Comparable version from a Metabase tag ("v0.53.2", enterprise "v1.53.x", "0.49").
@@ -146,7 +153,15 @@ class MetabaseClient:
                         raise MetabaseAPIError(f"non-JSON response from {url}: {exc}") from exc
                 last_error = _http_error(response)
                 if response.status_code != 429 and response.status_code < 500:
-                    raise MetabaseAPIError(f"{last_error} from {url}")
+                    try:
+                        body = response.json()
+                    except ValueError:
+                        body = None
+                    raise MetabaseAPIError(
+                        f"{last_error} from {url}",
+                        status_code=response.status_code,
+                        error_code=body.get("error_code") if isinstance(body, dict) else None,
+                    )
             if attempt < _RETRY_ATTEMPTS - 1 and self.backoff:
                 time.sleep(self.backoff * 2**attempt)
         raise MetabaseAPIError(f"{last_error} from {url} after {_RETRY_ATTEMPTS} attempts")
@@ -187,7 +202,7 @@ class MetabaseClient:
         return payload
 
     def list_cards(self) -> list[dict[str, Any]]:
-        """GET /api/card -- all cards with dataset_query, collection_id, creator, archived."""
+        """GET /api/card -- active cards, including dataset_query and write permissions."""
         return _as_list(self._get("/api/card"), "/api/card")
 
     def list_dashboards(self) -> list[dict[str, Any]]:
@@ -204,6 +219,24 @@ class MetabaseClient:
     def list_collections(self) -> list[dict[str, Any]]:
         """GET /api/collection -- the collection tree, for exclude_collections filtering."""
         return _as_list(self._get("/api/collection"), "/api/collection")
+
+    def _list_with_archived(
+        self, path: str, archived_params: dict[str, str], run_dir: Path | None, name: str
+    ) -> list[dict[str, Any]]:
+        """Merge both listing filters; `all` on cards/dashboards means active only.
+
+        Snapshot each raw response separately. A row seen in both responses occurs
+        once, with the later (archived) response winning, and IDs give a stable order.
+        Collections also have the string ID `root`.
+        """
+        by_id: dict[int | str, dict[str, Any]] = {}
+        for params, suffix in ((None, ""), (archived_params, "_archived")):
+            raw = self._get(path, params=params)
+            self._snapshot(run_dir, f"{name}{suffix}", raw)
+            for item in _as_list(raw, path):
+                if isinstance(item, dict) and isinstance(item.get("id"), (int, str)):
+                    by_id[item["id"]] = item
+        return [by_id[key] for key in sorted(by_id, key=lambda key: (isinstance(key, str), key))]
 
     def list_snippets(self) -> list[dict[str, Any]]:
         """GET /api/native-query-snippet -- the SQL behind `{{snippet: name}}` tags.
@@ -338,24 +371,35 @@ class MetabaseClient:
             metadata[db_id] = self.database_metadata(db_id)
             self._snapshot(run_dir, f"database_metadata_{db_id}", metadata[db_id])
 
-        cards_raw = self._get("/api/card")
-        self._snapshot(run_dir, "cards", cards_raw)
-        cards = _as_list(cards_raw, "/api/card")
-
-        dashboards_raw = self._get("/api/dashboard")
-        self._snapshot(run_dir, "dashboards", dashboards_raw)
+        cards = self._list_with_archived("/api/card", {"f": "archived"}, run_dir, "cards")
+        dashboard_summaries = self._list_with_archived(
+            "/api/dashboard", {"f": "archived"}, run_dir, "dashboards"
+        )
         dashboards: list[dict[str, Any]] = []
-        for summary in _as_list(dashboards_raw, "/api/dashboard"):
+        for summary in dashboard_summaries:
             dash_id = summary.get("id") if isinstance(summary, dict) else None
             if not isinstance(dash_id, int):
                 continue
-            detail = self.get_dashboard(dash_id)
+            try:
+                detail = self.get_dashboard(dash_id)
+            except MetabaseAPIError as exc:
+                # Older supported releases reject archived details explicitly. Keep
+                # their summary/flag without inventing an empty dashcard list; the
+                # resolver will count its unavailable membership as unresolved.
+                if not (
+                    summary.get("archived")
+                    and exc.status_code == 404
+                    and exc.error_code == "archived"
+                ):
+                    raise
+                dashboards.append(summary)
+                continue
             self._snapshot(run_dir, f"dashboard_{dash_id}", detail)
             dashboards.append(detail)
 
-        collections_raw = self._get("/api/collection")
-        self._snapshot(run_dir, "collections", collections_raw)
-        collections = _as_list(collections_raw, "/api/collection")
+        collections = self._list_with_archived(
+            "/api/collection", {"archived": "true"}, run_dir, "collections"
+        )
 
         snippets = self.list_snippets()
         self._snapshot(run_dir, "snippets", snippets)

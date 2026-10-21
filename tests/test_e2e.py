@@ -14,7 +14,7 @@ from typer.testing import CliRunner
 
 from stitch_lineage.cli import app
 from stitch_lineage.graph.schema import EdgeType, Graph
-from stitch_lineage.io.graph_store import graphs_semantically_equal, read_graph
+from stitch_lineage.io.graph_store import graphs_semantically_equal, read_graph, write_graph
 
 runner = CliRunner()
 
@@ -767,3 +767,42 @@ def test_doctor_list_databases(project):
     assert result.exit_code == 0, result.output
     assert "Analytics" in plain(result.output)
     assert "Sample Database" in plain(result.output)
+
+
+@pytest.mark.parametrize("other_repo", [False, True])
+def test_committed_impact_baseline_follows_config_repository(
+    project, tmp_path_factory, monkeypatch, other_repo
+):
+    _full_build()
+    _git(project, "init", "-b", "main")
+    _git(project, "add", ".")
+    _git(project, "commit", "-m", "correct baseline")
+    current = _graph(project)
+    current.nodes = [node for node in current.nodes if node.node_id != ORDER_TOTAL]
+    current.edges = [edge for edge in current.edges if ORDER_TOTAL not in (edge.from_, edge.to)]
+    write_graph(current, project / ".stitch" / "graph.json")
+
+    launch = tmp_path_factory.mktemp("impact-launch")
+    if other_repo:
+        # Both repositories have main and a committed graph at the same relative
+        # path, but the caller's unrelated graph must never become the baseline.
+        write_graph(Graph(), launch / ".stitch" / "graph.json")
+        _git(launch, "init", "-b", "main")
+        _git(launch, "add", ".")
+        _git(launch, "commit", "-m", "unrelated baseline")
+    monkeypatch.chdir(launch)
+    result = runner.invoke(
+        app,
+        [
+            "impact",
+            "--config",
+            str(project / "stitch.yml"),
+            "--base",
+            "main",
+            "--format",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["removed"] == [ORDER_TOTAL]
+    assert "baseline: graph.json committed at main:.stitch/graph.json" in result.stderr
