@@ -3,6 +3,7 @@ from pathlib import Path
 
 import uvicorn
 from conftest import plain, uncoloured
+from fastapi.testclient import TestClient
 from typer.main import get_command
 from typer.testing import CliRunner
 
@@ -146,6 +147,12 @@ def test_serve_binds_the_requested_host_and_port(tmp_path, monkeypatch):
     assert calls[0][1]["host"] == "0.0.0.0"
     assert calls[0][1]["port"] == 9123
     assert "http://0.0.0.0:9123" in plain(result.output)
+    assert (
+        TestClient(calls[0][0], base_url="http://stitch.internal:9123")
+        .get("/api/graph")
+        .status_code
+        == 200
+    )
 
 
 def test_serve_defaults_to_localhost_8787_and_opens_a_browser(tmp_path, monkeypatch):
@@ -158,6 +165,9 @@ def test_serve_defaults_to_localhost_8787_and_opens_a_browser(tmp_path, monkeypa
     assert result.exit_code == 0, result.output
     assert calls[0][1] == {"host": "127.0.0.1", "port": 8787, "log_level": "warning"}
     assert opened == ["http://127.0.0.1:8787"]
+    served = TestClient(calls[0][0], base_url="http://127.0.0.1:8787")
+    assert served.get("/api/graph").status_code == 200
+    assert served.get("/api/graph", headers={"Host": "attacker.example:8787"}).status_code == 403
 
 
 def test_serve_warns_once_about_an_erd_scope_the_graph_does_not_have(tmp_path, monkeypatch):
@@ -173,8 +183,6 @@ def test_serve_warns_once_about_an_erd_scope_the_graph_does_not_have(tmp_path, m
 
 
 def test_serve_hands_the_configured_erd_scope_to_the_app(tmp_path, monkeypatch):
-    from fastapi.testclient import TestClient
-
     monkeypatch.chdir(tmp_path)
     (tmp_path / "stitch.yml").write_text(SCOPED_CONFIG)
     _write_graph(tmp_path, [_marts_model()])
@@ -182,7 +190,7 @@ def test_serve_hands_the_configured_erd_scope_to_the_app(tmp_path, monkeypatch):
     result = runner.invoke(app, ["serve", "--no-open"])
     assert result.exit_code == 0, result.output
     assert "warning" not in plain(result.output)
-    meta = TestClient(calls[0][0]).get("/api/meta").json()
+    meta = TestClient(calls[0][0], base_url="http://127.0.0.1:8787").get("/api/meta").json()
     assert meta["erd_default_scope"] == "schema:MARTS"
 
 

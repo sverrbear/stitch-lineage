@@ -177,10 +177,13 @@ def test_cache_write_and_load_cached_round_trip(tmp_path):
         "databases.json",
         "database_metadata_2.json",
         "cards.json",
+        "cards_archived.json",
         "dashboards.json",
+        "dashboards_archived.json",
         "dashboard_301.json",
         "dashboard_302.json",
         "collections.json",
+        "collections_archived.json",
         "snippets.json",
         "payload.json",
     }
