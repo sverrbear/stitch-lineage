@@ -182,7 +182,10 @@ export const copy = {
     definedAs: 'Defined as',
     upstream: (columns: string, sources: string) => `Upstream — ${columns}, ${sources}`,
     downstream: (headline: string) => `Downstream — ${headline}`,
-    fanoutTruncated: '(fan-out truncated for display)',
+    listTruncated: 'Only part of the result is listed below; summary counts are complete.',
+    upstreamListTruncated: 'Only part of the upstream result is listed; summary counts are complete.',
+    downstreamListTruncated: 'Only part of the downstream result is listed; summary counts are complete.',
+    noDisplayedEntries: 'No entries in this displayed portion.',
     declaredRelationships: 'Declared relationships',
     /** The two ways a `binds_to` hop goes missing, and the command that lists them. */
     unboundWhy: (): ReactNode => (

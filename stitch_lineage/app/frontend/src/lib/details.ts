@@ -5,6 +5,7 @@ import type { DataTypeSource, GraphEdge, GraphNode } from '../types'
 import {
   type GraphIndex,
   type Reach,
+  type WalkOptions,
   modelIdOfColumn,
   reachedOfType,
   walk,
@@ -41,6 +42,25 @@ function relationshipsTouching(index: GraphIndex, columnIds: Set<string>): Relat
   return refs
 }
 
+/** Bounded lists, with a complete traversal only when a limit hid something. */
+function detailWalk(index: GraphIndex, nodeId: string, direction: 'up' | 'down', options: WalkOptions = {}) {
+  const shown = walk(index, nodeId, direction, options)
+  const full = shown.truncated
+    ? walk(index, nodeId, direction, { ...options, maxDepth: Infinity, maxNodes: Infinity })
+    : shown
+  return { shown, full }
+}
+
+function owners(index: GraphIndex, columns: readonly Reach[], sourcesOnly = false): Set<string> {
+  const ids = new Set<string>()
+  for (const { node } of columns) {
+    const id = modelIdOfColumn(node.node_id)
+    const owner = id ? index.nodesById.get(id) : undefined
+    if (owner && (!sourcesOnly || owner.node_type === 'source')) ids.add(owner.node_id)
+  }
+  return ids
+}
+
 // ---------------------------------------------------------------------------
 
 export interface ColumnDetail {
@@ -56,6 +76,16 @@ export interface ColumnDetail {
   dashboards: Reach[]
   relationships: RelationshipRef[]
   truncated: boolean
+  upstreamTruncated: boolean
+  downstreamTruncated: boolean
+  counts: {
+    upstreamColumns: number
+    upstreamSources: number
+    downstreamModels: number
+    fields: number
+    cards: number
+    dashboards: number
+  }
 }
 
 export function columnDetail(index: GraphIndex, nodeId: string): ColumnDetail | null {
@@ -64,8 +94,10 @@ export function columnDetail(index: GraphIndex, nodeId: string): ColumnDetail | 
   const modelId = modelIdOfColumn(nodeId)
   const model = modelId ? (index.nodesById.get(modelId) ?? null) : null
 
-  const up = walk(index, nodeId, 'up')
-  const down = walk(index, nodeId, 'down')
+  const upstream = detailWalk(index, nodeId, 'up')
+  const downstream = detailWalk(index, nodeId, 'down')
+  const up = upstream.shown
+  const down = downstream.shown
 
   const upstreamColumns = reachedOfType(up, 'column')
   const upstreamSources: Reach[] = []
@@ -103,6 +135,16 @@ export function columnDetail(index: GraphIndex, nodeId: string): ColumnDetail | 
     dashboards: reachedOfType(down, 'mb_dashboard'),
     relationships: relationshipsTouching(index, new Set([nodeId])),
     truncated: up.truncated || down.truncated,
+    upstreamTruncated: up.truncated,
+    downstreamTruncated: down.truncated,
+    counts: {
+      upstreamColumns: reachedOfType(upstream.full, 'column').length,
+      upstreamSources: owners(index, reachedOfType(upstream.full, 'column'), true).size,
+      downstreamModels: owners(index, reachedOfType(downstream.full, 'column')).size,
+      fields: reachedOfType(downstream.full, 'mb_field').length,
+      cards: reachedOfType(downstream.full, 'mb_card').length,
+      dashboards: reachedOfType(downstream.full, 'mb_dashboard').length,
+    },
   }
 }
 
@@ -147,7 +189,7 @@ function chainGap(node: GraphNode, fields: Reach[], columns: Reach[]): ChainGap 
 
 export interface BiDetail {
   node: GraphNode
-  /** Every dbt column this visual ultimately depends on, with bottleneck confidence. */
+  /** Displayed dbt dependencies, with bottleneck confidence; bounded by the walk limits. */
   dependsOnColumns: Reach[]
   dependsOnModels: GraphNode[]
   fields: Reach[]
@@ -155,16 +197,28 @@ export interface BiDetail {
   unboundFields: Reach[]
   cards: Reach[]
   dashboards: Reach[]
-  /** Set only when `dependsOnColumns` is empty: which hop is missing. */
+  /** Set only when no dbt column exists in the complete upstream chain. */
   gap: ChainGap | null
+  upstreamTruncated: boolean
+  downstreamTruncated: boolean
+  counts: {
+    columns: number
+    models: number
+    fields: number
+    unboundFields: number
+    cards: number
+    dashboards: number
+  }
 }
 
 /** Detail for mb_card, mb_dashboard and mb_field nodes (the reverse view). */
 export function biDetail(index: GraphIndex, nodeId: string): BiDetail | null {
   const node = index.nodesById.get(nodeId)
   if (!node) return null
-  const up = walk(index, nodeId, 'up')
-  const down = walk(index, nodeId, 'down')
+  const upstream = detailWalk(index, nodeId, 'up')
+  const downstream = detailWalk(index, nodeId, 'down')
+  const up = upstream.shown
+  const down = downstream.shown
 
   const dependsOnColumns = reachedOfType(up, 'column')
   const fields = reachedOfType(up, 'mb_field')
@@ -186,7 +240,17 @@ export function biDetail(index: GraphIndex, nodeId: string): BiDetail | null {
     unboundFields: fields.filter((reach) => !fieldIsBound(index, reach.node.node_id)),
     cards: node.node_type === 'mb_dashboard' ? reachedOfType(up, 'mb_card') : reachedOfType(down, 'mb_card'),
     dashboards: reachedOfType(down, 'mb_dashboard'),
-    gap: chainGap(node, fields, dependsOnColumns),
+    gap: chainGap(node, reachedOfType(upstream.full, 'mb_field'), reachedOfType(upstream.full, 'column')),
+    upstreamTruncated: up.truncated,
+    downstreamTruncated: down.truncated,
+    counts: {
+      columns: reachedOfType(upstream.full, 'column').length,
+      models: owners(index, reachedOfType(upstream.full, 'column')).size,
+      fields: reachedOfType(upstream.full, 'mb_field').length,
+      unboundFields: reachedOfType(upstream.full, 'mb_field').filter((reach) => !fieldIsBound(index, reach.node.node_id)).length,
+      cards: reachedOfType(node.node_type === 'mb_dashboard' ? upstream.full : downstream.full, 'mb_card').length,
+      dashboards: reachedOfType(downstream.full, 'mb_dashboard').length,
+    },
   }
 }
 
@@ -201,6 +265,10 @@ export interface ModelDetail {
   cards: Reach[]
   dashboards: Reach[]
   relationships: RelationshipRef[]
+  upstreamTruncated: boolean
+  downstreamTruncated: boolean
+  usageTruncated: boolean
+  counts: { upstream: number; downstream: number }
 }
 
 export function modelDetail(index: GraphIndex, nodeId: string): ModelDetail | null {
@@ -209,18 +277,20 @@ export function modelDetail(index: GraphIndex, nodeId: string): ModelDetail | nu
   const columns = index.columnsByModel.get(nodeId) ?? []
 
   const refTypes = new Set(['references'])
-  const upstream = [...walk(index, nodeId, 'up', { edgeTypes: refTypes }).reached.values()].filter(
-    (r) => r.node.node_type === 'model' || r.node.node_type === 'source',
-  )
-  const downstream = [
-    ...walk(index, nodeId, 'down', { edgeTypes: refTypes }).reached.values(),
-  ].filter((r) => r.node.node_type === 'model')
+  const up = detailWalk(index, nodeId, 'up', { edgeTypes: refTypes })
+  const down = detailWalk(index, nodeId, 'down', { edgeTypes: refTypes })
+  const isUpstreamModel = (r: Reach) => r.node.node_type === 'model' || r.node.node_type === 'source'
+  const isDownstreamModel = (r: Reach) => r.node.node_type === 'model'
+  const upstream = [...up.shown.reached.values()].filter(isUpstreamModel)
+  const downstream = [...down.shown.reached.values()].filter(isDownstreamModel)
 
   // BI fan-out flows through this model's columns, not the model node itself.
   const cards = new Map<string, Reach>()
   const dashboards = new Map<string, Reach>()
+  let usageTruncated = false
   for (const column of columns) {
     const down = walk(index, column.node_id, 'down')
+    usageTruncated ||= down.truncated
     for (const [reachSet, target] of [
       [reachedOfType(down, 'mb_card'), cards],
       [reachedOfType(down, 'mb_dashboard'), dashboards],
@@ -241,6 +311,13 @@ export function modelDetail(index: GraphIndex, nodeId: string): ModelDetail | nu
     cards: [...cards.values()],
     dashboards: [...dashboards.values()],
     relationships: relationshipsTouching(index, columnIds),
+    upstreamTruncated: up.shown.truncated,
+    downstreamTruncated: down.shown.truncated,
+    usageTruncated,
+    counts: {
+      upstream: [...up.full.reached.values()].filter(isUpstreamModel).length,
+      downstream: [...down.full.reached.values()].filter(isDownstreamModel).length,
+    },
   }
 }
 
