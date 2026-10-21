@@ -1596,18 +1596,66 @@ def test_reason_star_not_expandable():
     }
 
 
-def test_reason_upstream_not_in_schema_map():
+@pytest.mark.parametrize("projection", ["user_id", "undoc.user_id"])
+def test_reason_upstream_not_in_schema_map(projection):
     # every relation is a dbt model, but the upstream is documented nowhere -- the
     # dev-catalog case that takes whole subtrees untraced with it
     upstream = _model("undoc", schema="staging")
     downstream = _model(
         "fct_c",
-        compiled="select user_id from analytics.staging.undoc",
+        compiled=f"select {projection} from analytics.staging.undoc",
         deps=["model.demo.undoc"],
         columns={"user_id": _column("user_id")},
     )
     result = resolve_dbt(_traced_manifest(upstream, downstream), {})
     assert _reason(result, "model.demo.fct_c", "user_id") == "upstream_not_in_schema_map"
+    assert not _edges(result, EdgeType.FEEDS)
+    assert result.columns_traced == 0
+    assert _defined_as(result, "model.demo.fct_c", "user_id")["upstream"] is None
+
+
+def test_missing_upstream_column_keeps_known_lineage_leaves():
+    known = _model("known", schema="staging", columns={"user_id": _column("user_id")})
+    unknown = _model("unknown", schema="staging")
+    downstream = _model(
+        "fct_mixed",
+        compiled=(
+            "select k.user_id as known_id, k.user_id + u.user_id as combined_id "
+            "from analytics.staging.known k cross join analytics.staging.unknown u"
+        ),
+        deps=["model.demo.known", "model.demo.unknown"],
+    )
+    result = resolve_dbt(_traced_manifest(known, unknown, downstream), {})
+    assert _edge_pairs(result, EdgeType.FEEDS) == {
+        ("model.demo.known::user_id", "model.demo.fct_mixed::known_id"),
+        ("model.demo.known::user_id", "model.demo.fct_mixed::combined_id"),
+    }
+    node_ids = {node.node_id for node in result.nodes}
+    assert all(edge.from_ in node_ids and edge.to in node_ids for edge in result.edges)
+    assert _reason(result, "model.demo.fct_mixed", "known_id") is None
+    assert _defined_as(result, "model.demo.fct_mixed", "known_id")["upstream"] == "known.user_id"
+
+
+@pytest.mark.parametrize("unknown_projection", ["u.user_id", "user_id"])
+def test_missing_union_input_does_not_claim_the_known_input_as_sole_origin(unknown_projection):
+    known = _model("known", schema="staging", compiled="select 1 as user_id")
+    unknown = _model("unknown", schema="staging")
+    downstream = _model(
+        "fct_union",
+        compiled=(
+            "select k.user_id from analytics.staging.known k "
+            f"union all select {unknown_projection} from analytics.staging.unknown u"
+        ),
+        deps=["model.demo.known", "model.demo.unknown"],
+    )
+    result = resolve_dbt(_traced_manifest(known, unknown, downstream), {})
+    assert _edge_pairs(result, EdgeType.FEEDS) == {
+        ("model.demo.known::user_id", "model.demo.fct_union::user_id"),
+    }
+    definition = _defined_as(result, "model.demo.fct_union", "user_id")
+    assert definition["kind"] == "passthrough"
+    assert definition["upstream"] is None
+    assert definition["origin"] is None
 
 
 def test_reason_upstream_not_in_project():
