@@ -671,14 +671,16 @@ export function NodePage({ nodeId }: { nodeId: string }) {
   const { index } = useStitch()
   const node = index.nodesById.get(nodeId)
   if (!node) return <NotFound nodeId={nodeId} />
+  // Each node owns its editor and staging state. Remount on navigation so an
+  // old draft or pending save cannot carry into another node of the same type.
   switch (node.node_type) {
     case 'column':
-      return <ColumnPanel nodeId={nodeId} />
+      return <ColumnPanel key={nodeId} nodeId={nodeId} />
     case 'mb_card':
     case 'mb_dashboard':
     case 'mb_field':
-      return <BiPanel nodeId={nodeId} />
+      return <BiPanel key={nodeId} nodeId={nodeId} />
     default:
-      return <ModelPanel nodeId={nodeId} />
+      return <ModelPanel key={nodeId} nodeId={nodeId} />
   }
 }
