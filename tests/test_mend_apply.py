@@ -6,6 +6,8 @@ happens when a write goes wrong, and proving that must never be one typo away fr
 to somebody's BI estate.
 """
 
+from copy import deepcopy
+
 import mend_scenario as scenario
 import pytest
 
@@ -313,7 +315,11 @@ def _dashboard() -> dict:
         "id": 10,
         "dashcards": [
             {"id": 51, "card_id": 401, "parameter_mappings": [{"parameter_id": "keep-me"}]},
-            {"id": 52, "card_id": 402, "parameter_mappings": [{"parameter_id": "p-promo"}]},
+            {
+                "id": 52,
+                "card_id": 402,
+                "parameter_mappings": [{"parameter_id": "p-promo"}, {"parameter_id": "p-created"}],
+            },
         ],
     }
 
@@ -417,3 +423,63 @@ def test_watching_the_apply_loop_does_not_change_what_it_writes():
     without = apply_plan(plan, unwatched)
     assert with_progress == without
     assert watched.writes == unwatched.writes
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_changed_dashboard_mappings_are_preserved_even_with_force(force):
+    dashboard = _dashboard()
+    dashboard["dashcards"][1]["parameter_mappings"].append({"parameter_id": "new-human-filter"})
+    original = deepcopy(dashboard)
+    client = FakeMetabase(dashboards={10: dashboard})
+    outcome = apply_plan(plan_of(_dashcard_plan()), client, force=force)
+    assert outcome.cards[0].status == "failed"
+    assert "changed since planning" in outcome.cards[0].detail
+    assert outcome.cards[0].dashcards_written == 0
+    assert client.dashboard_writes == []
+    assert dashboard == original
+    assert client.reverts == []
+
+
+def test_partial_missing_dashcards_prevent_every_write_to_that_dashboard():
+    card = _dashcard_plan()
+    card.dashcards.append(card.dashcards[0].model_copy(update={"dashcard_id": 99}))
+    dashboard = _dashboard()
+    original = deepcopy(dashboard)
+    client = FakeMetabase(dashboards={10: dashboard})
+    outcome = apply_plan(plan_of(card), client)
+    assert outcome.cards[0].status == "failed"
+    assert "[99] are no longer on it" in outcome.cards[0].detail
+    assert client.dashboard_writes == []
+    assert dashboard == original
+
+
+@pytest.mark.parametrize("card_id", [999, None])
+def test_reassigned_dashcard_is_not_written(card_id):
+    dashboard = _dashboard()
+    dashboard["dashcards"][1]["card_id"] = card_id
+    client = FakeMetabase(dashboards={10: dashboard})
+    outcome = apply_plan(plan_of(_dashcard_plan()), client)
+    assert outcome.cards[0].status == "failed"
+    assert "no longer belongs to card 402" in outcome.cards[0].detail
+    assert client.dashboard_writes == []
+
+
+def test_dashboard_archived_after_planning_is_not_written():
+    dashboard = {**_dashboard(), "archived": True}
+    client = FakeMetabase(dashboards={10: dashboard})
+    outcome = apply_plan(plan_of(_dashcard_plan()), client)
+    assert outcome.cards[0].status == "failed"
+    assert "archived since planning" in outcome.cards[0].detail
+    assert client.dashboard_writes == []
+
+
+def test_one_conflicting_dashboard_does_not_stop_an_unchanged_dashboard():
+    card = _dashcard_plan()
+    card.dashcards.append(card.dashcards[0].model_copy(update={"dashboard_id": 11}))
+    client = FakeMetabase(
+        dashboards={10: {"id": 10, "dashcards": []}, 11: {**_dashboard(), "id": 11}}
+    )
+    outcome = apply_plan(plan_of(card), client)
+    assert outcome.cards[0].status == "failed"
+    assert outcome.cards[0].dashcards_written == 1
+    assert [dashboard_id for dashboard_id, _ in client.dashboard_writes] == [11]

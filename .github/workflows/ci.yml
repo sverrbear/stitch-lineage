@@ -25,3 +25,28 @@ jobs:
         run: lint-imports
       - name: Tests
         run: pytest -q
+      # Keep the frontend in the required `test` job, including source-only PRs.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: stitch_lineage/app/frontend/package-lock.json
+      - name: Install frontend
+        working-directory: stitch_lineage/app/frontend
+        run: npm ci
+      - name: Frontend typecheck
+        working-directory: stitch_lineage/app/frontend
+        run: npm run typecheck
+      - name: Frontend tests
+        working-directory: stitch_lineage/app/frontend
+        run: npm test
+      - name: Frontend build
+        working-directory: stitch_lineage/app/frontend
+        run: npm run build
+      - name: Verify committed frontend is current
+        run: |
+          if [[ -n "$(git status --porcelain --untracked-files=all --ignored -- stitch_lineage/app/frontend/dist)" ]]; then
+            echo "::error::Frontend dist/ is stale. Run npm ci and npm run build in stitch_lineage/app/frontend, then commit all dist/ changes."
+            git status --short --untracked-files=all --ignored -- stitch_lineage/app/frontend/dist
+            exit 1
+          fi

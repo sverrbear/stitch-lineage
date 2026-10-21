@@ -1,3 +1,5 @@
+import pytest
+
 from stitch_lineage.graph.impact import (
     ColumnDiff,
     ImpactReport,
@@ -9,6 +11,7 @@ from stitch_lineage.graph.impact import (
     format_github_comment,
     format_slack_comment,
     impact_from_graphs,
+    impact_json,
     resolve_column_ref,
 )
 from stitch_lineage.graph.schema import (
@@ -451,3 +454,28 @@ def test_format_blast_radius_renders_the_spec_tree():
         "      #418 Weekly trend\n"
         "  └ 1 dashboard: Board"
     )
+
+
+@pytest.mark.parametrize(
+    ("creator", "expected"),
+    [
+        (42, "42"),
+        (0, "0"),
+        ("Named owner", "Named owner"),
+        (None, "Fallback"),
+        ({}, "Fallback"),
+        (True, "Fallback"),
+    ],
+)
+def test_creator_display_is_consistent_across_impact_outputs(creator, expected):
+    base, candidate = chain_graphs()
+    card = next(node for node in base.nodes if node.node_id == mb_card_node_id(412))
+    card.properties["creator"] = creator
+    card.owner = "Fallback"
+    diff, report = impact_from_graphs(base, candidate)
+    assert f"Board dashboard, {expected}" in format_github_comment(diff, report, base)
+    assert f"Board dashboard, {expected}" in format_slack_comment(diff, report, base)
+    assert impact_json(diff, report, base).columns[0].cards[0].owner == expected
+    radius = column_blast_radius(base, column_node_id(FCT, "match_intensity"))
+    assert radius.cards[0].owner == expected
+    assert expected in format_blast_radius(radius)
