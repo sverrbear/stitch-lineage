@@ -1,5 +1,6 @@
 """Resolve raw Metabase payloads into graph nodes and edges (SPEC.md section 7.4)."""
 
+from collections import deque
 from collections.abc import Callable
 from fnmatch import fnmatch
 from typing import Any, NamedTuple
@@ -159,7 +160,8 @@ class Ref(NamedTuple):
     sits under, whether it came from opts["source-field"], and the join aliases of the
     query level that owns it -- a live dict, fully populated once the walk ends. Aliases
     are per-level on purpose: a nested source-query (or another stage) may reuse an
-    outer alias for a different table."""
+    outer alias for a different table. The source context travels with the ref too,
+    so a joined subquery never resolves a bare name against the outer source."""
 
     raw: Any
     target: Any
@@ -167,6 +169,7 @@ class Ref(NamedTuple):
     clause: str
     is_source_field: bool
     join_aliases: dict[str, Any]
+    context: tuple[str, Any] | None = None
 
 
 def collect_refs(
@@ -175,6 +178,7 @@ def collect_refs(
     refs: list[Ref],
     join_aliases: dict[str, Any],
     upstream_cards: list[int],
+    context: tuple[str, Any] | None = None,
 ) -> None:
     """Recursively collect field refs of either shape with the clause they sit in.
 
@@ -187,7 +191,7 @@ def collect_refs(
         head = node[0] if node else None
         if head == "field" and len(node) >= 2:
             target, opts = ref_parts(node)
-            refs.append(Ref(node, target, opts, clause, False, join_aliases))
+            refs.append(Ref(node, target, opts, clause, False, join_aliases, context))
             source_field = opts.get("source-field") if isinstance(opts, dict) else None
             if source_field is not None:
                 refs.append(
@@ -198,6 +202,7 @@ def collect_refs(
                         clause,
                         True,
                         join_aliases,
+                        context,
                     )
                 )
             return
@@ -207,10 +212,10 @@ def collect_refs(
                 upstream_cards.append(metric_card)
             return
         for item in node:
-            collect_refs(item, clause, refs, join_aliases, upstream_cards)
+            collect_refs(item, clause, refs, join_aliases, upstream_cards, context)
     elif isinstance(node, dict):
         for value in node.values():
-            collect_refs(value, clause, refs, join_aliases, upstream_cards)
+            collect_refs(value, clause, refs, join_aliases, upstream_cards, context)
 
 
 def _walk_query(
@@ -225,27 +230,35 @@ def _walk_query(
     outer alias for a different table resolves against its own join.
     """
     aliases: dict[str, Any] = {}
+    context = _source_context(query)
     upstream = _source_card_id(query)
     if upstream is not None:
         upstream_cards.append(upstream)
     for key in CLAUSE_KEYS:
         if key in query:
-            collect_refs(query[key], f"{prefix}{key}", refs, aliases, upstream_cards)
+            collect_refs(query[key], f"{prefix}{key}", refs, aliases, upstream_cards, context)
     joins = query.get("joins")
     for join in joins if isinstance(joins, list) else []:
         if not isinstance(join, dict):
             continue
         if isinstance(join.get("alias"), str):
-            aliases.setdefault(join["alias"], join.get("source-table"))
+            aliases.setdefault(join["alias"], _source_context(join))
         join_upstream = _source_card_id(join)
         if join_upstream is not None:
             upstream_cards.append(join_upstream)
         if "condition" in join:
             collect_refs(
-                join["condition"], f"{prefix}joins.condition", refs, aliases, upstream_cards
+                join["condition"],
+                f"{prefix}joins.condition",
+                refs,
+                aliases,
+                upstream_cards,
+                context,
             )
         if isinstance(join.get("fields"), list):
-            collect_refs(join["fields"], f"{prefix}joins.fields", refs, aliases, upstream_cards)
+            collect_refs(
+                join["fields"], f"{prefix}joins.fields", refs, aliases, upstream_cards, context
+            )
         if isinstance(join.get("source-query"), dict):
             _walk_query(join["source-query"], f"{prefix}joins.source-query.", refs, upstream_cards)
     if isinstance(query.get("source-query"), dict):
@@ -263,15 +276,6 @@ def is_native_stage(stage: Any) -> bool:
     return "native" in str(stage.get("lib/type", "")) or stage.get("native") is not None
 
 
-def _join_source(join_stages: list[Any]) -> Any:
-    """What an MBQL 5 join reads from, in the legacy "source-table" vocabulary: a table
-    id (int) maps a join alias exactly, a "card__N" marker cannot and so downgrades
-    by-name resolution through that alias to `parsed`."""
-    first = join_stages[0] if join_stages and isinstance(join_stages[0], dict) else {}
-    card_id = _source_card_id(first)
-    return f"card__{card_id}" if card_id is not None else first.get("source-table")
-
-
 def _walk_stages(
     stages: list[Any],
     prefix: str,
@@ -287,10 +291,12 @@ def _walk_stages(
     Each stage (and each join subquery) owns its join-alias scope, exactly as a legacy
     nesting level does: a ref's join-alias names a join of its own stage.
     """
+    context = _stage_context(stages)
     for index, stage in enumerate(stages):
         if not isinstance(stage, dict):
             continue
         scope: dict[str, Any] = {}
+        context = _stage_context([stage]) or context
         stage_prefix = prefix if index == 0 else f"{prefix}stage{index}."
         upstream = _source_card_id(stage)
         if upstream is not None:
@@ -299,18 +305,22 @@ def _walk_stages(
             continue
         for key, label in STAGE_CLAUSE_LABELS.items():
             if key in stage:
-                collect_refs(stage[key], f"{stage_prefix}{label}", refs, scope, upstream_cards)
+                collect_refs(
+                    stage[key], f"{stage_prefix}{label}", refs, scope, upstream_cards, context
+                )
         joins = stage.get("joins")
         for join in joins if isinstance(joins, list) else []:
             if not isinstance(join, dict):
                 continue
             join_stages = join.get("stages") if isinstance(join.get("stages"), list) else []
             if isinstance(join.get("alias"), str):
-                scope.setdefault(join["alias"], _join_source(join_stages))
+                scope.setdefault(join["alias"], _stage_context(join_stages))
             # MBQL 5 pluralized `condition` -> `conditions`; the label stays singular
             for key, label in (("conditions", "joins.condition"), ("fields", "joins.fields")):
                 if key in join:
-                    collect_refs(join[key], f"{stage_prefix}{label}", refs, scope, upstream_cards)
+                    collect_refs(
+                        join[key], f"{stage_prefix}{label}", refs, scope, upstream_cards, context
+                    )
             if join_stages:
                 _walk_stages(
                     join_stages, f"{stage_prefix}joins.source-query.", refs, upstream_cards
@@ -367,18 +377,21 @@ class _CardWalk(BaseModel):
     problems: list[dict[str, Any]] = Field(default_factory=list)
 
 
-def _resolve_by_name(
+def _name_candidates(
     name: str,
     opts: Any,
     context: tuple[str, Any] | None,
     field_ids: set[int],
     table_columns: dict[int, dict[str, int]],
     cards_by_id: dict[int, dict[str, Any]],
-    walks: dict[int, _CardWalk],
+    consumed_fields: dict[int, set[int]],
     fields_by_id: dict[int, dict[str, Any]],
     join_aliases: dict[str, Any],
-) -> tuple[int | None, bool]:
-    """Resolve a by-name field ref; returns (field_id, exact).
+) -> tuple[set[int], bool]:
+    """Candidate field ids for a by-name ref, plus whether the lookup is exact.
+
+    Keep every candidate until upstream names converge: an early singleton can become
+    ambiguous when another upstream ref resolves. Only the caller chooses a unique id.
 
     join_aliases is the alias map of the ref's own query level (legacy nesting level or
     MBQL 5 stage), not the whole card: another level may reuse an alias for a different
@@ -387,19 +400,19 @@ def _resolve_by_name(
     exact is True only for deterministic lookups: the ref's join-alias mapped to a
     joined table's metadata, the source table's metadata map, or the upstream card's
     result_metadata. The upstream-card consumed-fields name match is a heuristic ->
-    exact=False (rendered as confidence `parsed`); an unmappable join-alias downgrades
-    whatever fallback resolves the name, for the same reason.
+    exact=False (rendered as confidence `parsed`). An unmappable join alias remains
+    unresolved; no name on the outer table can establish what that alias meant.
     """
     exact = True
     join_alias = opts.get("join-alias") if isinstance(opts, dict) else None
     if join_alias is not None:
-        source = join_aliases.get(join_alias)
-        if isinstance(source, int):
-            field_id = table_columns.get(source, {}).get(name.lower())
-            return (field_id if field_id in field_ids else None), True
-        exact = False
+        context = join_aliases.get(join_alias)
+        # An alias selects its own source, never an outer table with the same
+        # column spelling. Unknown aliases stay unresolved instead of guessing.
+        if context is None:
+            return set(), False
     if context is None:
-        return None, exact
+        return set(), exact
     kind, source_id = context
     candidates: list[int] = []
     if kind == "table":
@@ -419,18 +432,16 @@ def _resolve_by_name(
                     target, _ = ref_parts(ref)
                     if isinstance(target, int):
                         candidates.append(target)
-        if not candidates and source_id in walks:
+        if not candidates and source_id in consumed_fields:
             exact = False
             candidates = sorted(
                 {
                     field_id
-                    for field_id in walks[source_id].consumed
+                    for field_id in consumed_fields[source_id]
                     if fields_by_id.get(field_id, {}).get("name", "").lower() == name.lower()
                 }
             )
-    if len(candidates) == 1 and candidates[0] in field_ids:
-        return candidates[0], exact
-    return None, exact
+    return set(candidates) & field_ids, exact
 
 
 def _snippet_index(snippets: list[dict[str, Any]]) -> Snippets:
@@ -602,7 +613,7 @@ def resolve_metabase(
     walks: dict[int, _CardWalk] = {}
     kinds: dict[int, str | None] = {}
     natives: dict[int, NativeResolution] = {}
-    deferred: list[tuple[int, Ref, tuple[str, Any] | None]] = []
+    deferred: list[tuple[int, Ref]] = []
     for card in cards_in_scope:
         card_id = card["id"]
         dataset_query = card.get("dataset_query")
@@ -612,11 +623,9 @@ def resolve_metabase(
         refs: list[Ref] = []
         if kind == LEGACY_QUERY:
             query = dataset_query["query"]
-            context = _source_context(query)
             _walk_query(query, "", refs, walk.upstream_cards)
         elif kind == STAGE_QUERY:
             stages = dataset_query["stages"]
-            context = _stage_context(stages)
             _walk_stages(stages, "", refs, walk.upstream_cards)
         elif kind == NATIVE_QUERY:
             # the native SQL sits on dataset_query.native (legacy) or on the first stage
@@ -634,7 +643,9 @@ def resolve_metabase(
             walk.upstream_cards.extend(native.upstream_cards)
             walk.problems.extend({"card_id": card_id, **problem} for problem in native.problems)
             for field in native.fields:
-                walk.consumed.setdefault(field.field_id, {"clauses": set()})
+                walk.consumed.setdefault(
+                    field.field_id, {"clauses": set(), "parsed": not field.exact}
+                )
             walks[card_id] = walk
             continue
         else:
@@ -650,31 +661,63 @@ def resolve_metabase(
                         {"card_id": card_id, "ref": ref.raw, "reason": "unknown field id"}
                     )
             elif isinstance(ref.target, str):
-                deferred.append((card_id, ref, context))
+                deferred.append((card_id, ref))
             else:
                 walk.problems.append(
                     {"card_id": card_id, "ref": ref.raw, "reason": "malformed ref"}
                 )
         walks[card_id] = walk
 
-    # by-name refs resolve after every card is walked, so card-context lookups do not
-    # depend on card ordering in /api/card
-    for card_id, ref, context in deferred:
-        resolved, exact = _resolve_by_name(
+    # Candidate sets only grow, so even cycles terminate and payload order cannot
+    # turn a temporarily unique name into an exact-looking guess. Include inherited
+    # fields so a saved question that simply passes another question through works.
+    possible_fields = {card_id: set(walk.consumed) for card_id, walk in walks.items()}
+
+    def candidates(ref: Ref) -> tuple[set[int], bool]:
+        return _name_candidates(
             ref.target,
             ref.opts,
-            context,
+            ref.context,
             field_ids,
             table_columns,
             cards_by_id,
-            walks,
+            possible_fields,
             fields_by_id,
             ref.join_aliases,
         )
-        if resolved is not None:
+
+    refs_by_card: dict[int, list[Ref]] = {}
+    for card_id, ref in deferred:
+        refs_by_card.setdefault(card_id, []).append(ref)
+    dependents: dict[int, set[int]] = {}
+    for card_id, walk in walks.items():
+        for upstream_id in walk.upstream_cards:
+            dependents.setdefault(upstream_id, set()).add(card_id)
+
+    pending = deque(walks)
+    queued = set(walks)
+    while pending:
+        card_id = pending.popleft()
+        queued.remove(card_id)
+        known = possible_fields[card_id]
+        before = len(known)
+        for upstream_id in walks[card_id].upstream_cards:
+            known.update(possible_fields.get(upstream_id, ()))
+        for ref in refs_by_card.get(card_id, ()):
+            resolved, _ = candidates(ref)
+            known.update(resolved)
+        if len(known) != before:
+            for dependent in sorted(dependents.get(card_id, ())):
+                if dependent not in queued:
+                    pending.append(dependent)
+                    queued.add(dependent)
+
+    for card_id, ref in deferred:
+        resolved, exact = candidates(ref)
+        if len(resolved) == 1:
             _record(
                 walks[card_id].consumed,
-                resolved,
+                next(iter(resolved)),
                 ref.clause,
                 implicit_join=ref.is_source_field,
                 by_name=True,
@@ -685,49 +728,38 @@ def resolve_metabase(
                 {"card_id": card_id, "ref": ref.raw, "reason": "unresolvable field name"}
             )
 
-    # Cards whose field set came, anywhere upstream, out of parsed native SQL. A `via`
-    # edge is only `exact` when nothing in the chain was parsed -- inheriting a native
-    # card's fields and presenting them as exact is the phantom-dependency failure mode
-    # (SPEC.md section 5). Computed as a reachability closure rather than during the
-    # transitive walk so a card cycle cannot memoize a truncated answer.
-    parsed_sources: set[int] = set(natives)
-    while True:
-        grown = {
-            card_id
-            for card_id, walk in walks.items()
-            if card_id not in parsed_sources
-            and any(upstream in parsed_sources for upstream in walk.upstream_cards)
+    # Carry confidence with each inherited field. Direct refs keep their own evidence;
+    # inherited refs stay parsed if any contributing upstream path was parsed. These
+    # finite maps grow monotonically (absent -> exact -> parsed), including in cycles.
+    transitive = {
+        card_id: {
+            field_id: Confidence.PARSED if entry.get("parsed") else Confidence.EXACT
+            for field_id, entry in walk.consumed.items()
         }
-        if not grown:
-            break
-        parsed_sources |= grown
-
-    transitive: dict[int, set[int]] = {}
-
-    def _transitive_fields(card_id: int, visiting: set[int]) -> tuple[set[int], bool]:
-        """Fields consumed by a card and everything upstream of it, plus whether the
-        walk was cut short by a cycle.
-
-        A cycled result is only complete relative to the walk that produced it (the
-        back-edge contributes nothing), so it is never memoized: a third card sourcing
-        a card inside an A<->B cycle would otherwise inherit the truncated set.
-        """
-        if card_id in transitive:
-            return transitive[card_id], False
-        if card_id in visiting:
-            return set(), True
-        visiting.add(card_id)
-        walk = walks.get(card_id)
-        consumed = set(walk.consumed) if walk else set()
-        cycled = False
-        for upstream_id in walk.upstream_cards if walk else []:
-            upstream_fields, upstream_cycled = _transitive_fields(upstream_id, visiting)
-            consumed |= upstream_fields
-            cycled = cycled or upstream_cycled
-        visiting.discard(card_id)
-        if not cycled:
-            transitive[card_id] = consumed
-        return consumed, cycled
+        for card_id, walk in walks.items()
+    }
+    pending = deque(walks)
+    queued = set(walks)
+    while pending:
+        card_id = pending.popleft()
+        queued.remove(card_id)
+        walk = walks[card_id]
+        changed = False
+        for upstream_id in walk.upstream_cards:
+            for field_id, confidence in transitive.get(upstream_id, {}).items():
+                if field_id in walk.consumed:
+                    continue
+                previous = transitive[card_id].get(field_id)
+                if previous is None or (
+                    previous is Confidence.EXACT and confidence is Confidence.PARSED
+                ):
+                    transitive[card_id][field_id] = confidence
+                    changed = True
+        if changed:
+            for dependent in sorted(dependents.get(card_id, ())):
+                if dependent not in queued:
+                    pending.append(dependent)
+                    queued.add(dependent)
 
     def _resolve_card(card: dict[str, Any]) -> None:
         card_id = card["id"]
@@ -809,7 +841,7 @@ def resolve_metabase(
 
         problems = list(walk.problems)
         emitted = set(walk.consumed)
-        for upstream_id in dict.fromkeys(walk.upstream_cards):
+        for upstream_id in sorted(set(walk.upstream_cards)):
             if upstream_id not in walks:
                 reason = (
                     "referenced card has no query stitch could walk"
@@ -820,18 +852,15 @@ def resolve_metabase(
                     {"card_id": card_id, "ref": f"card__{upstream_id}", "reason": reason}
                 )
                 continue
-            upstream_fields, _ = _transitive_fields(upstream_id, set())
-            via_confidence = (
-                Confidence.PARSED if upstream_id in parsed_sources else Confidence.EXACT
-            )
-            for field_id in sorted(upstream_fields - emitted):
+            upstream_fields = transitive[upstream_id]
+            for field_id in sorted(upstream_fields.keys() - emitted):
                 emitted.add(field_id)
                 result.edges.append(
                     Edge(
                         from_=mb_field_node_id(field_id),
                         to=card_node_id,
                         edge_type=EdgeType.CONSUMED_BY,
-                        confidence=via_confidence,
+                        confidence=transitive[card_id][field_id],
                         evidence={"via": f"card__{upstream_id}"},
                     )
                 )
@@ -873,7 +902,7 @@ def resolve_metabase(
         if not isinstance(dashcards, list):
             dashcards = dashboard.get("ordered_cards")
         seen: set[int] = set()
-        all_cards_known = True
+        all_cards_known = isinstance(dashcards, list)
         for dashcard in dashcards if isinstance(dashcards, list) else []:
             if not isinstance(dashcard, dict):
                 continue

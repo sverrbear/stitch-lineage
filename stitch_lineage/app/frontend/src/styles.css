@@ -1514,11 +1514,6 @@ kbd {
   color: var(--text-2);
 }
 
-/* a floor rather than a count: the same amber every other admitted gap wears */
-.graph-toolbar-impact.partial {
-  color: var(--amber);
-}
-
 .graph-toolbar-hint {
   margin-left: auto;
   font-size: 12.5px;

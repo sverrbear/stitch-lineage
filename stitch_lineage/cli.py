@@ -803,19 +803,24 @@ def _baseline_graph(base: str, graph_path: Path, *, note: Note = _stderr_note) -
     local = _history_baseline(base, graph_path, note=note)
     if local is not None:
         return local
+    # Match local history: --config may point into another repo, so the caller's
+    # current directory must not decide which repository owns the baseline ref.
+    repo_cwd = graph_path.resolve().parent
     ref_path = graph_path.as_posix()
     toplevel = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
+        cwd=repo_cwd,
         capture_output=True,
         text=True,
         check=False,
     )
     if toplevel.returncode == 0:
         with contextlib.suppress(ValueError):
-            resolved = graph_path.resolve().relative_to(Path(toplevel.stdout.strip()))
+            resolved = graph_path.resolve().relative_to(Path(toplevel.stdout.strip()).resolve())
             ref_path = resolved.as_posix()
     result = subprocess.run(
         ["git", "show", f"{base}:{ref_path}"],
+        cwd=repo_cwd,
         capture_output=True,
         text=True,
         check=False,
@@ -1900,8 +1905,8 @@ _GRAPH_PATCHED = (
 def _applied_label(plan: apply_service.ApplyPlan, outcome: apply_service.ApplyOutcome) -> str:
     """ "2 relationships and 1 description" -- what the closing line counts."""
     counts = (
-        (sum(1 for e in plan.changes.relationships if e.id in outcome.cleared), "relationship"),
-        (sum(1 for e in plan.changes.descriptions if e.id in outcome.cleared), "description"),
+        (sum(1 for e in plan.changes.relationships if e.id in outcome.applied_ids), "relationship"),
+        (sum(1 for e in plan.changes.descriptions if e.id in outcome.applied_ids), "description"),
     )
     parts = [f"{count} {noun}{'s' if count != 1 else ''}" for count, noun in counts if count]
     return " and ".join(parts) or "nothing"
@@ -2064,7 +2069,10 @@ def apply(
         console.print("aborted -- nothing written")
         raise typer.Exit(code=1)
 
-    outcome = apply_service.execute(plan, refused, update_graph=not no_graph_update)
+    try:
+        outcome = apply_service.execute(plan, refused, update_graph=not no_graph_update)
+    except apply_service.YamlWriteConflict as exc:
+        _fail(str(exc))
     for path in outcome.written:
         console.print(f"wrote {path}", soft_wrap=True)
 
@@ -2074,19 +2082,18 @@ def apply(
         # everything appliable was already in the repo: the entries still clear, and the graph
         # patch is what keeps the change visible once the staged edge leaves the app
         console.print(
-            f"cleared {outcome.applied} already-declared entr"
-            f"{'ies' if outcome.applied != 1 else 'y'} from {staged.parent}",
+            f"cleared {len(outcome.cleared)} already-declared entr"
+            f"{'ies' if len(outcome.cleared) != 1 else 'y'} from {staged.parent}",
             soft_wrap=True,
         )
         _report_graph_patch(outcome.graph, None)
     else:
-        if outcome.still_staged:
-            console.print(
-                f"{outcome.still_staged} change{'s' if outcome.still_staged != 1 else ''} "
-                "still staged",
-                soft_wrap=True,
-            )
         _report_graph_patch(outcome.graph, f"applied {_applied_label(plan, outcome)}")
+    if outcome.still_staged:
+        console.print(
+            f"{outcome.still_staged} change{'s' if outcome.still_staged != 1 else ''} still staged",
+            soft_wrap=True,
+        )
 
     if build_after:
         console.print()
@@ -2186,7 +2193,11 @@ def migrate_relationships(
     # No store to clear and no graph patch: the relationships already existed, this
     # only changes the form they are written in. The next build re-reads them, now
     # from the tests, and they come back validated instead of declared.
-    for path in apply_service.apply_plan(writable):
+    try:
+        written = apply_service.apply_plan(writable)
+    except apply_service.YamlWriteConflict as exc:
+        _fail(str(exc))
+    for path in written:
         console.print(f"wrote {path}", soft_wrap=True)
     console.print("run 'stitch build' to pick the rewritten declarations back up", soft_wrap=True)
     if plan.plan.failures or refused:
@@ -2259,6 +2270,7 @@ def serve(
             context,
             strip_model_prefixes=_strip_model_prefixes(config),
             table_prefixes=_table_prefixes(config),
+            bind_host=host,
         )
     except StitchAppError as exc:
         _fail(str(exc))

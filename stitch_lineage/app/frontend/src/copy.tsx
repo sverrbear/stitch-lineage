@@ -253,13 +253,13 @@ export const copy = {
     unknownNode: (nodeId: string): ReactNode => <>Unknown node: {nodeId}</>,
     openInMetabase: (name: string) => `Open “${name}” in Metabase`,
     openDetail: (type: string, name: string) => `Open the ${type} page for ${name}`,
-    truncatedCounts:
-      'This walk hit its node cap, so these are lower bounds — the real counts are higher.',
+    downstreamCounts: (cards: number, dashboards: number) =>
+      `Downstream: ${cards.toLocaleString()} card${cards === 1 ? '' : 's'} · ${dashboards.toLocaleString()} dashboard${dashboards === 1 ? '' : 's'}`,
     grainLabel: 'Lineage grain',
     grainColumn: 'Which columns feed which fields',
     grainTable: 'Which models feed which cards — the same subgraph rolled up',
     details: 'Details',
-    truncated: 'large fan-out truncated',
+    truncated: 'drawing truncated; counts are exact',
     hint: 'click a node to re-trace from it · click its name to open it',
   },
 

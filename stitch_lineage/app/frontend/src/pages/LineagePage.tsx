@@ -130,22 +130,25 @@ interface EdgeTip {
 }
 
 export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain }) {
-  const { index } = useStitch()
+  const { index, consequence } = useStitch()
   const [tip, setTip] = useState<EdgeTip | null>(null)
 
   const root = index.nodesById.get(nodeId)
+  // Counts answer the selected node's downstream impact, even when the drawing
+  // is capped or rolled up. Table grain does not widen a column to its siblings,
+  // and upstream cards in the drawing are not consequences of the root.
+  const impact = consequence.of(nodeId)
   const rootContext = root ? nodeContext(index, root) : null
   // At table grain the focus is the entity the selected node belongs to, so
   // flipping the toggle on a column lands on its model instead of nothing.
   const rootEntityId = root ? (entityIdOf(root) ?? nodeId) : nodeId
 
-  const { nodes, edges, truncated, impact } = useMemo(() => {
+  const { nodes, edges, truncated } = useMemo(() => {
     if (!root) {
       return {
         nodes: [] as LineageFlowNode[],
         edges: [] as Edge[],
         truncated: false,
-        impact: { cards: 0, dashboards: 0 },
       }
     }
     const lineage = lineageFor(index, nodeId)
@@ -193,14 +196,7 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
         },
       }
     })
-    // The question is "what breaks if I change this?", so the answer leads and
-    // the topology below is the evidence for it (principle 01).
-    const impact = { cards: 0, dashboards: 0 }
-    for (const node of view.nodes) {
-      if (node.node_type === 'mb_card') impact.cards += 1
-      else if (node.node_type === 'mb_dashboard') impact.dashboards += 1
-    }
-    return { nodes: flowNodes, edges: flowEdges, truncated: lineage.truncated, impact }
+    return { nodes: flowNodes, edges: flowEdges, truncated: lineage.truncated }
   }, [index, nodeId, root, grain, rootEntityId])
 
   /**
@@ -247,22 +243,8 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
             {root.node_type !== 'column' && rootContext ? ` · ${rootContext}` : ''}
           </span>
         </span>
-        {/* The answer, before the graph that supports it — but a truncated walk
-            stops before it has seen everything, and "0 dashboards" off a capped
-            BFS is a confidently wrong answer. Past the cap the counts are floors
-            and say so, in the colour this app uses for "may be incomplete". */}
-        <span
-          className={`graph-toolbar-impact${truncated ? ' partial' : ''}`}
-          title={
-            truncated
-              ? copy.lineage.truncatedCounts
-              : undefined
-          }
-        >
-          {impact.cards.toLocaleString()}
-          {truncated ? '+' : ''} card{impact.cards === 1 && !truncated ? '' : 's'} ·{' '}
-          {impact.dashboards.toLocaleString()}
-          {truncated ? '+' : ''} dashboard{impact.dashboards === 1 && !truncated ? '' : 's'}
+        <span className="graph-toolbar-impact">
+          {copy.lineage.downstreamCounts(impact.cards, impact.dashboards)}
         </span>
         <div className="grain-toggle" role="group" aria-label={copy.lineage.grainLabel}>
           {(['column', 'table'] as const).map((option) => (
