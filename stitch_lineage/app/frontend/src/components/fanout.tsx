@@ -80,6 +80,9 @@ export function DashboardGroups({ groups, empty }: { groups: DashboardUsage[]; e
                   {copy.fanout.cardsOnNoDashboard}
                 </span>
               )}
+              {group.dashboard?.properties?.archived === true && (
+                <span className="archived-tag">{copy.fanout.archived}</span>
+              )}
               <span className="muted group-count">
                 {group.cards.length} card{group.cards.length === 1 ? '' : 's'}
               </span>
@@ -104,6 +107,9 @@ export function DashboardGroups({ groups, empty }: { groups: DashboardUsage[]; e
                     <a className="bi-card-name" href={nodeHref(card.node.node_id)}>
                       {displayName(card.node)}
                     </a>
+                    {card.node.properties?.archived === true && (
+                      <span className="archived-tag">{copy.fanout.archived}</span>
+                    )}
                     {card.confidence !== 'exact' && <ConfidenceTag confidence={card.confidence} />}
                     {cardLink && (
                       <a className="bi-card-link" href={cardLink} target="_blank" rel="noreferrer">

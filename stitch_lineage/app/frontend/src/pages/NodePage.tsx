@@ -15,7 +15,8 @@ import {
   Section,
 } from '../components/bits'
 import { DescriptionEditor } from '../components/DescriptionEditor'
-import { DashboardGroups, LayerGroups } from '../components/fanout'
+import { BiImpact } from '../components/BiImpact'
+import { LayerGroups } from '../components/fanout'
 import { useStitch } from '../data'
 import {
   biDetail,
@@ -26,7 +27,7 @@ import {
   type RelationshipRef,
 } from '../lib/details'
 import { resolveStaged, type ErdStagedRelationship } from '../lib/erd'
-import { dashboardCount, dashboardGroups, layerGroups } from '../lib/fanout'
+import { layerGroups } from '../lib/fanout'
 import { metabaseLink } from '../lib/graph'
 import type { GraphIndex, Reach } from '../lib/graph'
 import { modelStar } from '../lib/modelStar'
@@ -57,6 +58,7 @@ import {
   definedAsSummary,
   definedOriginSummary,
   definitionSql,
+  traceReason,
 } from '../lib/trace'
 import { lineageHref } from '../router'
 import type { GraphNode } from '../types'
@@ -255,61 +257,37 @@ function ColumnPanel({ nodeId }: { nodeId: string }) {
   // A column's description is written on its MODEL's schema entry, so the staging
   // API is addressed by the model's dbt name plus the column name.
   const entity = detail.model ? fullName(detail.model) : null
-  const headline =
-    detail.counts.cards > 0
-      ? `Consumed by ${plural(detail.counts.cards, 'card')} on ${plural(detail.counts.dashboards, 'dashboard')}.`
-      : 'Not consumed by any Metabase card in this graph.'
+  const reason = traceReason(node)
+  const traceGap = reason && reason.code !== 'no_upstream_columns' ? reason : null
 
   return (
     <article className="panel">
       <PanelHeader
         node={node}
         subtitle={detail.model ? `column of ${displayName(detail.model)}` : nodeContext(index, node)}
-        description={
-          entity ? (
-            <DescriptionEditor
-              entity={entity}
-              column={node.column ?? displayName(node)}
-              applied={node.description}
-              staged={stagedFor(staging.descriptions, entity, node.column ?? displayName(node))}
-              canStage={staging.canStage}
-              refusal={refusalFor(staging.writeability, entity)}
-              onChanged={staging.refresh}
-            />
-          ) : undefined
-        }
+        description={<></>}
       />
-      <dl className="fact-list">
-        {/* A column inherits its table's manager, so it is answered here too — the
-            question "can I change this" is asked of columns more than of tables. */}
-        <ManagedByFact node={node} />
-        <Fact label={detail.model?.node_type === 'source' ? 'source' : 'model'}>
-          {detail.model ? <NodeChip node={detail.model} /> : '—'}
-        </Fact>
-        <Fact label="data type">
-          {/* "unknown" alone reads as a bug; the graph knows why, so it says so (#122).
-              A type that DID resolve says which source answered for it (#149): the
-              catalog, the Metabase sync and a sqlglot guess are not equal evidence. */}
-          <span title={dataType.hint ?? undefined}>{dataType.text}</span>
-          {dataType.source ? (
-            <span className="type-source" title={dataType.source.hint}>
-              {dataType.source.label}
-            </span>
-          ) : null}
-        </Fact>
-        {/* the display name may hide a routing prefix, so the real dbt name
-            stays one line away (#69) */}
-        <Fact label="dbt name">
-          {hasHiddenPrefix(node) ? <code>{fullName(node)}</code> : null}
-        </Fact>
-        <Fact label="in the warehouse">
-          {warehouseRelation(node) && (
-            <code>
-              {warehouseRelation(node)}.{warehouseColumn(node) ?? displayName(node)}
-            </code>
-          )}
-        </Fact>
-      </dl>
+      <BiImpact
+        cards={detail.cards}
+        counts={detail.counts}
+        truncated={detail.downstreamTruncated}
+        uncertainty={traceGap && (
+          <span title={traceGap.hint}>{copy.node.impactTraceGap(traceGap.label)}</span>
+        )}
+      />
+
+      <Section title={copy.node.downstreamPaths(
+        plural(detail.counts.downstreamModels, 'model'),
+        plural(detail.counts.fields, 'Metabase field'),
+      )}>
+        {detail.downstreamTruncated && <p className="muted">{copy.node.listTruncated}</p>}
+        <h4 className="subhead">{plural(detail.counts.downstreamModels, 'model')}</h4>
+        {detail.downstreamTruncated && detail.downstreamModels.length === 0 ? (
+          <p className="muted">{copy.node.noDisplayedEntries}</p>
+        ) : <ChipList nodes={detail.downstreamModels.map((node) => ({ node }))} />}
+        <h4 className="subhead">{plural(detail.counts.fields, 'Metabase field')}</h4>
+        {reachChips(detail.fields, detail.downstreamTruncated)}
+      </Section>
 
       <DefinedAsBlock node={node} />
 
@@ -330,18 +308,49 @@ function ColumnPanel({ nodeId }: { nodeId: string }) {
         {reachChips(detail.upstreamColumns, detail.upstreamTruncated)}
       </Section>
 
-      <Section title={copy.node.downstream(headline)}>
-        {detail.downstreamTruncated && <p className="muted">{copy.node.listTruncated}</p>}
-        <h4 className="subhead">{plural(detail.counts.downstreamModels, 'model')}</h4>
-        {detail.downstreamTruncated && detail.downstreamModels.length === 0 ? (
-          <p className="muted">{copy.node.noDisplayedEntries}</p>
-        ) : <ChipList nodes={detail.downstreamModels.map((node) => ({ node }))} />}
-        <h4 className="subhead">{plural(detail.counts.fields, 'Metabase field')}</h4>
-        {reachChips(detail.fields, detail.downstreamTruncated)}
-        <h4 className="subhead">{plural(detail.counts.cards, 'card')}</h4>
-        {reachChips(detail.cards, detail.downstreamTruncated)}
-        <h4 className="subhead">{plural(detail.counts.dashboards, 'dashboard')}</h4>
-        {reachChips(detail.dashboards, detail.downstreamTruncated)}
+      <Section title={copy.node.objectDetails}>
+        {entity ? (
+          <DescriptionEditor
+            entity={entity}
+            column={node.column ?? displayName(node)}
+            applied={node.description}
+            staged={stagedFor(staging.descriptions, entity, node.column ?? displayName(node))}
+            canStage={staging.canStage}
+            refusal={refusalFor(staging.writeability, entity)}
+            onChanged={staging.refresh}
+          />
+        ) : (node.description && <p className="panel-description">{node.description}</p>)}
+        <dl className="fact-list">
+          {/* A column inherits its table's manager, so it is answered here too — the
+              question "can I change this" is asked of columns more than of tables. */}
+          <ManagedByFact node={node} />
+          <Fact label={detail.model?.node_type === 'source' ? 'source' : 'model'}>
+            {detail.model ? <NodeChip node={detail.model} /> : '—'}
+          </Fact>
+          <Fact label="data type">
+            {/* "unknown" alone reads as a bug; the graph knows why, so it says so (#122).
+                A type that DID resolve says which source answered for it (#149): the
+                catalog, the Metabase sync and a sqlglot guess are not equal evidence. */}
+            <span title={dataType.hint ?? undefined}>{dataType.text}</span>
+            {dataType.source ? (
+              <span className="type-source" title={dataType.source.hint}>
+                {dataType.source.label}
+              </span>
+            ) : null}
+          </Fact>
+          {/* the display name may hide a routing prefix, so the real dbt name
+              stays one line away (#69) */}
+          <Fact label="dbt name">
+            {hasHiddenPrefix(node) ? <code>{fullName(node)}</code> : null}
+          </Fact>
+          <Fact label="in the warehouse">
+            {warehouseRelation(node) && (
+              <code>
+                {warehouseRelation(node)}.{warehouseColumn(node) ?? displayName(node)}
+              </code>
+            )}
+          </Fact>
+        </dl>
       </Section>
 
       {detail.relationships.length > 0 && (
@@ -508,60 +517,70 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
   )
   const upstreamGroups = useMemo(() => layerGroups(detail?.upstream ?? [], 'up'), [detail])
   const downstreamGroups = useMemo(() => layerGroups(detail?.downstream ?? [], 'down'), [detail])
-  const biGroups = useMemo(() => dashboardGroups(index, detail?.cards ?? []), [index, detail])
   if (!detail) return <NotFound nodeId={nodeId} />
-  const usageTruncated = detail.usageTruncated || detail.cards.length < usage.cards || dashboardCount(biGroups) < usage.dashboards
   const { node } = detail
   const materialization = node.properties?.materialization
   const path = node.properties?.path
   const tags = Array.isArray(node.properties?.tags) ? (node.properties.tags as unknown[]).map(String) : []
 
+  const traceGaps = detail.columns.filter((column) => {
+    const reason = traceReason(column)
+    return reason && reason.code !== 'no_upstream_columns'
+  }).length
   const entity = fullName(node)
   return (
     <article className="panel">
       <PanelHeader
         node={node}
-        description={
-          <DescriptionEditor
-            entity={entity}
-            column={null}
-            applied={node.description}
-            staged={stagedFor(staging.descriptions, entity, null)}
-            canStage={staging.canStage}
-            refusal={refusalFor(staging.writeability, entity)}
-            onChanged={staging.refresh}
-          />
-        }
+        description={<></>}
       />
-      <dl className="fact-list">
-        {/* The first fact about a table is who manages it: it decides whether a
-            change is yours to make at all (#187). */}
-        <ManagedByFact node={node} />
-        <Fact label={node.node_type === 'source' ? 'dbt source' : 'schema'}>
-          {nodeContext(index, node)}
-        </Fact>
-        <Fact label="materialization">
-          {typeof materialization === 'string' ? materialization : null}
-        </Fact>
-        {/* the display name may hide a routing prefix, so the real dbt name
-            stays one line away (#69) */}
-        <Fact label="dbt name">
-          {hasHiddenPrefix(node) ? <code>{fullName(node)}</code> : null}
-        </Fact>
-        <Fact label="in the warehouse">
-          {warehouseRelation(node) ? <code>{warehouseRelation(node)}</code> : null}
-        </Fact>
-        <Fact label="defined in">{typeof path === 'string' ? <code>{path}</code> : null}</Fact>
-      </dl>
-      {tags.length > 0 && (
-        <div className="tag-row">
-          {tags.map((tag) => (
-            <span key={tag} className="tag">
-              {tag}
-            </span>
-          ))}
-        </div>
-      )}
+      <BiImpact
+        cards={detail.cards}
+        counts={usage}
+        truncated={detail.usageTruncated}
+        uncertainty={traceGaps > 0 && copy.node.impactModelGaps(plural(traceGaps, 'column'))}
+      />
+
+      <Section title={copy.node.objectDetails}>
+        <DescriptionEditor
+          entity={entity}
+          column={null}
+          applied={node.description}
+          staged={stagedFor(staging.descriptions, entity, null)}
+          canStage={staging.canStage}
+          refusal={refusalFor(staging.writeability, entity)}
+          onChanged={staging.refresh}
+        />
+        <dl className="fact-list">
+          {/* The first fact about a table is who manages it: it decides whether a
+              change is yours to make at all (#187). */}
+          <ManagedByFact node={node} />
+          <Fact label={node.node_type === 'source' ? 'dbt source' : 'schema'}>
+            {nodeContext(index, node)}
+          </Fact>
+          <Fact label="materialization">
+            {typeof materialization === 'string' ? materialization : null}
+          </Fact>
+          {/* the display name may hide a routing prefix, so the real dbt name
+              stays one line away (#69) */}
+          <Fact label="dbt name">
+            {hasHiddenPrefix(node) ? <code>{fullName(node)}</code> : null}
+          </Fact>
+          <Fact label="in the warehouse">
+            {warehouseRelation(node) ? <code>{warehouseRelation(node)}</code> : null}
+          </Fact>
+          <Fact label="defined in">{typeof path === 'string' ? <code>{path}</code> : null}</Fact>
+        </dl>
+        {tags.length > 0 && (
+          <div className="tag-row">
+            {tags.map((tag) => (
+              <span key={tag} className="tag">
+                {tag}
+              </span>
+            ))}
+          </div>
+        )}
+      </Section>
 
       {/* Relationships get the canvas, dependencies get the lists below (#81/#82). */}
       <Section title={copy.node.relationships(star?.joinCount ?? 0)}>
@@ -592,19 +611,6 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
         {detail.downstreamTruncated && <p className="muted">{copy.node.downstreamListTruncated}</p>}
         <h4 className="subhead">downstream</h4>
         <LayerGroups groups={downstreamGroups} empty={detail.downstreamTruncated ? copy.node.noDisplayedEntries : copy.node.nothingDownstream} />
-      </Section>
-
-      <Section
-        title={copy.node.biUsage(
-          plural(usage.cards, 'card'),
-          plural(usage.dashboards, 'dashboard'),
-        )}
-      >
-        {usageTruncated && <p className="muted">{copy.node.listTruncated}</p>}
-        <DashboardGroups
-          groups={biGroups}
-          empty={usageTruncated ? copy.node.noDisplayedEntries : copy.node.noBiUsage}
-        />
       </Section>
 
       <Section title={copy.node.columns(detail.columns.length)}>

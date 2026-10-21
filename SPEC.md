@@ -442,9 +442,11 @@ FastAPI on localhost serving a prebuilt React SPA (bundled in the wheel; install
 
 **Search — first version, not later polish.** One search box, keyboard-first (`/` to focus, `⌘K` palette), querying everything in `graph.json`: dbt models, columns, Metabase fields, cards and dashboards — by name, description, tag, and card/dashboard title. Results grouped by node type, ranked exact-prefix > word-boundary > fuzzy, with type-ahead. Selecting a result opens its detail panel:
 
-- **Column** → type, description, tests, its model, upstream sources, and the downstream fan-out with counts — "consumed by 4 cards on 2 dashboards" is the headline; the list and the lineage view are one click.
+- **Column** → downstream impact first: exact distinct card/dashboard counts, then collapsed dashboard groups with their cards and Metabase links. Downstream models and fields, SQL definition, upstream sources, metadata, editable description and declared relationships follow. A long description must never precede the impact answer.
 - **Card / dashboard** → deep link into Metabase, creator, collection, archived flag, and the reverse view: every dbt column the visual ultimately depends on, with confidence flags.
-- **Model** → columns, declared relationships, fan-in and fan-out.
+- **Model / source** → the same impact-first card/dashboard answer, then metadata, editable description, declared relationships, dependencies and columns.
+
+**The impact answer is graph-scoped.** It reports dependencies, not a prediction that a change will break them. An empty result is explicitly limited to this graph; unresolved lineage may hide consumers. Recorded upstream trace gaps sit beside the answer (a literal with no upstream column is not a gap). Exact counts stay independent of bounded displayed lists, which are labelled when partial. Cards shared by several dashboards count once in the headline and appear in each relevant group; cards on no dashboard keep their own group. Archived cards and dashboards remain in the counts and are visibly labelled, and non-exact card paths retain their confidence tags.
 
 Implementation is deliberately boring: a Smitten-sized graph is a few thousand nodes, so search is client-side over an in-memory fuzzy index (fuse.js-class library, final pick at build time) built from `graph.json` at page load. No search server, no index files, identical behaviour in `stitch serve` and the static export. If someone points this at 50k cards one day, sharding the index by node type is the escape hatch — not v1's problem.
 
