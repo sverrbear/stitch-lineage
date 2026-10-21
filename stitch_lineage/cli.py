@@ -2259,6 +2259,7 @@ def serve(
             context,
             strip_model_prefixes=_strip_model_prefixes(config),
             table_prefixes=_table_prefixes(config),
+            bind_host=host,
         )
     except StitchAppError as exc:
         _fail(str(exc))
