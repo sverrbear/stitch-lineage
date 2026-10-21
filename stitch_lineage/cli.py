@@ -2069,7 +2069,10 @@ def apply(
         console.print("aborted -- nothing written")
         raise typer.Exit(code=1)
 
-    outcome = apply_service.execute(plan, refused, update_graph=not no_graph_update)
+    try:
+        outcome = apply_service.execute(plan, refused, update_graph=not no_graph_update)
+    except apply_service.YamlWriteConflict as exc:
+        _fail(str(exc))
     for path in outcome.written:
         console.print(f"wrote {path}", soft_wrap=True)
 
@@ -2191,7 +2194,11 @@ def migrate_relationships(
     # No store to clear and no graph patch: the relationships already existed, this
     # only changes the form they are written in. The next build re-reads them, now
     # from the tests, and they come back validated instead of declared.
-    for path in apply_service.apply_plan(writable):
+    try:
+        written = apply_service.apply_plan(writable)
+    except apply_service.YamlWriteConflict as exc:
+        _fail(str(exc))
+    for path in written:
         console.print(f"wrote {path}", soft_wrap=True)
     console.print("run 'stitch build' to pick the rewritten declarations back up", soft_wrap=True)
     if plan.plan.failures or refused:
@@ -2264,6 +2271,7 @@ def serve(
             context,
             strip_model_prefixes=_strip_model_prefixes(config),
             table_prefixes=_table_prefixes(config),
+            bind_host=host,
         )
     except StitchAppError as exc:
         _fail(str(exc))

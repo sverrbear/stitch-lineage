@@ -336,7 +336,7 @@ Controls what `stitch apply` writes for a relationship you declared in the app.
 
 | Key | Required | Default | Description |
 | --- | -------- | ------- | ----------- |
-| `write_to` | no | `meta` | The written form: `meta` (dbt-metabase interop keys under the column's `config: meta:`) or `relationships_test` (a dbt `relationships` test on the FK column). `contract_constraint` is accepted by the config but not implemented — `apply` raises rather than write a shape it cannot round-trip. Contract constraints already in your repo are still *read* as relationship evidence. |
+| `write_to` | no | `relationships_test` | The written form: `meta` (dbt-metabase interop keys under the column's `config: meta:`) or `relationships_test` (a dbt `relationships` test on the FK column). `contract_constraint` is accepted by the config but not implemented — `apply` raises rather than write a shape it cannot round-trip. Contract constraints already in your repo are still *read* as relationship evidence. |
 | `validated_test_severity` | no | `warn` | `severity:` on a written `relationships` test — warn, so a declaration never fails a pipeline. |
 | `fk_meta_keys` | no | `["metabase.fk_target_table", "metabase.fk_target_field"]` | Exactly two keys: the target-table and target-field meta keys read and written for FK declarations. |
 | `cardinality_meta_key` | no | `relationship_type` | Meta key carrying the cardinality — `dbterd`'s, by design. |
@@ -390,6 +390,12 @@ parse degrades to the tables it reads; no card is ever dropped, and no column is
 Both query shapes are handled, the legacy `dataset_query.query` and the MBQL 5 `stages` form modern
 Metabase returns.
 
+Build includes archived cards, dashboards and collections, with the same collection exclusions as
+active content. Older Metabase releases refuse archived dashboard details; stitch retains those
+dashboards and their archived flag but reports their membership as unresolved. Their card-to-dashboard
+links are unavailable until an instance can serve those details. Archived cards and dashboard filter
+mappings are excluded from `mend` repair plans.
+
 Run the same edges backwards and you get estate hygiene: `stitch doctor --dead` reports unconsumed
 columns, models feeding nothing, and archived cards still bound to live columns. It prints its own
 caveat every time — stitch only sees Metabase, so a column no card reaches may still be read by
@@ -430,10 +436,10 @@ people who will never run a CLI.
 
 ### Will this slow down my dbt build?
 
-By default it adds nothing: `relationships.write_to` is `meta`, so an applied declaration is
-metadata on a column and no test runs. If you set `write_to: relationships_test`, stitch writes a
-real dbt `relationships` test at `severity: warn` (`relationships.validated_test_severity`) — it
-reports, it does not fail your pipeline. Raise it yourself if you want it to.
+By default, applying a relationship writes a dbt `relationships` test at `severity: warn`
+(`relationships.validated_test_severity`). The test runs with your dbt tests and adds a query;
+violations produce warnings. You can raise the severity yourself if you want failures to block
+pipeline runs. Set `relationships.write_to: meta` to write metadata without adding a test.
 
 ### What about native SQL cards?
 

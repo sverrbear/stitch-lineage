@@ -580,3 +580,24 @@ def test_write_access_writes_nothing(tmp_path, monkeypatch):
     assert client.writes == []
     assert client.dashboard_writes == []
     assert client.reverts == []
+
+
+def test_slack_transport_failure_does_not_print_webhook_credentials(tmp_path, monkeypatch):
+    import requests
+
+    webhook = "https://hooks.slack.com/services/T_SYNTH/B_SYNTH/SECRET_SYNTH"
+    monkeypatch.setenv("STITCH_METABASE_API_KEY", "key")
+    monkeypatch.setenv("STITCH_SLACK_WEBHOOK_URL", webhook)
+
+    def fail_post(*args, **kwargs):
+        raise requests.ConnectionError(f"connection failed with url: {webhook}")
+
+    monkeypatch.setattr("stitch_lineage.io.slack_webhook.requests.post", fail_post)
+    monkeypatch.setattr("stitch_lineage.io.slack_webhook.time.sleep", lambda _: None)
+    project = _project(tmp_path, MEND_CONFIG)
+    monkeypatch.chdir(project)
+    result = runner.invoke(app, ["mend", "--plan", "--use-cache", "--slack"])
+    assert result.exit_code == 1
+    assert "connection failed" in plain(result.output)
+    assert webhook not in result.output
+    assert "SECRET_SYNTH" not in result.output

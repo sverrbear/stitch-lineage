@@ -53,6 +53,12 @@ npm test               # vitest over the pure TS modules (src/lib/*.test.ts)
 the built assets, so installing never requires a node toolchain. Rebuild `dist/`
 whenever `src/` changes.
 
+CI runs `npm ci`, typecheck, tests, and the production build on Node 24 in the
+required `test` job for every pull request. It also rejects changes left in
+`dist/` by the build, including new assets. If that check fails, run `npm ci` and
+`npm run build` here, then commit all changes under `dist/` (including removed
+assets) with the source change.
+
 The test suite includes a scale smoke test (`src/lib/scale.test.ts`) that runs
 against `dev-public/dev-graph.json` when present and skips silently otherwise.
 
