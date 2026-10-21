@@ -260,12 +260,14 @@ A **model's column set** comes from its compiled SQL, not from the catalog: the 
 |---|---|
 | `GET /api/database` | locate warehouse DB(s) by display name |
 | `GET /api/database/:id/metadata?include_hidden=true` | the `field_id ↔ schema.table.column` map |
-| `GET /api/card` | all cards: `dataset_query`, `collection_id`, `creator`, `archived` |
-| `GET /api/dashboard`, `/api/dashboard/:id` | dashcards → card ids |
-| `GET /api/collection` | tree, for collection filtering |
+| `GET /api/card`, `?f=archived` | active and archived cards: `dataset_query`, `collection_id`, `creator`, `archived` |
+| `GET /api/dashboard`, `?f=archived`, `/api/dashboard/:id` | active and archived dashboards; dashcards → card ids |
+| `GET /api/collection`, `?archived=true` | active and archived collections, for collection filtering |
 | `GET /api/native-query-snippet` | snippet SQL behind a `{{snippet: name}}` tag (§7.4). Best-effort: an instance that will not serve it degrades those cards, not the build |
 
 Auth: API key header, Metabase 49+ asserted at startup. Raw responses land in `.stitch/cache/{timestamp}/` before parsing (gitignored, last 3 kept): resolution bugs get debugged against stored payloads, and `resolve/metabase.py` gets unit tests from real fixtures. Incremental via `updated_at` high-water mark; target 5k cards under 60s warm.
+
+The default card/dashboard listing excludes archived objects even though its filter is named `all`; build merges the active and archived lists by ID and caches both responses. Archived collections participate in the same collection exclusions. Older Metabase releases return an explicit `404` / `error_code: archived` for archived dashboard details: retain the listing summary and archived flag, but count its unavailable card membership as unresolved. Where details are available, archived dashboard edges are resolved normally. `mend` excludes archived cards and archived dashboard parameter mappings from repair plans.
 
 ### 7.3 Column lineage inside the dbt DAG — core, not deferred
 

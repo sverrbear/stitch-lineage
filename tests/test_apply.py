@@ -918,3 +918,46 @@ def test_concurrent_applies_keep_yaml_and_graph_updates_in_the_same_order(repo, 
     nodes = {node.node_id: node for node in read_graph(graph_path).nodes}
     assert nodes[ORDERS_FK].description == "second"
     assert read_descriptions(descriptions_path(repo / ".stitch")) == []
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_edits_during_confirmation_are_preserved_and_changes_stay_staged(
+    repo, store, monkeypatch, force
+):
+    _stage(store, _entry())
+    _stage_descriptions(repo, _description())
+    target = repo / MARTS
+    human = target.read_text() + "\n# changed during confirmation\n"
+
+    def confirm(*args, **kwargs):
+        target.write_text(human)
+        return True
+
+    monkeypatch.setattr("stitch_lineage.cli.typer.confirm", confirm)
+    result = _run(*(["--force"] if force else []))
+    assert result.exit_code == 1
+    assert "changed since planning" in plain(result.output)
+    assert target.read_text() == human
+    assert len(read_staged(store)) == 1
+    assert len(read_descriptions(descriptions_path(repo / ".stitch"))) == 1
+
+
+def test_migration_preserves_edits_made_during_confirmation(repo, monkeypatch):
+    from test_yaml_writer import META_MANIFEST, _meta_repo
+
+    _meta_repo(repo)
+    (repo / "target" / "manifest.json").write_text(json.dumps(META_MANIFEST))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "declare relationship meta")
+    target = repo / MARTS
+    human = target.read_text() + "\n# changed during migration confirmation\n"
+
+    def confirm(*args, **kwargs):
+        target.write_text(human)
+        return True
+
+    monkeypatch.setattr("stitch_lineage.cli.typer.confirm", confirm)
+    result = runner.invoke(app, ["migrate-relationships"])
+    assert result.exit_code == 1
+    assert "changed since planning" in plain(result.output)
+    assert target.read_text() == human

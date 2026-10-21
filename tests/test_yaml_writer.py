@@ -16,6 +16,8 @@ from ruamel.yaml import YAML
 from stitch_lineage.config import RelationshipsConfig, WriteConfig
 from stitch_lineage.io.staged_store import StagedDescription, StagedRelationship
 from stitch_lineage.write.yaml_writer import (
+    FileEdit,
+    YamlWriteConflict,
     apply_plan,
     model_writeability,
     plan_migration,
@@ -1048,3 +1050,25 @@ def test_tests_that_spell_no_arguments_leave_the_form_undecided(repo):
     (edit,) = _plan(repo, [_entry()]).edits
     test = _column_of(edit, "fct_orders", "customer_id")["data_tests"][0]["relationships"]
     assert "arguments" not in test
+
+
+@pytest.mark.parametrize("change", ["edited", "deleted", "unreadable"])
+def test_original_content_preflight_refuses_all_files_before_any_write(tmp_path, change):
+    first, second = tmp_path / "first.yml", tmp_path / "second.yml"
+    first.write_text("first original\n")
+    second.write_text("second original\n")
+    edits = [
+        FileEdit(first, first.read_text(), "first planned\n"),
+        FileEdit(second, second.read_text(), "second planned\n"),
+    ]
+    if change == "edited":
+        second.write_text("human edit\n")
+    elif change == "deleted":
+        second.unlink()
+    else:
+        second.write_bytes(b"\xff")
+    expected = second.read_bytes() if second.exists() else None
+    with pytest.raises(YamlWriteConflict, match="nothing written"):
+        apply_plan(edits)
+    assert first.read_text() == "first original\n"
+    assert (second.read_bytes() if second.exists() else None) == expected
