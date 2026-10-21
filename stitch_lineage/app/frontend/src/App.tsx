@@ -56,6 +56,15 @@ function Shell() {
       <Header onOpenPalette={() => setPaletteOpen(true)} />
       <Suspense fallback={<div className="app-loading">{copy.app.loadingView}</div>}>
         {route.page === 'home' && <HomePage searchInputRef={homeSearchRef} />}
+        {route.page === 'not-found' && (
+          <main className="detail-page">
+            <article className="panel">
+              <h2>{copy.app.invalidLinkTitle}</h2>
+              <p className="muted">{copy.app.invalidLinkDetail}</p>
+              <a className="button" href="#/">{copy.header.home}</a>
+            </article>
+          </main>
+        )}
         {route.page === 'node' && (
           <main className="detail-page">
             <NodePage nodeId={route.nodeId} />

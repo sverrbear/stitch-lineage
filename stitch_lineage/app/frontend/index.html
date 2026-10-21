@@ -14,13 +14,12 @@
     <script>
       // Theme before first paint (no flash). Mirrors src/theme.ts.
       ;(function () {
-        try {
-          var t = localStorage.getItem('stitch-theme')
-          if (t !== 'light' && t !== 'dark') {
-            t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-          }
-          document.documentElement.dataset.theme = t
-        } catch (e) {}
+        var t
+        try { t = localStorage.getItem('stitch-theme') } catch (e) {}
+        if (t !== 'light' && t !== 'dark') {
+          t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+        }
+        document.documentElement.dataset.theme = t
       })()
     </script>
     <!--
