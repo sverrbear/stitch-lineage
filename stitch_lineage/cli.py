@@ -803,19 +803,24 @@ def _baseline_graph(base: str, graph_path: Path, *, note: Note = _stderr_note) -
     local = _history_baseline(base, graph_path, note=note)
     if local is not None:
         return local
+    # Match local history: --config may point into another repo, so the caller's
+    # current directory must not decide which repository owns the baseline ref.
+    repo_cwd = graph_path.resolve().parent
     ref_path = graph_path.as_posix()
     toplevel = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
+        cwd=repo_cwd,
         capture_output=True,
         text=True,
         check=False,
     )
     if toplevel.returncode == 0:
         with contextlib.suppress(ValueError):
-            resolved = graph_path.resolve().relative_to(Path(toplevel.stdout.strip()))
+            resolved = graph_path.resolve().relative_to(Path(toplevel.stdout.strip()).resolve())
             ref_path = resolved.as_posix()
     result = subprocess.run(
         ["git", "show", f"{base}:{ref_path}"],
+        cwd=repo_cwd,
         capture_output=True,
         text=True,
         check=False,
