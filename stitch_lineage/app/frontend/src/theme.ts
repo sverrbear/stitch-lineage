@@ -5,15 +5,26 @@ import { useEffect, useState } from 'react'
 
 export type Theme = 'light' | 'dark'
 const STORAGE_KEY = 'stitch-theme'
+// A manual choice still lasts for this page session when storage is unavailable.
+let sessionTheme: Theme | null = null
 
 function systemTheme(): Theme {
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
+function preferredTheme(): Theme | null {
+  if (sessionTheme) return sessionTheme
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY)
+    if (stored === 'light' || stored === 'dark') return stored
+  } catch {
+    // Sandboxed exports and browser privacy settings can deny even a read.
+  }
+  return null
+}
+
 export function currentTheme(): Theme {
-  const stored = localStorage.getItem(STORAGE_KEY)
-  if (stored === 'light' || stored === 'dark') return stored
-  return systemTheme()
+  return preferredTheme() ?? systemTheme()
 }
 
 export function useTheme(): [Theme, () => void] {
@@ -27,7 +38,7 @@ export function useTheme(): [Theme, () => void] {
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)')
     const onChange = () => {
-      if (!localStorage.getItem(STORAGE_KEY)) setTheme(systemTheme())
+      if (!preferredTheme()) setTheme(systemTheme())
     }
     media.addEventListener('change', onChange)
     return () => media.removeEventListener('change', onChange)
@@ -36,7 +47,12 @@ export function useTheme(): [Theme, () => void] {
   const toggle = () => {
     setTheme((prev) => {
       const next: Theme = prev === 'dark' ? 'light' : 'dark'
-      localStorage.setItem(STORAGE_KEY, next)
+      sessionTheme = next
+      try {
+        localStorage.setItem(STORAGE_KEY, next)
+      } catch {
+        // The in-memory choice remains usable without persistence.
+      }
       return next
     })
   }

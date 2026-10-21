@@ -30,6 +30,8 @@ export const copy = {
   /** The shell: loading, fatal errors, the dev banner. */
   app: {
     loadingView: 'Loading view…',
+    invalidLinkTitle: 'Page not found',
+    invalidLinkDetail: 'This link is invalid. Use search to find a model, column, card or dashboard.',
     loadingGraph: 'Loading graph…',
     devFixtureBanner: 'dev fixture graph (no API)',
     loadErrorTitle: 'Couldn’t load the lineage graph',

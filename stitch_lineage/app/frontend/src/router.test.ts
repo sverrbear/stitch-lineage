@@ -49,6 +49,17 @@ describe('parseHash', () => {
     expect(parseHash('#/coverage/made-up')).toEqual({ page: 'home' })
   })
 
+  it.each(['#/node/%', '#/lineage/%E0%A4%A', '#/erd/schema/%FF', '#/coverage/%2', '#/%'])('handles malformed URI encoding in %s', (hash) => {
+    expect(parseHash(hash)).toEqual({ page: 'not-found' })
+    // A bad initial or hashchange route must not prevent the next valid route.
+    expect(parseHash('#/node/model.demo.orders')).toEqual({ page: 'node', nodeId: 'model.demo.orders' })
+  })
+
+  it('keeps valid escaped percent signs, slashes and Unicode in ids', () => {
+    const id = 'model.demo.100%/café::amount'
+    expect(parseHash(nodeHref(id))).toEqual({ page: 'node', nodeId: id })
+  })
+
   it('round-trips ids that need escaping', () => {
     const id = 'model.demo.fct_revenue::net_revenue'
     expect(parseHash(nodeHref(id))).toEqual({ page: 'node', nodeId: id })

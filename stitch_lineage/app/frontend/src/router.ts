@@ -8,6 +8,7 @@ import type { Grain } from './lib/rollup'
 
 export type Route =
   | { page: 'home' }
+  | { page: 'not-found' }
   | { page: 'node'; nodeId: string }
   | { page: 'lineage'; nodeId: string; grain: Grain }
   | { page: 'erd'; scopeKind?: 'schema' | 'tag'; scopeValue?: string }
@@ -21,7 +22,12 @@ const COVERAGE_KINDS: CoverageListKind[] = [
 
 export function parseHash(hash: string): Route {
   const path = hash.replace(/^#\/?/, '')
-  const segments = path.split('/').map(decodeURIComponent)
+  let segments: string[]
+  try {
+    segments = path.split('/').map(decodeURIComponent)
+  } catch {
+    return { page: 'not-found' }
+  }
   if (segments[0] === 'node' && segments[1]) return { page: 'node', nodeId: segments[1] }
   if (segments[0] === 'lineage' && segments[1]) {
     return { page: 'lineage', nodeId: segments[1], grain: segments[2] === 'table' ? 'table' : 'column' }
