@@ -535,3 +535,29 @@ def test_writeability_matches_what_apply_would_do(client, repo):
 def test_a_read_only_build_has_no_writeability_route(read_only):
     """No apply context, no promises: the app falls back to offering everything."""
     assert read_only.get("/api/writeability").status_code == 404
+
+
+def test_apply_conflict_returns_409_and_preserves_stores_and_graph(
+    client, repo, stores, monkeypatch
+):
+    client.post("/api/staged-relationships", json=DRAWN)
+    client.put("/api/staged-descriptions", json=EDIT)
+    graph_path = repo / ".stitch" / "graph.json"
+    before_graph = graph_path.read_bytes()
+    before_stores = [path.read_bytes() for path in stores]
+    target = repo / MARTS
+    human = target.read_text() + "\n# changed after planning\n"
+    original = apply_service.refusals
+
+    def change_after_check(plan):
+        refused = original(plan)
+        target.write_text(human)
+        return refused
+
+    monkeypatch.setattr(apply_service, "refusals", change_after_check)
+    response = client.post("/api/apply")
+    assert response.status_code == 409
+    assert "changed since planning" in response.json()["detail"]
+    assert target.read_text() == human
+    assert [path.read_bytes() for path in stores] == before_stores
+    assert graph_path.read_bytes() == before_graph
