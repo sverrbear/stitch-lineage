@@ -535,3 +535,86 @@ def test_writeability_matches_what_apply_would_do(client, repo):
 def test_a_read_only_build_has_no_writeability_route(read_only):
     """No apply context, no promises: the app falls back to offering everything."""
     assert read_only.get("/api/writeability").status_code == 404
+
+
+# Browser origin checks happen before validation, planning, or any filesystem mutation.
+def _snapshot_files(repo):
+    return {
+        path.relative_to(repo).as_posix(): path.read_bytes()
+        for path in repo.rglob("*")
+        if path.is_file() and ".git" not in path.relative_to(repo).parts
+    }
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Origin": "https://attacker.example"},
+        {"Origin": "null"},
+        {"Origin": ""},
+        {"Origin": "http://testserver:9999"},
+        {"Origin": "https://testserver"},
+        {"Origin": "http://user@testserver"},
+        {"Origin": "http://testserver/"},
+        {"Origin": "http://testserver?"},
+        {"Origin": "http://testserver#fragment"},
+        {"Origin": "http://testserver:"},
+        {"Origin": "http://testserver:invalid"},
+        {"Origin": "\x01http://testserver"},
+        {"Origin": "http://testserver https://attacker.example"},
+        [("Origin", "http://testserver"), ("Origin", "https://attacker.example")],
+        {"Sec-Fetch-Site": "cross-site"},
+        {"Sec-Fetch-Site": "same-site"},
+        {"Origin": "http://testserver", "Sec-Fetch-Site": "cross-site"},
+    ],
+)
+def test_browser_requests_cannot_apply_staged_changes_from_another_origin(client, repo, headers):
+    assert client.post("/api/staged-relationships", json=DRAWN).status_code == 201
+    before = _snapshot_files(repo)
+    response = client.post("/api/apply", content="", headers=headers)
+    assert response.status_code == 403
+    assert _snapshot_files(repo) == before
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("POST", "/api/staged-relationships", DRAWN),
+        ("PUT", f"/api/staged-relationships/{DRAWN_ID}", {**DRAWN, "cardinality": "one-to-one"}),
+        ("DELETE", f"/api/staged-relationships/{DRAWN_ID}", None),
+        ("PUT", "/api/staged-descriptions", {**EDIT, "new_description": "unwanted"}),
+        ("DELETE", f"/api/staged-descriptions/{EDIT_ID}", None),
+        ("POST", f"/api/suggestions/{DRAWN_ID}/dismiss", None),
+        ("POST", "/api/apply", None),
+        ("POST", "/api/apply/preview", None),
+        ("PATCH", "/api/staged-descriptions", EDIT),
+    ],
+)
+def test_every_mutating_method_is_guarded_before_it_can_change_files(
+    client, repo, method, path, payload
+):
+    assert client.post("/api/staged-relationships", json=DRAWN).status_code == 201
+    assert client.put("/api/staged-descriptions", json=EDIT).status_code == 201
+    before = _snapshot_files(repo)
+    response = client.request(method, path, json=payload, headers={"Origin": "null"})
+    assert response.status_code == 403
+    assert _snapshot_files(repo) == before
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"Origin": "http://testserver"},
+        {"Origin": "HTTP://TESTSERVER:80", "Sec-Fetch-Site": "same-origin"},
+        {"Sec-Fetch-Site": "none"},
+    ],
+)
+def test_same_origin_and_nonbrowser_clients_can_stage_and_apply(client, repo, headers):
+    before = (repo / MARTS).read_text()
+    response = client.post("/api/staged-relationships", json=DRAWN, headers=headers)
+    assert response.status_code == 201
+    response = client.post("/api/apply", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["written"] == [MARTS]
+    assert (repo / MARTS).read_text() != before
