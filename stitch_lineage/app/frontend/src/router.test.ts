@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { coverageHref, erdHref, lineageHref, nodeHref, parseHash } from './router'
+import { coverageHref, erdHref, lineageHref, nodeHref, parseHash, relationshipsHref } from './router'
 
 describe('parseHash', () => {
   it('routes the basics', () => {
@@ -74,5 +74,35 @@ describe('parseHash', () => {
       page: 'coverage',
       kind: 'unresolved-cards',
     })
+  })
+})
+
+
+describe('object relationship routes', () => {
+  it('keeps selected object separate from table focus and scope', () => {
+    const nodeId = 'model.demo.orders::customer/id%'
+    const view = { scopeKind: 'schema' as const, scopeValue: 'marts café & sales', focusId: 'model.demo.orders' }
+    expect(parseHash(relationshipsHref(nodeId, view))).toEqual({ page: 'relationships', nodeId, ...view })
+  })
+
+  it('distinguishes initial object focus from a deliberately widened scope', () => {
+    expect(parseHash(relationshipsHref('model.demo.orders'))).toEqual({ page: 'relationships', nodeId: 'model.demo.orders' })
+    expect(parseHash(relationshipsHref('model.demo.orders', { scopeKind: 'tag', scopeValue: 'daily', focusId: null }))).toEqual({
+      page: 'relationships', nodeId: 'model.demo.orders', scopeKind: 'tag', scopeValue: 'daily', focusId: null,
+    })
+  })
+
+  it.each([
+    '#/node/orders/relationships?schema=%',
+    '#/node/orders/relationships?schema=x&tag=y',
+    '#/node/orders/relationships?tag=',
+    '#/node/orders/relationships?focus=%FF',
+  ])('recovers from invalid relationship scope parameters in %s', (hash) => {
+    expect(parseHash(hash)).toEqual({ page: 'not-found' })
+  })
+
+  it('retains old schema and tag ERD bookmarks independently of object workspaces', () => {
+    expect(parseHash('#/erd/tag/daily')).toEqual({ page: 'erd', scopeKind: 'tag', scopeValue: 'daily' })
+    expect(parseHash('#/erd')).toEqual({ page: 'erd' })
   })
 })

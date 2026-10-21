@@ -107,7 +107,7 @@ import {
   type SuggestionScopeFilter,
 } from '../lib/suggestions'
 import { workspaceView } from '../lib/workspace'
-import { erdHref, navigate, nodeHref } from '../router'
+import { erdHref, navigate, nodeHref, relationshipsHref } from '../router'
 import { copy } from '../copy'
 
 /** Breathing room around the whole arrangement, as React Flow reads padding. */
@@ -400,10 +400,16 @@ const SCOPE_GROUPS: Array<{ label: string; match: (scope: ErdScope) => boolean }
 export function ErdPage({
   scopeKind,
   scopeValue,
+  workspaceNodeId,
+  focusId,
 }: {
   scopeKind?: 'schema' | 'tag'
   scopeValue?: string
+  /** In an object workspace, scope and focus are history-backed hash state. */
+  workspaceNodeId?: string
+  focusId?: string | null
 }) {
+  const Page = workspaceNodeId ? 'section' : 'main'
   const { index, meta, reload } = useStitch()
   const scopes = useMemo(() => listScopes(index), [index])
   const routed =
@@ -411,8 +417,8 @@ export function ErdPage({
     null
   // No scope in the URL: open the configured one, else the auto-picked one.
   const landing = useMemo(() => initialScope(scopes, meta.erd_default_scope), [scopes, meta])
-  const active = routed ?? landing.scope
-  const unknownConfigured = routed ? null : landing.unknownConfigured
+  const active = workspaceNodeId ? routed : routed ?? landing.scope
+  const unknownConfigured = workspaceNodeId || routed ? null : landing.unknownConfigured
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   // Staging exists only under `stitch serve`. A static export, or an older serve
@@ -429,7 +435,7 @@ export function ErdPage({
   const [notice, setNotice] = useState<string | null>(null)
   const [suggestions, setSuggestions] = useState<Suggestion[]>([])
   const [canSuggest, setCanSuggest] = useState(false)
-  const [panelOpen, setPanelOpen] = useState(true)
+  const [panelOpen, setPanelOpen] = useState(!workspaceNodeId)
   const [stagedOpen, setStagedOpen] = useState(false)
   // The reader's OWN choice of panel filters, null until they touch one — the
   // effective filters below fall back to what this scope's counts deserve, so a
@@ -444,7 +450,8 @@ export function ErdPage({
   const [manual, setManual] = useState<Record<string, { x: number; y: number }>>({})
   const [layoutStale, setLayoutStale] = useState(false)
   /** The one table the canvas is narrowed to, or null for the whole scope (#163). */
-  const [focused, setFocused] = useState<string | null>(null)
+  const [localFocused, setLocalFocused] = useState<string | null>(null)
+  const focused = workspaceNodeId ? focusId ?? null : localFocused
   const movedCount = Object.keys(manual).length
   /**
    * Whether the auto-layout still owns the VIEWPORT, not just the coordinates (#185).
@@ -526,12 +533,15 @@ export function ErdPage({
    */
   const toggleFocus = useCallback(
     (modelId: string) => {
-      setFocused((current) => (current === modelId ? null : modelId))
+      const next = focused === modelId ? null : modelId
+      if (workspaceNodeId && active) {
+        navigate(relationshipsHref(workspaceNodeId, { scopeKind: active.kind, scopeValue: active.value, focusId: next }))
+      } else setLocalFocused(next)
       // a relationship picked in the wider view may not be drawn in the narrower one
       highlight.clear()
       fitSoon()
     },
-    [fitSoon, highlight],
+    [fitSoon, highlight, focused, workspaceNodeId, active],
   )
 
   const refreshStaged = useCallback(async () => {
@@ -661,7 +671,8 @@ export function ErdPage({
   // downstream -- layout, counts, legend, staging -- reads `erd` and cannot tell
   // the difference, which is the point of doing this as a filter.
   const erd = useMemo(() => (scoped ? focusErd(scoped, focused) : null), [scoped, focused])
-  const focusedModel = focused ? (index.nodesById.get(focused) ?? null) : null
+  const focusAvailable = focused !== null && scoped?.models.some((model) => model.node.node_id === focused)
+  const focusedModel = focusAvailable ? (index.nodesById.get(focused!) ?? null) : null
   // what the header states: the scope's own models, kept apart from the FK
   // targets pulled in from elsewhere, so it agrees with the picker (#120)
   const counts = useMemo(() => (erd ? erdCounts(erd) : null), [erd])
@@ -1038,7 +1049,7 @@ export function ErdPage({
     // a relationship picked in the old scope is not on this canvas: put it out
     highlight.clear()
     // ...and neither is a table focused in it (#163)
-    setFocused(null)
+    setLocalFocused(null)
     setExpanded(autoExpandedModels(erd?.models ?? []))
     // ...and the panel filters go back to whatever THIS scope's counts deserve,
     // rather than carrying a choice made about a different set of candidates
@@ -1049,16 +1060,26 @@ export function ErdPage({
     fitSoon()
   }, [activeKey])
 
+  // Back/Forward can change focus without changing scope. Reframe that drawing, too.
+  useEffect(() => {
+    if (!workspaceNodeId) return
+    highlight.clear()
+    fitSoon()
+  }, [workspaceNodeId, focused, highlight, fitSoon])
+
   if (!active || !erd || !counts) {
     return (
-      <main className="graph-page">
-        <p className="muted panel">{copy.erd.empty}</p>
-      </main>
+      <Page className="graph-page">
+        <div className="object-content">
+          <p className="muted">{workspaceNodeId ? copy.workspace.unknownScope : copy.erd.empty}</p>
+          {workspaceNodeId && <a href={relationshipsHref(workspaceNodeId)}>{copy.workspace.resetRelationships}</a>}
+        </div>
+      </Page>
     )
   }
 
   return (
-    <main className="graph-page">
+    <Page className="graph-page">
       <div className="graph-toolbar">
         <label className="scope-label" htmlFor="erd-scope">
           {copy.erd.scope}
@@ -1069,7 +1090,9 @@ export function ErdPage({
           value={scopeKey(active)}
           onChange={(e) => {
             const next = scopes.find((s) => scopeKey(s) === e.target.value)
-            if (next) navigate(erdHref(next.kind, next.value))
+            if (next) navigate(workspaceNodeId
+              ? relationshipsHref(workspaceNodeId, { scopeKind: next.kind, scopeValue: next.value, focusId: null })
+              : erdHref(next.kind, next.value))
           }}
         >
           {SCOPE_GROUPS.map(({ label, match }) => {
@@ -1136,6 +1159,7 @@ export function ErdPage({
             {copy.erd.suggestedButton(scopedSuggestions.length)}
           </button>
         )}
+        {focused && !focusAvailable && <span className="muted">{copy.workspace.unavailableFocus}</span>}
         {focusedModel && (
           <button
             type="button"
@@ -1390,6 +1414,6 @@ export function ErdPage({
           }}
         />
       )}
-    </main>
+    </Page>
   )
 }

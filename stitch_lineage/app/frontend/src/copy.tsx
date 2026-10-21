@@ -47,7 +47,6 @@ export const copy = {
   /** Top bar: nav, the two actions, and the build stamp's tooltip. */
   header: {
     home: 'Home',
-    erd: 'ERD',
     search: 'Search (Cmd/Ctrl+K)',
     themeToggle: (next: 'light' | 'dark') => `Switch to ${next} theme`,
     /** Hovering the build stamp says where the graph came from, and when it is old. */
@@ -61,9 +60,21 @@ export const copy = {
   home: {
     title: 'Trace a column',
     searchPlaceholder: 'Model, column, card or dashboard',
-    lineage: 'Lineage',
-    erd: 'ERD',
     coverage: 'Coverage',
+  },
+
+  /** Views of the selected object. */
+  workspace: {
+    summary: 'Summary',
+    lineage: 'Lineage',
+    relationships: 'Relationships',
+    views: 'Object views',
+    archived: 'archived',
+    noRelationships: 'Relationships are available for tables and their columns. Use Lineage to inspect this object’s dependencies.',
+    noRelationshipScope: 'This table has no schema or dbt tag in this build, so its relationship diagram is unavailable.',
+    unknownScope: 'This relationship scope is not present in this build.',
+    resetRelationships: 'Return to this object’s relationships',
+    unavailableFocus: 'The focused table is not in this scope. Showing the whole scope.',
   },
 
   /** Search, inline on the home page and inside the palette. */

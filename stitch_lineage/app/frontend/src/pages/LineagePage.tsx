@@ -129,7 +129,8 @@ interface EdgeTip {
   text: string
 }
 
-export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain }) {
+export function LineagePage({ nodeId, grain, embedded = false }: { nodeId: string; grain: Grain; embedded?: boolean }) {
+  const Page = embedded ? 'section' : 'main'
   const { index, consequence } = useStitch()
   const [tip, setTip] = useState<EdgeTip | null>(null)
 
@@ -221,16 +222,16 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
 
   if (!root) {
     return (
-      <main className="graph-page">
+      <Page className="graph-page">
         <p className="muted panel">{copy.lineage.unknownNode(nodeId)}</p>
-      </main>
+      </Page>
     )
   }
 
   return (
-    <main className="graph-page">
+    <Page className="graph-page">
       <div className="graph-toolbar">
-        <span className="graph-toolbar-title">
+        {!embedded && <span className="graph-toolbar-title">
           <NodeBadge node={root} />
           {/* a column is qualified by its model, because a bare column name is
               the ambiguity that costs an afternoon (principle 02) */}
@@ -242,7 +243,7 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
             {NODE_TYPE_NAME[root.node_type]}
             {root.node_type !== 'column' && rootContext ? ` · ${rootContext}` : ''}
           </span>
-        </span>
+        </span>}
         <span className="graph-toolbar-impact">
           {copy.lineage.downstreamCounts(impact.cards, impact.dashboards)}
         </span>
@@ -252,6 +253,7 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
               key={option}
               className={`grain-option${grain === option ? ' active' : ''}`}
               href={lineageHref(nodeId, option)}
+              aria-current={grain === option ? 'page' : undefined}
               title={
                 option === 'column'
                   ? copy.lineage.grainColumn
@@ -262,9 +264,9 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
             </a>
           ))}
         </div>
-        <a className="button" href={nodeHref(nodeId)}>
+        {!embedded && <a className="button" href={nodeHref(nodeId)}>
           {copy.lineage.details}
-        </a>
+        </a>}
         {truncated && <span className="muted">{copy.lineage.truncated}</span>}
         <span className="muted graph-toolbar-hint">{copy.lineage.hint}</span>
       </div>
@@ -287,8 +289,8 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
           proOptions={{ hideAttribution: true }}
           // The body of a card re-roots the trace on it, in place (#140): exploring a
           // chain is click-click-click along it, with no detour through search or a
-          // detail panel. Navigating to the element itself is the NAME's job, and
-          // the Details button's -- both of which stop the click before it lands here.
+          // summary. Navigating to the element itself is the NAME's job, which
+          // stops the click before it lands here.
           onNodeClick={(_, node) => {
             if (node.id === nodeId) return
             navigate(lineageHref(node.id, grain))
@@ -310,7 +312,7 @@ export function LineagePage({ nodeId, grain }: { nodeId: string; grain: Grain })
         )}
       </div>
       <GraphLegend />
-    </main>
+    </Page>
   )
 }
 

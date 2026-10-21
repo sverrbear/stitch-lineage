@@ -235,17 +235,27 @@ plan, Slack notice, apply, summary, in one job — is
 
 ## The app
 
-`stitch serve` opens a local browser app over the same file: search everything with `/` and `⌘K`,
-per-node detail panels, the end-to-end lineage view above, and a scoped ERD. Every node carries the
-badge of who manages it — dbt on what the pipeline builds, Snowflake on the source tables your
-loaders land, Metabase on the BI side — so a glance separates the columns you can rename from the
-ones that arrive as somebody else's decision. Cards deep-link back into Metabase.
+`stitch serve` opens a local browser app over the same file. Search with `/` and `⌘K`, then inspect
+one object through **Summary** and **Lineage** under the same name. Switching views keeps the
+selected column, model, card or dashboard in context; table-grain lineage still answers for the
+selected column. Summary drafts and scroll position stay with that object while you inspect its
+graph. Following another node opens that object's workspace.
+
+Tables and their columns also offer **Relationships**: a diagram focused on the table and its
+joins, with a schema or dbt-tag selector to widen the view. A column keeps its own identity while
+the diagram uses its owning table. Semantic views retain Summary and Lineage without posing as
+tables. Existing node, lineage and ERD bookmarks continue to work.
+
+Every node carries the badge of who manages it — dbt on what the pipeline builds, Snowflake on
+the source tables your loaders land, Metabase on the BI side — so a glance separates the columns
+you can rename from the ones that arrive as somebody else's decision. Cards deep-link back into
+Metabase.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/sverrbear/stitch-lineage/main/assets/erd.png" alt="The stitch ERD: two scoped models with a validated relationship drawn between their key columns" width="100%">
 </p>
 
-In the ERD you can **draw** relationships: drag one column's handle onto another's, name the
+In Relationships you can **draw** relationships: drag one column's handle onto another's, name the
 cardinality, and the declaration stages locally. Nothing you do in the app touches your repo.
 Relationships stage to `.stitch/staged_relationships.yml` and description edits to
 `.stitch/staged_descriptions.yml`; `stitch apply` materializes them into your model YAML as one

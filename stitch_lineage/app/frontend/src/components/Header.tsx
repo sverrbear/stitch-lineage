@@ -4,16 +4,10 @@ import { useRoute } from '../router'
 import { useTheme } from '../theme'
 import { copy } from '../copy'
 
-/** Which nav entry owns the page you are on — the detail routes belong to Home. */
-function currentNav(page: string): 'home' | 'erd' {
-  return page === 'erd' ? 'erd' : 'home'
-}
-
 export function Header({ onOpenPalette }: { onOpenPalette: () => void }) {
   const { meta, origin } = useStitch()
   const [theme, toggleTheme] = useTheme()
   const route = useRoute()
-  const current = currentNav(route.page)
   // A stale graph is a wrong answer, so the build is on every page (principle 05).
   const built = buildStamp(meta.generated_at, new Date())
 
@@ -27,11 +21,8 @@ export function Header({ onOpenPalette }: { onOpenPalette: () => void }) {
       </a>
       {/* Existing routes only — the nav never offers a page that isn't there. */}
       <nav className="app-nav">
-        <a className={current === 'home' ? 'current' : undefined} href="#/">
+        <a className={route.page === 'home' ? 'current' : undefined} aria-current={route.page === 'home' ? 'page' : undefined} href="#/">
           {copy.header.home}
-        </a>
-        <a className={current === 'erd' ? 'current' : undefined} href="#/erd">
-          {copy.header.erd}
         </a>
       </nav>
       <div className="app-header-right">
