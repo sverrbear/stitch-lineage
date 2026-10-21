@@ -902,7 +902,7 @@ def resolve_metabase(
         if not isinstance(dashcards, list):
             dashcards = dashboard.get("ordered_cards")
         seen: set[int] = set()
-        all_cards_known = True
+        all_cards_known = isinstance(dashcards, list)
         for dashcard in dashcards if isinstance(dashcards, list) else []:
             if not isinstance(dashcard, dict):
                 continue
