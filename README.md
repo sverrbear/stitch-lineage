@@ -251,6 +251,13 @@ the source tables your loaders land, Metabase on the BI side — so a glance sep
 you can rename from the ones that arrive as somebody else's decision. Cards deep-link back into
 Metabase.
 
+Search for a column, model or source to see its **downstream impact first**: exact counts of
+Metabase cards and dashboards, with cards grouped under their dashboards and direct links to open
+them. Archived consumers and non-exact lineage stay labelled. The counts describe dependencies in
+the current graph, not a guarantee that a change will break a card or that an empty result is safe;
+recorded trace gaps and partial lists are called out beside the answer. Definitions, upstream
+dependencies, descriptions and relationship details remain below it.
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/sverrbear/stitch-lineage/main/assets/erd.png" alt="The stitch ERD: two scoped models with a validated relationship drawn between their key columns" width="100%">
 </p>
