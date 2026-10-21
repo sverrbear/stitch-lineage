@@ -23,10 +23,12 @@ class MetabasePayload(BaseModel):
       databases:         GET /api/database -- only the configured warehouse databases.
       database_metadata: GET /api/database/:id/metadata?include_hidden=true, keyed by
                          database id -- the field_id <-> schema.table.column map.
-      cards:             GET /api/card (each with dataset_query, collection_id, creator,
-                         archived).
-      dashboards:        full GET /api/dashboard/:id payloads (dashcards included).
-      collections:       GET /api/collection tree, for collection filtering.
+      cards:             active and archived GET /api/card lists (each with dataset_query,
+                         collection_id, creator, archived).
+      dashboards:        active and archived GET /api/dashboard/:id payloads (dashcards
+                         included); listing summaries when an older instance refuses
+                         archived dashboard details.
+      collections:       active and archived GET /api/collection lists, for filtering.
       snippets:          GET /api/native-query-snippet -- the SQL behind a
                          `{{snippet: name}}` tag in a native card. Empty when the
                          instance does not expose the endpoint; a native card using an
