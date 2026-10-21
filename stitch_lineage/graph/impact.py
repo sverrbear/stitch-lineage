@@ -151,6 +151,16 @@ def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
+def _card_owner(node: Node) -> str | None:
+    """A creator display name or numeric Metabase id, including older graph files."""
+    creator = node.properties.get("creator")
+    if isinstance(creator, str) and creator.strip():
+        return creator
+    if isinstance(creator, int) and not isinstance(creator, bool):
+        return str(creator)
+    return node.owner
+
+
 def _gather_impact(
     diff: ColumnDiff, report: ImpactReport, graph: Graph
 ) -> tuple[list[str], list[dict]]:
@@ -210,7 +220,7 @@ def _gather_impact(
             dash_ids = sorted(dashboards_by_card.get(item.node_id, ()))
             dash_names = sorted(nodes_by_id[d].name for d in dash_ids if d in nodes_by_id)
             implied_dashboards.update(dash_ids)
-            owner = node.properties.get("creator") or node.owner
+            owner = _card_owner(node)
             attribution = ", ".join([*dash_names, owner] if owner else dash_names)
             cards.append(
                 {"ref": card_ref(item.node_id)[1], "name": node.name, "attribution": attribution}
@@ -648,7 +658,7 @@ def column_blast_radius(graph: Graph, node_id: str, max_depth: int = 20) -> Blas
                 label=node.name,
                 card_id=int(ref_tail) if ref_tail.isdigit() else None,
                 dashboards=dash_names,
-                owner=node.properties.get("creator") or node.owner,
+                owner=_card_owner(node),
             )
         )
 
@@ -788,8 +798,7 @@ def impact_json(diff: ColumnDiff, report: ImpactReport, graph: Graph) -> ImpactJ
                     for dash in dashboards_by_card.get(item.node_id, ())
                     if dash in nodes_by_id
                 ),
-                owner=nodes_by_id[item.node_id].properties.get("creator")
-                or nodes_by_id[item.node_id].owner,
+                owner=_card_owner(nodes_by_id[item.node_id]),
             )
             for item in sorted(
                 (
