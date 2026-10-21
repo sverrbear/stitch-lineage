@@ -914,7 +914,8 @@ kbd {
 
 /* The identifier IS the title: mono, fully qualified, selectable (principles
    02 + 07). Its model reads as context, the column itself as the subject. */
-.panel-title h2 {
+.panel-title h2,
+.panel-title h1 {
   margin: 0;
   font-family: var(--mono);
   font-size: 21px;
@@ -1488,6 +1489,60 @@ kbd {
 
 .columns-table tr:last-child td {
   border-bottom: 0;
+}
+
+/* Object identity and navigation stay in place across summary and canvases. */
+.app > .object-workspace {
+  overflow: hidden;
+}
+.object-workspace {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.object-header {
+  flex: none;
+  padding: 24px 28px 0;
+  border-bottom: 1px solid var(--border);
+}
+.object-header,
+.object-summary .object-content {
+  width: min(920px, 100%);
+  margin: 0 auto;
+  padding-left: 24px;
+  padding-right: 24px;
+}
+.object-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 22px 28px 80px;
+}
+.object-content[hidden] {
+  display: none;
+}
+.object-views {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  margin-top: 18px;
+}
+.object-views a {
+  padding: 8px 0 12px;
+  color: var(--text-muted);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+}
+.object-views a[aria-current='page'] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.object-external {
+  margin-left: auto;
+}
+.object-graph {
+  overflow: hidden;
 }
 
 /* ---- graph pages (lineage + ERD) ---- */

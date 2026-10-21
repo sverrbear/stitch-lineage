@@ -1,5 +1,5 @@
 // The 7a home (#108): one 620px column, vertically centred — the question, the
-// field that answers it, the two canvases, and what this build does NOT know.
+// field that answers it, and what this build does NOT know.
 // Nothing else. A lineage tool is opened in the middle of a problem, so the home
 // page is a way in, not a dashboard.
 //
@@ -16,10 +16,9 @@ import { useStitch } from '../data'
 import {
   coveragePercent,
   coverageRows,
-  startingPoints,
   type CoverageRow,
 } from '../lib/coverage'
-import { coverageHref, erdHref, lineageHref } from '../router'
+import { coverageHref } from '../router'
 import { copy } from '../copy'
 
 function Row({ row }: { row: CoverageRow }) {
@@ -63,8 +62,6 @@ export function HomePage({ searchInputRef }: { searchInputRef: RefObject<HTMLInp
   const { index } = useStitch()
   const rows = useMemo(() => coverageRows(index.graph.coverage), [index])
   const percent = useMemo(() => coveragePercent(index.graph.coverage), [index])
-  // the lineage entry needs somewhere to start: the model the BI layer leans on most
-  const busiest = useMemo(() => startingPoints(index, 1).mostConsumedModels[0] ?? null, [index])
 
   return (
     <main className="home">
@@ -77,26 +74,6 @@ export function HomePage({ searchInputRef }: { searchInputRef: RefObject<HTMLInp
             hero
             placeholder={copy.home.searchPlaceholder}
           />
-        </div>
-
-        {/* The two canvases stitch keeps, as rows rather than cards: a link is a
-            link. The global pipeline map is gone (#83). */}
-        <div className="home-links">
-          <a
-            className="home-link"
-            href={busiest ? lineageHref(busiest.node.node_id) : coverageHref('unbound-models')}
-          >
-            <span>{copy.home.lineage}</span>
-            <span className="home-link-chevron" aria-hidden="true">
-              ›
-            </span>
-          </a>
-          <a className="home-link" href={erdHref()}>
-            <span>{copy.home.erd}</span>
-            <span className="home-link-chevron" aria-hidden="true">
-              ›
-            </span>
-          </a>
         </div>
 
         <div className="coverage-block">

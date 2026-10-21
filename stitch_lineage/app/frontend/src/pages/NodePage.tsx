@@ -4,7 +4,8 @@
 // as their Metabase display name, and the physical warehouse relation is only
 // ever a secondary fact row.
 
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Suspense, lazy, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { ObjectWorkspaceContext } from '../components/NodeIdentity'
 import { NodeBadge } from '../components/badges'
 import {
   ChipList,
@@ -90,40 +91,46 @@ interface Staging {
  * too old for the endpoints — a read-only build must read as read-only, not as
  * broken (the same probe the ERD uses).
  */
-function useStaging(index: GraphIndex): Staging {
+export function useStaging(index: GraphIndex): Staging {
   const { meta } = useStitch()
+  const visible = useContext(ObjectWorkspaceContext)?.summaryActive ?? true
   const [canStage, setCanStage] = useState(false)
   const [staged, setStaged] = useState<StagedRelationship[]>([])
   const [descriptions, setDescriptions] = useState<StagedDescription[]>([])
   const [writeability, setWriteability] = useState<Writeability>(new Map())
 
+  const refreshGeneration = useRef(0)
   const refresh = useCallback(async () => {
-    try {
-      setStaged(await listStaged())
-    } catch {
-      setStaged([])
-    }
-    try {
-      setDescriptions(await listStagedDescriptions())
-    } catch {
-      // a serve older than #70 has no description store
-      setDescriptions([])
-    }
+    const generation = ++refreshGeneration.current
+    const [relationships, edits] = await Promise.all([
+      listStaged().catch(() => [] as StagedRelationship[]),
+      // A static export or older serve has no description store.
+      listStagedDescriptions().catch(() => [] as StagedDescription[]),
+    ])
+    if (generation !== refreshGeneration.current) return
+    setStaged(relationships)
+    setDescriptions(edits)
   }, [])
 
   useEffect(() => {
+    if (!visible) return
     let cancelled = false
     void probeStaging(meta.staging_enabled).then(async (enabled) => {
       if (cancelled || !enabled) return
       setCanStage(true)
       const refusals = await fetchWriteability()
-      if (!cancelled) setWriteability(refusals)
+      if (cancelled) return
+      setWriteability(refusals)
       await refresh()
     })
     return () => {
       cancelled = true
+      // A hidden or replaced snapshot may not overwrite the next activation's fetch.
+      refreshGeneration.current += 1
     }
-  }, [meta.staging_enabled, refresh])
+  // Summary remains mounted across views so drafts survive. Its staged snapshot
+  // must refresh after editing/applying in Relationships, without resetting that editor.
+  }, [meta.staging_enabled, refresh, visible, index])
 
   const relationships = useMemo(() => resolveStaged(index, staged).drawable, [index, staged])
   return { canStage, relationships, descriptions, writeability, refresh }
@@ -161,6 +168,10 @@ function PanelHeader({
   description?: ReactNode
 }) {
   const { meta, index } = useStitch()
+  const embedded = useContext(ObjectWorkspaceContext)
+  if (embedded) {
+    return <>{description ?? (node.description && <p className="panel-description">{node.description}</p>)}</>
+  }
   const link = metabaseLink(meta.metabase_url, node)
   const archived = node.properties?.archived === true
   // undefined means "use the shared rule"; an explicit null suppresses the line.
@@ -504,6 +515,10 @@ function BiPanel({ nodeId }: { nodeId: string }) {
   )
 }
 
+function StandaloneRelationships({ children }: { children: ReactNode }) {
+  return useContext(ObjectWorkspaceContext) ? null : children
+}
+
 function ModelPanel({ nodeId }: { nodeId: string }) {
   const { index, consequence } = useStitch()
   const usage = consequence.of(nodeId)
@@ -583,6 +598,7 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
       </Section>
 
       {/* Relationships get the canvas, dependencies get the lists below (#81/#82). */}
+      <StandaloneRelationships>
       <Section title={copy.node.relationships(star?.joinCount ?? 0)}>
         <Suspense fallback={<div className="star-canvas" />}>
           <ModelStar star={star} />
@@ -591,6 +607,7 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
           <RelationshipList relationships={detail.relationships} />
         )}
       </Section>
+      </StandaloneRelationships>
 
       <Section
         title={copy.node.dependencies(

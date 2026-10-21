@@ -9,15 +9,28 @@
 // SPEC §12.2: description editing rides the existing staged store and earns no
 // surface beyond this panel and the staged workspace. There is no bulk editor.
 
-import { useEffect, useState } from 'react'
+import { useContext, useEffect, useState } from 'react'
 import { copy } from '../copy'
-import { erdHref } from '../router'
+import { ObjectWorkspaceContext } from './NodeIdentity'
+import { useStitch } from '../data'
+import { relationshipScope, relationshipTable } from '../lib/objectWorkspace'
+import { erdHref, relationshipsHref } from '../router'
 import {
   StagingError,
   stageDescription,
   unstageDescription,
   type StagedDescription,
 } from '../lib/staging'
+
+function DescriptionWorkspaceLink() {
+  const nodeId = useContext(ObjectWorkspaceContext)?.nodeId
+  const { index } = useStitch()
+  const node = nodeId ? index.nodesById.get(nodeId) : null
+  const table = node ? relationshipTable(index, node) : null
+  // Unsupported/scopeless entities still need a route to the shared staged review.
+  const href = node && table && relationshipScope(index, table) ? relationshipsHref(node.node_id) : erdHref()
+  return <a className="desc-workspace-link" href={href}>{copy.description.workspaceLink}</a>
+}
 
 export function DescriptionEditor({
   /** dbt model NAME (prefix and all) — what the staging API speaks. */
@@ -156,9 +169,7 @@ export function DescriptionEditor({
             <span className="staged-badge" title={copy.description.stagedBadgeTitle}>
               {copy.description.stagedBadge}
             </span>
-            <a className="desc-workspace-link" href={erdHref()}>
-              {copy.description.workspaceLink}
-            </a>
+            <DescriptionWorkspaceLink />
             {applied ? (
               <details className="desc-was">
                 <summary>{copy.description.whatRepoSays}</summary>

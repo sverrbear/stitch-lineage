@@ -4,12 +4,11 @@ import { Header } from './components/Header'
 import { DataProvider, useStitch } from './data'
 import { CoveragePage } from './pages/CoveragePage'
 import { HomePage } from './pages/HomePage'
-import { NodePage } from './pages/NodePage'
+import { ObjectWorkspace } from './pages/ObjectWorkspace'
 import { useRoute } from './router'
 import { copy } from './copy'
 
 // The React Flow canvases are the heavy chunk; keep search/detail first-load light.
-const LineagePage = lazy(() => import('./pages/LineagePage').then((m) => ({ default: m.LineagePage })))
 const ErdPage = lazy(() => import('./pages/ErdPage').then((m) => ({ default: m.ErdPage })))
 
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -46,10 +45,11 @@ function Shell() {
     return () => window.removeEventListener('keydown', onKey)
   }, [route.page])
 
-  // Scroll to top when jumping between detail panels.
+  const selectedObject = 'nodeId' in route ? route.nodeId : route.page
+  // Switching views keeps the reader on the same object. A different object starts at the top.
   useEffect(() => {
     window.scrollTo(0, 0)
-  }, [route])
+  }, [selectedObject])
 
   return (
     <div className="app">
@@ -65,17 +65,14 @@ function Shell() {
             </article>
           </main>
         )}
-        {route.page === 'node' && (
-          <main className="detail-page">
-            <NodePage nodeId={route.nodeId} />
-          </main>
+        {(route.page === 'node' || route.page === 'lineage' || route.page === 'relationships') && (
+          <ObjectWorkspace key={route.nodeId} route={route} />
         )}
         {route.page === 'coverage' && (
           <main className="detail-page">
             <CoveragePage kind={route.kind} />
           </main>
         )}
-        {route.page === 'lineage' && <LineagePage nodeId={route.nodeId} grain={route.grain} />}
         {route.page === 'erd' && <ErdPage scopeKind={route.scopeKind} scopeValue={route.scopeValue} />}
       </Suspense>
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}

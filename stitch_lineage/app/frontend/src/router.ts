@@ -6,11 +6,22 @@ import { useEffect, useState } from 'react'
 import type { CoverageListKind } from './lib/coverage'
 import type { Grain } from './lib/rollup'
 
+export interface RelationshipView {
+  scopeKind?: 'schema' | 'tag'
+  scopeValue?: string
+  /** Undefined starts at the object's table; null shows the whole scope. */
+  focusId?: string | null
+}
+
+export type ObjectRoute =
+  | { page: 'node'; nodeId: string }
+  | { page: 'lineage'; nodeId: string; grain: Grain }
+  | ({ page: 'relationships'; nodeId: string } & RelationshipView)
+
 export type Route =
   | { page: 'home' }
   | { page: 'not-found' }
-  | { page: 'node'; nodeId: string }
-  | { page: 'lineage'; nodeId: string; grain: Grain }
+  | ObjectRoute
   | { page: 'erd'; scopeKind?: 'schema' | 'tag'; scopeValue?: string }
   | { page: 'coverage'; kind: CoverageListKind }
 
@@ -21,12 +32,27 @@ const COVERAGE_KINDS: CoverageListKind[] = [
 ]
 
 export function parseHash(hash: string): Route {
-  const path = hash.replace(/^#\/?/, '')
+  const [path, query = ''] = hash.replace(/^#\/?/, '').split('?')
   let segments: string[]
   try {
     segments = path.split('/').map(decodeURIComponent)
+    // URLSearchParams tolerates malformed escapes; reject them consistently with paths.
+    decodeURIComponent(query.replace(/\+/g, ' '))
   } catch {
     return { page: 'not-found' }
+  }
+  if (segments[0] === 'node' && segments[1] && segments[2] === 'relationships') {
+    const params = new URLSearchParams(query)
+    const scopeKind = params.has('schema') ? 'schema' : params.has('tag') ? 'tag' : undefined
+    const scopeValue = scopeKind ? params.get(scopeKind) : null
+    if ((params.has('schema') && params.has('tag')) || (scopeKind && !scopeValue)) {
+      return { page: 'not-found' }
+    }
+    return {
+      page: 'relationships', nodeId: segments[1],
+      ...(scopeKind && scopeValue ? { scopeKind, scopeValue } : {}),
+      ...(params.has('focus') ? { focusId: params.get('focus') || null } : {}),
+    }
   }
   if (segments[0] === 'node' && segments[1]) return { page: 'node', nodeId: segments[1] }
   if (segments[0] === 'lineage' && segments[1]) {
@@ -61,6 +87,14 @@ export function nodeHref(nodeId: string): string {
 export function lineageHref(nodeId: string, grain: Grain = 'column'): string {
   const base = `#/lineage/${encodeURIComponent(nodeId)}`
   return grain === 'table' ? `${base}/table` : base
+}
+
+export function relationshipsHref(nodeId: string, view: RelationshipView = {}): string {
+  const params = new URLSearchParams()
+  if (view.scopeKind && view.scopeValue) params.set(view.scopeKind, view.scopeValue)
+  if (view.focusId !== undefined) params.set('focus', view.focusId ?? '')
+  const query = params.toString()
+  return `${nodeHref(nodeId)}/relationships${query ? `?${query}` : ''}`
 }
 
 export function coverageHref(kind: CoverageListKind): string {
