@@ -1,6 +1,9 @@
 import json
 
+import pytest
+
 from stitch_lineage.graph.schema import Confidence, Edge, EdgeType, Graph
+from stitch_lineage.io import graph_store
 from stitch_lineage.io.graph_store import (
     graphs_semantically_equal,
     merge_edges,
@@ -196,3 +199,18 @@ def test_a_patched_graph_still_writes_deterministically(tmp_path, sample_graph):
     rebuilt = tmp_path / "rebuilt.json"
     write_graph(read_graph(patched), rebuilt)
     assert patched.read_bytes() == rebuilt.read_bytes()
+
+
+def test_failed_graph_publication_preserves_previous_complete_file(tmp_path, monkeypatch):
+    path = tmp_path / "graph.json"
+    write_graph(Graph(), path)
+    before = path.read_bytes()
+
+    def fail_replace(*args):
+        raise OSError("synthetic publication failure")
+
+    monkeypatch.setattr(graph_store.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="synthetic publication failure"):
+        write_graph(Graph(generated_at="newer"), path)
+    assert path.read_bytes() == before
+    assert sorted(item.name for item in tmp_path.iterdir()) == [".graph.json.lock", "graph.json"]

@@ -36,6 +36,7 @@ __all__ = [
     "FileEdit",
     "ModelWriteability",
     "WritePlan",
+    "YamlWriteConflict",
     "YamlWriteError",
     "apply_plan",
     "model_writeability",
@@ -52,6 +53,10 @@ EntryStatus = Literal["planned", "unchanged", "failed"]
 
 class YamlWriteError(Exception):
     """A staged relationship cannot be written; the message names why and what to do."""
+
+
+class YamlWriteConflict(YamlWriteError):
+    """A target changed after planning; no planned files have been written."""
 
 
 @dataclass(frozen=True)
@@ -380,7 +385,25 @@ def plan_writes(
 
 
 def apply_plan(edits: list[FileEdit]) -> list[Path]:
-    """Write every changed edit atomically; return the paths written, in order."""
+    """Preflight every original, then write changed files atomically.
+
+    The CLI can wait at a confirmation prompt after its dirty-file check. Detect
+    edits made during that wait before writing any file or clearing staged changes.
+    This optimistic check is not a lock against non-cooperating external writers.
+    """
+    for edit in edits:
+        if not edit.changed:
+            continue
+        try:
+            current = edit.path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise YamlWriteConflict(
+                f"cannot verify {edit.path} since planning -- nothing written; review and retry"
+            ) from exc
+        if current != edit.original:
+            raise YamlWriteConflict(
+                f"{edit.path} changed since planning -- nothing written; review and retry"
+            )
     written = []
     for edit in edits:
         if not edit.changed:

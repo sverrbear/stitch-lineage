@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from stitch_lineage.config import StitchConfigError, load_config
+from stitch_lineage.config import RelationshipsConfig, StitchConfigError, load_config
 from stitch_lineage.init_wizard import (
     API_KEY_VAR,
     URL_VAR,
@@ -354,6 +354,7 @@ def test_rendered_config_validates_against_todays_config_module(tmp_path):
     assert cfg.serve.erd_default_scope == "schema:marts"
     assert cfg.dbt.target_path == "target/"
     assert cfg.output.dir == ".stitch/"
+    assert cfg.relationships.write_to == RelationshipsConfig().write_to == "relationships_test"
 
 
 def test_rendered_config_writes_every_derived_value_explicitly():
@@ -501,6 +502,7 @@ def test_run_init_configures_a_repo_with_four_human_inputs(tmp_path):
     assert cfg.metabase.databases[0].dbt_database == "analytics"
     assert cfg.metabase.include_schemas == ["marts", "dims"]
     assert cfg.serve.erd_default_scope == "schema:marts"
+    assert cfg.relationships.write_to == "relationships_test"
 
 
 def test_run_init_writes_the_repo_files_and_never_the_key(tmp_path):

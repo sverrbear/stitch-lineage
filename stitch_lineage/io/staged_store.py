@@ -8,7 +8,8 @@ and model documentation edits).
 Determinism contract: entries sorted by their sort_key, field order fixed, trailing newline
 -- so the files diff cleanly and repeated writes of the same set are byte-identical. Writes
 are atomic (temp file + os.replace) because `stitch serve` rewrites a whole file on every
-POST/PUT/DELETE while `stitch apply` may be reading it.
+POST/PUT/DELETE while `stitch apply` may be reading it. Mutations also hold a
+thread/process transaction lock so concurrent requests cannot overwrite each other.
 """
 
 import hashlib
@@ -22,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from ruamel.yaml import YAML, YAMLError
 
 from stitch_lineage.graph.schema import relationship_id
+from stitch_lineage.io.file_lock import file_lock
 
 __all__ = [
     "DESCRIPTIONS_FILENAME",
@@ -31,6 +33,7 @@ __all__ = [
     "StagedRelationship",
     "StagedStoreError",
     "add_staged",
+    "clear_applied",
     "description_id",
     "descriptions_path",
     "drop_descriptions",
@@ -204,20 +207,21 @@ def _read_entries(path: Path, key: str, model: type[BaseModel], noun: str) -> li
 
 def _write_entries(entries: list[Any], path: Path, key: str, header: str) -> None:
     """Write one staged store atomically, deduped by id and deterministically ordered."""
-    path = Path(path)
-    unique: dict[str, Any] = {}
-    for entry in entries:
-        unique.setdefault(entry.id, entry)
-    payload: dict[str, Any] = {
-        "schema_version": SCHEMA_VERSION,
-        key: [
-            entry.model_dump(mode="json")
-            for entry in sorted(unique.values(), key=lambda entry: entry.sort_key())
-        ],
-    }
-    buffer = StringIO()
-    _yaml().dump(payload, buffer)
-    _atomic_write(path, header + buffer.getvalue())
+    with file_lock(path):
+        path = Path(path)
+        unique: dict[str, Any] = {}
+        for entry in entries:
+            unique.setdefault(entry.id, entry)
+        payload: dict[str, Any] = {
+            "schema_version": SCHEMA_VERSION,
+            key: [
+                entry.model_dump(mode="json")
+                for entry in sorted(unique.values(), key=lambda entry: entry.sort_key())
+            ],
+        }
+        buffer = StringIO()
+        _yaml().dump(payload, buffer)
+        _atomic_write(path, header + buffer.getvalue())
 
 
 def read_staged(path: Path) -> list[StagedRelationship]:
@@ -247,12 +251,13 @@ def add_staged(entry: StagedRelationship, path: Path) -> tuple[StagedRelationshi
     /api/staged-relationships/{id} (or delete + re-post) changes one, so a stale UI cannot
     silently flip a declaration behind the user's back.
     """
-    entries = read_staged(path)
-    existing = next((item for item in entries if item.id == entry.id), None)
-    if existing is not None:
-        return existing, False
-    write_staged([*entries, entry], path)
-    return entry, True
+    with file_lock(path):
+        entries = read_staged(path)
+        existing = next((item for item in entries if item.id == entry.id), None)
+        if existing is not None:
+            return existing, False
+        write_staged([*entries, entry], path)
+        return entry, True
 
 
 def replace_staged(
@@ -266,19 +271,20 @@ def replace_staged(
     entry wins (the edit collapses into it) and the edited one is dropped, so an edit can
     never create a duplicate pair.
     """
-    entries = read_staged(path)
-    previous = next((item for item in entries if item.id == entry_id), None)
-    if previous is None:
-        return None
-    remaining = [item for item in entries if item.id != entry_id]
-    collision = next((item for item in remaining if item.id == entry.id), None)
-    # an edit is not a re-staging: the change was staged when it was drawn, not when it was
-    # last tweaked, so the original created_at rides along
-    if entry.created_at is None:
-        entry = entry.model_copy(update={"created_at": previous.created_at})
-    stored = collision or entry
-    write_staged([*remaining, stored], path)
-    return stored, stored.id != entry_id
+    with file_lock(path):
+        entries = read_staged(path)
+        previous = next((item for item in entries if item.id == entry_id), None)
+        if previous is None:
+            return None
+        remaining = [item for item in entries if item.id != entry_id]
+        collision = next((item for item in remaining if item.id == entry.id), None)
+        # an edit is not a re-staging: the change was staged when it was drawn, not when it was
+        # last tweaked, so the original created_at rides along
+        if entry.created_at is None:
+            entry = entry.model_copy(update={"created_at": previous.created_at})
+        stored = collision or entry
+        write_staged([*remaining, stored], path)
+        return stored, stored.id != entry_id
 
 
 def upsert_description(entry: StagedDescription, path: Path) -> tuple[StagedDescription, bool]:
@@ -287,11 +293,12 @@ def upsert_description(entry: StagedDescription, path: Path) -> tuple[StagedDesc
     Last write wins per entity+column: the id is derived from the target, so a second edit of
     the same description replaces the first instead of queueing behind it.
     """
-    entries = read_descriptions(path)
-    created = all(item.id != entry.id for item in entries)
-    remaining = [item for item in entries if item.id != entry.id]
-    write_descriptions([*remaining, entry], path)
-    return entry, created
+    with file_lock(path):
+        entries = read_descriptions(path)
+        created = all(item.id != entry.id for item in entries)
+        remaining = [item for item in entries if item.id != entry.id]
+        write_descriptions([*remaining, entry], path)
+        return entry, created
 
 
 def remove_staged(entry_id: str, path: Path) -> bool:
@@ -304,32 +311,71 @@ def remove_description(entry_id: str, path: Path) -> bool:
     return _remove(entry_id, path, read_descriptions, write_descriptions)
 
 
-def drop_staged(entry_ids: set[str], path: Path) -> int:
-    """Drop every id in `entry_ids`; return how many were removed (`stitch apply` clearing)."""
-    return _drop(entry_ids, path, read_staged, write_staged)
+def drop_staged(
+    entry_ids: set[str], path: Path, *, expected: list[StagedRelationship] | None = None
+) -> int:
+    """Clear IDs, optionally only when the current entry equals its applied snapshot."""
+    return len(_drop(entry_ids, path, read_staged, write_staged, expected))
 
 
-def drop_descriptions(entry_ids: set[str], path: Path) -> int:
-    """Drop every id in `entry_ids` from the description store; return how many were removed."""
-    return _drop(entry_ids, path, read_descriptions, write_descriptions)
+def drop_descriptions(
+    entry_ids: set[str], path: Path, *, expected: list[StagedDescription] | None = None
+) -> int:
+    """Clear IDs, preserving newer edits when `expected` supplies applied snapshots."""
+    return len(_drop(entry_ids, path, read_descriptions, write_descriptions, expected))
 
 
 def _remove(entry_id: str, path: Path, read: Any, write: Any) -> bool:
-    entries = read(path)
-    remaining = [entry for entry in entries if entry.id != entry_id]
-    if len(remaining) == len(entries):
-        return False
-    write(remaining, path)
-    return True
-
-
-def _drop(entry_ids: set[str], path: Path, read: Any, write: Any) -> int:
-    entries = read(path)
-    remaining = [entry for entry in entries if entry.id not in entry_ids]
-    removed = len(entries) - len(remaining)
-    if removed:
+    with file_lock(path):
+        entries = read(path)
+        remaining = [entry for entry in entries if entry.id != entry_id]
+        if len(remaining) == len(entries):
+            return False
         write(remaining, path)
-    return removed
+        return True
+
+
+def clear_applied(
+    entries: list[StagedChange], relationships_path: Path, descriptions_path: Path
+) -> set[str]:
+    """Remove unchanged applied snapshots; return only IDs actually removed.
+
+    Each store compares and removes inside its transaction. A same-ID edit staged
+    after planning is preserved and is not reported as cleared.
+    """
+    relationships = [entry for entry in entries if isinstance(entry, StagedRelationship)]
+    descriptions = [entry for entry in entries if isinstance(entry, StagedDescription)]
+    return _drop(
+        {entry.id for entry in relationships},
+        relationships_path,
+        read_staged,
+        write_staged,
+        relationships,
+    ) | _drop(
+        {entry.id for entry in descriptions},
+        descriptions_path,
+        read_descriptions,
+        write_descriptions,
+        descriptions,
+    )
+
+
+def _drop(
+    entry_ids: set[str], path: Path, read: Any, write: Any, expected: list[Any] | None
+) -> set[str]:
+    with file_lock(path):
+        entries = read(path)
+        snapshots = {entry.id: entry for entry in expected} if expected is not None else None
+        removed = set()
+        remaining = []
+        for entry in entries:
+            if entry.id in entry_ids and (snapshots is None or snapshots.get(entry.id) == entry):
+                removed.add(entry.id)
+            else:
+                remaining.append(entry)
+        if removed:
+            write(remaining, path)
+        return removed
 
 
 def _atomic_write(path: Path, text: str) -> None:
