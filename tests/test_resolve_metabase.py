@@ -376,7 +376,7 @@ def test_mbql5_join_alias_maps_string_ref_to_joined_table(payload):
     assert edge.evidence["by_name"] is True
 
 
-def test_mbql5_unmappable_join_alias_downgrades_to_parsed(payload):
+def test_mbql5_joined_card_missing_a_name_does_not_fall_back_to_outer_table(payload):
     cards = [
         _stage_card(
             450,
@@ -402,7 +402,9 @@ def test_mbql5_unmappable_join_alias_downgrades_to_parsed(payload):
             ],
         ),
     ]
-    assert consumed_edge(_resolve(payload, cards), 451, 100).confidence == Confidence.PARSED
+    resolution = _resolve(payload, cards)
+    assert "mb_field::100" not in consumed_by(resolution, 451)
+    assert resolution.unresolved_cards == [451]
 
 
 def test_mbql5_join_alias_scope_is_per_stage(payload):
@@ -649,7 +651,7 @@ def test_join_alias_is_scoped_to_its_query_stage(payload):
     assert resolution.mbql_cards_resolved == 1
 
 
-def test_unmappable_join_alias_downgrades_to_parsed(payload):
+def test_joined_card_missing_a_name_does_not_fall_back_to_outer_table(payload):
     condition = ["=", ["field", 101, None], ["field", 104, {"join-alias": "Up"}]]
     cards = [
         _minimal_card(250, {"source-table": 11, "fields": [["field", 104, None]]}),
@@ -664,7 +666,9 @@ def test_unmappable_join_alias_downgrades_to_parsed(payload):
             },
         ),
     ]
-    assert consumed_edge(_resolve(payload, cards), 251, 100).confidence == Confidence.PARSED
+    resolution = _resolve(payload, cards)
+    assert "mb_field::100" not in consumed_by(resolution, 251)
+    assert resolution.unresolved_cards == [251]
 
 
 def test_include_schemas_scopes_fields(payload):
@@ -741,3 +745,190 @@ def test_card_in_the_root_collection_claims_no_breadcrumb(payload):
         n for n in resolve_metabase(rootless, EXCLUDE).nodes if n.node_id == mb_card_node_id(201)
     )
     assert "collection_path" not in node.properties
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_join_subquery_by_name_ref_uses_its_own_source(payload, staged):
+    # Both tables have customer_id; a wrong context would fabricate an exact edge
+    # to orders.customer_id (101) instead of customers.customer_id (104).
+    if staged:
+        card = _stage_card(
+            800,
+            [
+                {
+                    "source-table": 10,
+                    "joins": [
+                        _mbql_join(
+                            "C",
+                            {
+                                "source-table": 11,
+                                "fields": [["field", {}, "customer_id"]],
+                            },
+                            [["=", {}, ["field", {}, 100], ["field", {"join-alias": "C"}, 104]]],
+                        )
+                    ],
+                }
+            ],
+        )
+    else:
+        card = _minimal_card(
+            800,
+            {
+                "source-table": 10,
+                "joins": [
+                    {
+                        "alias": "C",
+                        "source-query": {
+                            "source-table": 11,
+                            "fields": [["field", "customer_id", None]],
+                        },
+                        "condition": [
+                            "=",
+                            ["field", 100, None],
+                            ["field", 104, {"join-alias": "C"}],
+                        ],
+                    }
+                ],
+            },
+        )
+    resolution = _resolve(payload, [card])
+    assert set(consumed_by(resolution, 800)) == {"mb_field::100", "mb_field::104"}
+    edge = consumed_edge(resolution, 800, 104)
+    assert "joins.source-query.fields" in edge.evidence["clauses"]
+    assert edge.confidence == Confidence.EXACT
+    assert not resolution.unresolved_cards
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_join_subquery_saved_question_has_its_own_context(payload, reverse):
+    source = _minimal_card(801, {"source-table": 11, "fields": [["field", "customer_id", None]]})
+    joined = _minimal_card(
+        802,
+        {
+            "source-table": 10,
+            "joins": [
+                {
+                    "alias": "C",
+                    "source-query": {
+                        "source-table": "card__801",
+                        "fields": [["field", "customer_id", None]],
+                    },
+                }
+            ],
+        },
+    )
+    cards = [source, joined]
+    resolution = _resolve(payload, list(reversed(cards)) if reverse else cards)
+    assert set(consumed_by(resolution, 802)) == {"mb_field::104"}
+    assert consumed_edge(resolution, 802, 104).confidence == Confidence.PARSED
+    assert not resolution.unresolved_cards
+
+
+@pytest.mark.parametrize("order", [(0, 1, 2), (2, 1, 0), (1, 2, 0)])
+def test_deferred_names_resolve_through_saved_question_chain_in_any_order(payload, order):
+    cards = [
+        _minimal_card(810, {"source-table": 10, "fields": [["field", "order_total", None]]}),
+        _minimal_card(811, {"source-table": "card__810"}),
+        _minimal_card(
+            812, {"source-table": "card__811", "fields": [["field", "order_total", None]]}
+        ),
+    ]
+    resolution = _resolve(payload, [cards[index] for index in order])
+    assert not resolution.unresolved_cards
+    assert resolution.mbql_cards_resolved == 3
+    assert consumed_edge(resolution, 812, 102).confidence == Confidence.PARSED
+    assert consumed_by(resolution, 812)["mb_field::102"] == {"clauses": ["fields"], "by_name": True}
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_deferred_names_wait_for_all_candidates_before_claiming_uniqueness(payload, reverse):
+    cards = [
+        _minimal_card(820, {"source-table": 10, "fields": [["field", "customer_id", None]]}),
+        _minimal_card(821, {"source-table": 11, "fields": [["field", "customer_id", None]]}),
+        _minimal_card(822, {"source-table": "card__820", "joins": [{"source-table": "card__821"}]}),
+        _minimal_card(
+            823, {"source-table": "card__822", "fields": [["field", "customer_id", None]]}
+        ),
+    ]
+    resolution = _resolve(payload, list(reversed(cards)) if reverse else cards)
+    assert resolution.unresolved_cards == [823]
+    assert set(consumed_by(resolution, 823)) == {"mb_field::101", "mb_field::104"}
+    assert all("by_name" not in evidence for evidence in consumed_by(resolution, 823).values())
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_parsed_mbql_confidence_propagates_per_field_through_a_cycle(payload, reverse):
+    cards = [
+        _minimal_card(
+            830,
+            {
+                "source-table": 10,
+                "fields": [["field", 102, None]],
+                "joins": [{"source-table": "card__832"}],
+            },
+        ),
+        _minimal_card(
+            831, {"source-table": "card__830", "fields": [["field", "order_total", None]]}
+        ),
+        _minimal_card(832, {"source-table": "card__831", "fields": [["field", 100, None]]}),
+        _minimal_card(833, {"source-table": "card__832"}),
+    ]
+    resolution = _resolve(payload, list(reversed(cards)) if reverse else cards)
+    assert not resolution.unresolved_cards
+    assert consumed_edge(resolution, 831, 102).confidence == Confidence.PARSED
+    assert consumed_edge(resolution, 833, 102).confidence == Confidence.PARSED
+    assert consumed_edge(resolution, 833, 100).confidence == Confidence.EXACT
+
+
+def test_native_inheritance_keeps_exact_template_fields_and_parsed_sql_separate(payload):
+    native = {
+        "id": 840,
+        "name": "Native with filter",
+        "dataset_query": {
+            "type": "native",
+            "database": 2,
+            "native": {
+                "query": "select order_total from marts.fct_orders where {{order}}",
+                "template-tags": {"order": {"type": "dimension", "dimension": ["field", 100]}},
+            },
+        },
+    }
+    resolution = _resolve(
+        payload,
+        [
+            _minimal_card(842, {"source-table": "card__841"}),
+            _minimal_card(841, {"source-table": "card__840"}),
+            native,
+        ],
+    )
+    assert not resolution.unresolved_cards
+    assert consumed_edge(resolution, 842, 100).confidence == Confidence.EXACT
+    assert consumed_edge(resolution, 842, 102).confidence == Confidence.PARSED
+
+
+@pytest.mark.parametrize("source_kind", ["saved", "subquery", "unknown"])
+def test_join_alias_never_resolves_a_shared_name_against_the_outer_table(payload, source_kind):
+    source = _minimal_card(850, {"source-table": 11, "fields": [["field", "customer_id", None]]})
+    join = {"alias": "C"}
+    if source_kind == "saved":
+        join["source-table"] = "card__850"
+    elif source_kind == "subquery":
+        join["source-query"] = {"source-table": 11}
+    card = _minimal_card(
+        851,
+        {
+            "source-table": 10,
+            "joins": [join],
+            "fields": [["field", "customer_id", {"join-alias": "C"}]],
+        },
+    )
+    resolution = _resolve(payload, [card, source])
+    assert "mb_field::101" not in consumed_by(resolution, 851)
+    if source_kind == "unknown":
+        assert resolution.unresolved_cards == [851]
+    else:
+        edge = consumed_edge(resolution, 851, 104)
+        assert edge.confidence == (
+            Confidence.PARSED if source_kind == "saved" else Confidence.EXACT
+        )
+        assert not resolution.unresolved_cards
