@@ -1004,10 +1004,21 @@ def _explicit_output_names(parsed: exp.Expression) -> set[str]:
     return set(_output_projections(parsed))
 
 
-def _leaf_columns(root, relation_map: dict[tuple, str]) -> list[tuple[str, str]]:
+def _leaf_columns(
+    root,
+    relation_map: dict[tuple, str],
+    column_specs: dict[str, dict[str, dict[str, Any]]],
+) -> tuple[list[tuple[str, str]], bool]:
+    """Known column endpoints, plus whether any unknown endpoints were discarded."""
     leaves = []
+    missing_columns = False
     for node in root.walk():
-        if not isinstance(node.source, exp.Table) or node.downstream:
+        if node.downstream:
+            continue
+        if isinstance(node.source, exp.Placeholder):
+            missing_columns = True
+            continue
+        if not isinstance(node.source, exp.Table):
             continue
         table = node.source
         key = (table.catalog.lower(), table.db.lower(), table.name.lower())
@@ -1020,8 +1031,13 @@ def _leaf_columns(root, relation_map: dict[tuple, str]) -> list[tuple[str, str]]
         # a real column. Skip it; the downstream column goes untraced instead.
         if not _is_real_column(column):
             continue
+        # sqlglot may qualify a column against a table with no known schema. That
+        # locates the SQL reference, but does not establish a graph column endpoint.
+        if column.lower() not in column_specs.get(upstream_uid, {}):
+            missing_columns = True
+            continue
         leaves.append((upstream_uid, column))
-    return leaves
+    return leaves, missing_columns
 
 
 def _foreign_relations(parsed: exp.Expression, relation_map: dict[tuple, str]) -> bool:
@@ -1041,7 +1057,12 @@ def _foreign_relations(parsed: exp.Expression, relation_map: dict[tuple, str]) -
     return False
 
 
-def _no_leaf_reason(root, relation_map: dict[tuple, str], foreign_relations: bool) -> TraceReason:
+def _no_leaf_reason(
+    root,
+    relation_map: dict[tuple, str],
+    foreign_relations: bool,
+    column_specs: dict[str, dict[str, dict[str, Any]]],
+) -> TraceReason:
     """Why a lineage walk that succeeded still reached no upstream column.
 
     sqlglot leaves say which gap it is, and they are different fixes:
@@ -1050,11 +1071,11 @@ def _no_leaf_reason(root, relation_map: dict[tuple, str], foreign_relations: boo
         expanded, so document the upstream and the whole subtree resolves
       a Table leaf whose relation is not a dbt model/source -- the SQL reads a table
         dbt does not own; declare it as a source
-      a Placeholder leaf -- sqlglot could not resolve the upstream at all because it
-        is in neither the catalog nor schema.yml. The single biggest real-world
-        cluster: a dev catalog only holds what that developer built. When the query
-        also names a relation outside the project that is the more fundamental
-        finding, so it wins.
+      a Placeholder leaf, or a known Table leaf naming an unknown column -- the
+        upstream column is in neither the catalog nor schema.yml nor compiled SQL.
+        A dev catalog only holds what that developer built. When the query also
+        names a relation outside the project that is the more fundamental finding,
+        so it wins.
       no leaf at all -- a literal or constant with genuinely nothing upstream, which
         is a fact about the column rather than a gap in the build
 
@@ -1062,24 +1083,28 @@ def _no_leaf_reason(root, relation_map: dict[tuple, str], foreign_relations: boo
     """
     saw_star = False
     saw_foreign_table = False
-    saw_placeholder = False
+    saw_missing_schema = False
     for node in root.walk():
         if node.downstream:
             continue
         if isinstance(node.source, exp.Placeholder):
-            saw_placeholder = True
+            saw_missing_schema = True
         elif isinstance(node.source, exp.Table):
             table = node.source
             key = (table.catalog.lower(), table.db.lower(), table.name.lower())
-            if relation_map.get(key) is None:
+            upstream_uid = relation_map.get(key)
+            column = node.name.rpartition(".")[2]
+            if upstream_uid is None:
                 saw_foreign_table = True
-            elif not _is_real_column(node.name.rpartition(".")[2]):
+            elif not _is_real_column(column):
                 saw_star = True
+            elif column.lower() not in column_specs.get(upstream_uid, {}):
+                saw_missing_schema = True
     if saw_star:
         return TraceReason.STAR_NOT_EXPANDABLE
     if saw_foreign_table:
         return TraceReason.UPSTREAM_NOT_IN_PROJECT
-    if saw_placeholder:
+    if saw_missing_schema:
         return (
             TraceReason.UPSTREAM_NOT_IN_PROJECT
             if foreign_relations
@@ -1359,14 +1384,17 @@ def _model_feeds_edges(
                 ),
             )
             continue
-        leaves = _leaf_columns(root, relation_map)
+        leaves, missing_columns = _leaf_columns(root, relation_map, column_specs)
+        # Keep the known feeds edges, but dropping an unknown UNION input must not
+        # turn the remaining input into a claimed sole upstream or definition origin.
+        definition_leaves = [] if missing_columns else leaves
         defined_as, upstream_ref = _defined_as(
-            lower, projections, star_sql, has_star, leaves, models, sources, column_specs
+            lower, projections, star_sql, has_star, definition_leaves, models, sources, column_specs
         )
         if not leaves:
             traces[target_id] = ColumnTrace(
                 defined_as=defined_as,
-                reason=_no_leaf_reason(root, relation_map, foreign_relations),
+                reason=_no_leaf_reason(root, relation_map, foreign_relations, column_specs),
             )
             continue
         traces[target_id] = ColumnTrace(defined_as=defined_as, upstream_ref=upstream_ref)
