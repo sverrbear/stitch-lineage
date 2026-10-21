@@ -143,7 +143,8 @@ function stagedFor(
   )
 }
 
-function reachChips(reaches: Reach[]) {
+function reachChips(reaches: Reach[], partial = false) {
+  if (partial && reaches.length === 0) return <p className="muted">{copy.node.noDisplayedEntries}</p>
   return <ChipList nodes={reaches.map((r) => ({ node: r.node, confidence: r.confidence }))} />
 }
 
@@ -255,8 +256,8 @@ function ColumnPanel({ nodeId }: { nodeId: string }) {
   // API is addressed by the model's dbt name plus the column name.
   const entity = detail.model ? fullName(detail.model) : null
   const headline =
-    detail.cards.length > 0
-      ? `Consumed by ${plural(detail.cards.length, 'card')} on ${plural(detail.dashboards.length, 'dashboard')}.`
+    detail.counts.cards > 0
+      ? `Consumed by ${plural(detail.counts.cards, 'card')} on ${plural(detail.counts.dashboards, 'dashboard')}.`
       : 'Not consumed by any Metabase card in this graph.'
 
   return (
@@ -314,30 +315,33 @@ function ColumnPanel({ nodeId }: { nodeId: string }) {
 
       <Section
         title={copy.node.upstream(
-          plural(detail.upstreamColumns.length, 'column'),
-          plural(detail.upstreamSources.length, 'source'),
+          plural(detail.counts.upstreamColumns, 'column'),
+          plural(detail.counts.upstreamSources, 'source'),
         )}
       >
+        {detail.upstreamTruncated && <p className="muted">{copy.node.listTruncated}</p>}
         {detail.upstreamSources.length > 0 && (
           <>
             <h4 className="subhead">sources</h4>
-            {reachChips(detail.upstreamSources)}
+            {reachChips(detail.upstreamSources, detail.upstreamTruncated)}
           </>
         )}
         <h4 className="subhead">columns</h4>
-        {reachChips(detail.upstreamColumns)}
+        {reachChips(detail.upstreamColumns, detail.upstreamTruncated)}
       </Section>
 
       <Section title={copy.node.downstream(headline)}>
-        {detail.truncated && <p className="muted">{copy.node.fanoutTruncated}</p>}
-        <h4 className="subhead">{plural(detail.downstreamModels.length, 'model')}</h4>
-        <ChipList nodes={detail.downstreamModels.map((node) => ({ node }))} />
-        <h4 className="subhead">{plural(detail.fields.length, 'Metabase field')}</h4>
-        {reachChips(detail.fields)}
-        <h4 className="subhead">{plural(detail.cards.length, 'card')}</h4>
-        {reachChips(detail.cards)}
-        <h4 className="subhead">{plural(detail.dashboards.length, 'dashboard')}</h4>
-        {reachChips(detail.dashboards)}
+        {detail.downstreamTruncated && <p className="muted">{copy.node.listTruncated}</p>}
+        <h4 className="subhead">{plural(detail.counts.downstreamModels, 'model')}</h4>
+        {detail.downstreamTruncated && detail.downstreamModels.length === 0 ? (
+          <p className="muted">{copy.node.noDisplayedEntries}</p>
+        ) : <ChipList nodes={detail.downstreamModels.map((node) => ({ node }))} />}
+        <h4 className="subhead">{plural(detail.counts.fields, 'Metabase field')}</h4>
+        {reachChips(detail.fields, detail.downstreamTruncated)}
+        <h4 className="subhead">{plural(detail.counts.cards, 'card')}</h4>
+        {reachChips(detail.cards, detail.downstreamTruncated)}
+        <h4 className="subhead">{plural(detail.counts.dashboards, 'dashboard')}</h4>
+        {reachChips(detail.dashboards, detail.downstreamTruncated)}
       </Section>
 
       {detail.relationships.length > 0 && (
@@ -420,7 +424,7 @@ function BiPanel({ nodeId }: { nodeId: string }) {
   const isField = node.node_type === 'mb_field'
   const dependsTitle = detail.gap
     ? 'Depends on — no dbt column resolved'
-    : `Depends on ${plural(detail.dependsOnColumns.length, 'dbt column')} across ${plural(detail.dependsOnModels.length, 'model')}`
+    : `Depends on ${plural(detail.counts.columns, 'dbt column')} across ${plural(detail.counts.models, 'model')}`
 
   return (
     <article className="panel">
@@ -428,35 +432,39 @@ function BiPanel({ nodeId }: { nodeId: string }) {
       {isField ? <FieldFacts node={node} /> : <CardFacts node={node} />}
 
       {isDashboard ? (
-        <Section title={copy.node.cardsOnDashboard(String(detail.cards.length))}>
-          {reachChips(detail.cards)}
+        <Section title={copy.node.cardsOnDashboard(String(detail.counts.cards))}>
+          {detail.upstreamTruncated && <p className="muted">{copy.node.listTruncated}</p>}
+          {reachChips(detail.cards, detail.upstreamTruncated)}
         </Section>
       ) : (
-        detail.dashboards.length > 0 && (
-          <Section title={copy.node.appearsOn(plural(detail.dashboards.length, 'dashboard'))}>
-            {reachChips(detail.dashboards)}
+        detail.counts.dashboards > 0 && (
+          <Section title={copy.node.appearsOn(plural(detail.counts.dashboards, 'dashboard'))}>
+            {detail.downstreamTruncated && <p className="muted">{copy.node.listTruncated}</p>}
+            {reachChips(detail.dashboards, detail.downstreamTruncated)}
           </Section>
         )
       )}
 
-      {isField && detail.cards.length > 0 && (
-        <Section title={copy.node.consumedBy(plural(detail.cards.length, 'card'))}>
-          {reachChips(detail.cards)}
+      {isField && detail.counts.cards > 0 && (
+        <Section title={copy.node.consumedBy(plural(detail.counts.cards, 'card'))}>
+          {detail.downstreamTruncated && <p className="muted">{copy.node.listTruncated}</p>}
+          {reachChips(detail.cards, detail.downstreamTruncated)}
         </Section>
       )}
 
       <Section title={dependsTitle}>
+        {detail.upstreamTruncated && <p className="muted">{copy.node.listTruncated}</p>}
         {detail.gap ? (
           <>
-            <ChainGapNote gap={detail.gap} node={node} fieldCount={detail.fields.length} />
-            {detail.fields.length > 0 && (
+            <ChainGapNote gap={detail.gap} node={node} fieldCount={detail.counts.fields} />
+            {detail.counts.fields > 0 && (
               <>
                 {/* the half of the chain stitch did resolve: without it a card
                     whose tables are unbound looks like one that never parsed */}
                 <h4 className="subhead">
-                  {copy.node.fieldsItQueries(plural(detail.fields.length, 'Metabase field'))}
+                  {copy.node.fieldsItQueries(plural(detail.counts.fields, 'Metabase field'))}
                 </h4>
-                {reachChips(detail.fields)}
+                {reachChips(detail.fields, detail.upstreamTruncated)}
               </>
             )}
           </>
@@ -464,18 +472,20 @@ function BiPanel({ nodeId }: { nodeId: string }) {
           <>
             <p className="muted">{copy.node.reverseView(NODE_TYPE_NAME[node.node_type])}</p>
             <h4 className="subhead">models</h4>
-            <ChipList nodes={detail.dependsOnModels.map((node) => ({ node }))} />
+            {detail.upstreamTruncated && detail.dependsOnModels.length === 0 ? (
+              <p className="muted">{copy.node.noDisplayedEntries}</p>
+            ) : <ChipList nodes={detail.dependsOnModels.map((node) => ({ node }))} />}
             <h4 className="subhead">columns</h4>
-            {reachChips(detail.dependsOnColumns)}
-            {detail.unboundFields.length > 0 && (
+            {reachChips(detail.dependsOnColumns, detail.upstreamTruncated)}
+            {detail.counts.unboundFields > 0 && (
               <>
                 <h4 className="subhead">
                   {copy.node.fieldsWithNoColumn(
-                    plural(detail.unboundFields.length, 'Metabase field'),
+                    plural(detail.counts.unboundFields, 'Metabase field'),
                   )}
                 </h4>
                 <p className="chain-gap">{copy.node.unboundFieldsNote(<UnboundWhy />)}</p>
-                {reachChips(detail.unboundFields)}
+                {reachChips(detail.unboundFields, detail.upstreamTruncated)}
               </>
             )}
           </>
@@ -486,7 +496,8 @@ function BiPanel({ nodeId }: { nodeId: string }) {
 }
 
 function ModelPanel({ nodeId }: { nodeId: string }) {
-  const { index } = useStitch()
+  const { index, consequence } = useStitch()
+  const usage = consequence.of(nodeId)
   // Staged declarations belong on the canvas too: a relationship drawn a minute ago
   // is a relationship, and this page would otherwise deny it exists (#81).
   const staging = useStaging(index)
@@ -499,6 +510,7 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
   const downstreamGroups = useMemo(() => layerGroups(detail?.downstream ?? [], 'down'), [detail])
   const biGroups = useMemo(() => dashboardGroups(index, detail?.cards ?? []), [index, detail])
   if (!detail) return <NotFound nodeId={nodeId} />
+  const usageTruncated = detail.usageTruncated || detail.cards.length < usage.cards || dashboardCount(biGroups) < usage.dashboards
   const { node } = detail
   const materialization = node.properties?.materialization
   const path = node.properties?.path
@@ -563,32 +575,35 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
 
       <Section
         title={copy.node.dependencies(
-          plural(detail.upstream.length, 'model'),
-          plural(detail.downstream.length, 'model'),
+          plural(detail.counts.upstream, 'model'),
+          plural(detail.counts.downstream, 'model'),
         )}
       >
+        {detail.upstreamTruncated && <p className="muted">{copy.node.upstreamListTruncated}</p>}
         <h4 className="subhead">upstream</h4>
         <LayerGroups
           groups={upstreamGroups}
           empty={
-            node.node_type === 'source'
+            detail.upstreamTruncated ? copy.node.noDisplayedEntries : node.node_type === 'source'
               ? copy.node.nothingUpstreamSource
               : copy.node.nothingUpstream
           }
         />
+        {detail.downstreamTruncated && <p className="muted">{copy.node.downstreamListTruncated}</p>}
         <h4 className="subhead">downstream</h4>
-        <LayerGroups groups={downstreamGroups} empty={copy.node.nothingDownstream} />
+        <LayerGroups groups={downstreamGroups} empty={detail.downstreamTruncated ? copy.node.noDisplayedEntries : copy.node.nothingDownstream} />
       </Section>
 
       <Section
         title={copy.node.biUsage(
-          plural(detail.cards.length, 'card'),
-          plural(dashboardCount(biGroups), 'dashboard'),
+          plural(usage.cards, 'card'),
+          plural(usage.dashboards, 'dashboard'),
         )}
       >
+        {usageTruncated && <p className="muted">{copy.node.listTruncated}</p>}
         <DashboardGroups
           groups={biGroups}
-          empty={copy.node.noBiUsage}
+          empty={usageTruncated ? copy.node.noDisplayedEntries : copy.node.noBiUsage}
         />
       </Section>
 

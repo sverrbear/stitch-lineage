@@ -195,6 +195,7 @@ export function walk(
   const edges: GraphEdge[] = []
   const seenEdges = new Set<GraphEdge>()
   let truncated = false
+  const depthFrontier = new Set<string>()
 
   interface QueueItem {
     id: string
@@ -203,9 +204,16 @@ export function walk(
   }
   const queue: QueueItem[] = [{ id: startId, depth: 0, confidence: 'exact' }]
 
-  while (queue.length > 0) {
-    const item = queue.shift() as QueueItem
-    if (item.depth >= maxDepth) continue
+  for (let cursor = 0; cursor < queue.length; cursor++) {
+    const item = queue[cursor]
+    if (item.depth >= maxDepth) {
+      for (const edge of adjacency.get(item.id) ?? []) {
+        if (!isFlowEdge(edge) || (edgeTypes && !edgeTypes.has(edge.edge_type))) continue
+        const neighborId = neighborOf(edge)
+        if (neighborId !== startId && index.nodesById.has(neighborId)) depthFrontier.add(neighborId)
+      }
+      continue
+    }
     for (const edge of adjacency.get(item.id) ?? []) {
       if (!isFlowEdge(edge)) continue
       if (edgeTypes && !edgeTypes.has(edge.edge_type)) continue
@@ -216,6 +224,8 @@ export function walk(
         seenEdges.add(edge)
         edges.push(edge)
       }
+      // A cycle may return to the root; it is never its own dependency.
+      if (neighborId === startId) continue
       const pathConfidence = weakest(item.confidence, edge.confidence)
       const existing = reached.get(neighborId)
       if (existing) {
@@ -240,6 +250,7 @@ export function walk(
     }
   }
 
+  truncated ||= [...depthFrontier].some((id) => !reached.has(id))
   return { reached, edges, truncated }
 }
 
