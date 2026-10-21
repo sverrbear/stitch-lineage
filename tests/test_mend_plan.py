@@ -316,3 +316,13 @@ def test_affected_card_ids_agrees_with_the_plan():
 
 def test_card_dependencies_reads_via_evidence():
     assert card_dependencies(scenario.baseline_graph()) == {406: [401]}
+
+
+def test_archived_dashboards_are_not_repaired_alongside_active_cards():
+    payload = scenario.payload()
+    payload.dashboards[0]["archived"] = True
+    plan = make_plan(payload=payload)
+    assert card(plan, 401).action is MendAction.REPOINT
+    assert card(plan, 402).action is MendAction.STRIP
+    assert card(plan, 401).dashcards == []
+    assert card(plan, 402).dashcards == []
