@@ -242,30 +242,54 @@ def _write_dashcards(card: CardPlan, client: CardWriter, emit: Log) -> tuple[int
             problems.append(f"dashboard {dash_id} returned no dashcards to update")
             continue
         wanted = {edit.dashcard_id: edit for edit in edits}
-        touched = 0
-        for dashcard in dashcards:
-            if not isinstance(dashcard, dict):
+        current = {
+            dashcard.get("id"): dashcard
+            for dashcard in dashcards
+            if isinstance(dashcard, dict) and isinstance(dashcard.get("id"), int)
+        }
+        missing = sorted(wanted.keys() - current.keys())
+        conflicts = []
+        if missing:
+            conflicts.append(f"dashboard {dash_id}: dashcard(s) {missing} are no longer on it")
+        if dashboard.get("archived"):
+            conflicts.append(f"dashboard {dash_id} was archived since planning")
+        for dashcard_id, edit in wanted.items():
+            if dashcard_id not in current:
                 continue
-            edit = wanted.get(dashcard.get("id"))
-            if edit is None:
-                continue
-            dashcard["parameter_mappings"] = edit.after
-            touched += 1
+            dashcard = current[dashcard_id]
+            if dashcard.get("card_id") != card.card_id:
+                conflicts.append(
+                    f"dashboard {dash_id}: dashcard {dashcard_id} no longer belongs to "
+                    f"card {card.card_id}"
+                )
+            mappings = dashcard.get("parameter_mappings")
+            if (mappings if mappings is not None else []) != edit.before:
+                conflicts.append(
+                    f"dashboard {dash_id}: dashcard {dashcard_id} parameter mappings "
+                    "changed since planning -- re-plan before updating them"
+                )
+        if conflicts:
+            problems.extend(conflicts)
+            continue
+        # Validate every requested edit before changing any mapping on this dashboard.
+        # Keep the fetched payload intact if another requested dashcard disappeared.
+        updated = [
+            {**dashcard, "parameter_mappings": wanted[dashcard["id"]].after}
+            if isinstance(dashcard, dict) and dashcard.get("id") in wanted
+            else dashcard
+            for dashcard in dashcards
+        ]
+        for edit in edits:
             emit(
                 f"#{card.card_id} on '{edit.dashboard_name}': dashcard {edit.dashcard_id} "
                 f"parameter_mappings {len(edit.before)} -> {len(edit.after)}"
             )
-        if not touched:
-            problems.append(
-                f"dashboard {dash_id}: dashcard(s) {sorted(wanted)} are no longer on it"
-            )
-            continue
         try:
-            client.update_dashcards(dash_id, dashcards)
+            client.update_dashcards(dash_id, updated)
         except MetabaseAPIError as exc:
             problems.append(f"dashboard {dash_id} write failed: {exc}")
             continue
-        written += touched
+        written += len(wanted)
     return written, problems
 
 
