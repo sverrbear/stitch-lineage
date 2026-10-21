@@ -62,6 +62,10 @@ describe('bounded detail lists with complete summaries', () => {
     expect(html).toContain('Consumed by 1 card on 1 dashboard.')
     expect(html).toContain('Only part of the result is listed below; summary counts are complete.')
     expect(html).not.toContain('Not consumed by any Metabase card')
+    const impact = html.match(/<section class="panel-section impact-section">[\s\S]*?<\/section>/)![0]
+    expect(impact).toContain('Consumed by 1 card on 1 dashboard.')
+    expect(impact).toContain('Only part of the result is listed below; summary counts are complete.')
+    expect(impact).toContain('No entries in this displayed portion.')
   })
 
   it('counts upstream columns beyond the depth cap and keeps the reverse chain resolved', () => {
@@ -99,6 +103,9 @@ describe('bounded detail lists with complete summaries', () => {
     expect(html).toContain('2100 cards')
     expect(html).toContain('1 dashboard')
     expect(html).toContain('Only part of the result is listed below; summary counts are complete.')
+    const impact = html.match(/<section class="panel-section impact-section">[\s\S]*?<\/section>/)![0]
+    expect(impact).toContain('Consumed by 2100 cards on 1 dashboard.')
+    expect(impact).toContain('Only part of the result is listed below; summary counts are complete.')
   })
 
   it('counts all dashboard cards and dbt dependencies even if the list cap hides every column', () => {

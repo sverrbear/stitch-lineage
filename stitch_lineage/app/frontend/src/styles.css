@@ -994,6 +994,23 @@ kbd {
   letter-spacing: -0.005em;
 }
 
+.impact-section {
+  margin-top: 24px;
+}
+
+.impact-headline {
+  margin: 0 0 8px;
+  font-size: 21px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  line-height: 1.4;
+}
+
+.impact-scope {
+  margin: 0 0 18px;
+  font-size: 13px;
+}
+
 /* Why a reverse view is empty (#25): a stated reason, never a silent "none".
    An unknown is a risk, so it is the one thing on the page wearing amber. */
 .chain-gap {
