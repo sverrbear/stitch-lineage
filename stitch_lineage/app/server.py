@@ -524,7 +524,10 @@ def create_app(
             # no force from the app, ever: a target file with uncommitted edits is refused and
             # reported, and overwriting it stays a `stitch apply --force` decision
             refused = apply_service.refusals(plan)
-            outcome = apply_service.execute(plan, refused)
+            try:
+                outcome = apply_service.execute(plan, refused)
+            except apply_service.YamlWriteConflict as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             graph = outcome.graph
             return JSONResponse(
                 {
