@@ -66,9 +66,9 @@ def _project(tmp_path: Path, config: str = CONFIG) -> Path:
 # --------------------------------------------------------------------------------------
 
 
-def test_mend_defaults_apply_all_three_actions_and_protect_personal_collections():
+def test_mend_defaults_apply_only_repoints_and_protect_personal_collections():
     mend = MendConfig()
-    assert mend.auto == ["repoint", "strip", "archive"]
+    assert mend.auto == ["repoint"]
     assert mend.notify_only_collections == ["*Personal*"]
     assert mend.slack_webhook is None
 
@@ -113,6 +113,13 @@ def test_mend_auto_rejects_anything_that_is_not_an_action(tmp_path, bad):
 
 def test_mend_auto_deduplicates():
     assert MendConfig(auto=["strip", "strip", "repoint"]).auto == ["strip", "repoint"]
+
+
+@pytest.mark.parametrize("actions", [[], ["strip", "archive"], ["repoint", "strip", "archive"]])
+def test_explicit_mend_actions_are_preserved(tmp_path, actions):
+    path = tmp_path / "stitch.yml"
+    path.write_text(CONFIG + f"\nmend:\n  auto: {json.dumps(actions)}\n")
+    assert load_config(path).mend.auto == actions
 
 
 # --------------------------------------------------------------------------------------
@@ -201,19 +208,21 @@ def test_mend_plan_writes_a_plan_and_renders_it(tmp_path, monkeypatch):
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "STRIP (2)" in plain(result.output)
+    assert "REPOINT (1)" in plain(result.output)
+    assert "NOTIFY (5)" in plain(result.output)
     assert "fct_orders.promo_code" in plain(result.output)
 
     plan = read_plan(project / ".stitch" / "mend_plan.json")
     assert {card.card_id: card.action for card in plan.cards} == {
         401: MendAction.REPOINT,
-        402: MendAction.STRIP,
-        403: MendAction.ARCHIVE,
-        404: MendAction.STRIP,
+        402: MendAction.NOTIFY,
+        403: MendAction.NOTIFY,
+        404: MendAction.NOTIFY,
         405: MendAction.NOTIFY,
         406: MendAction.NOTIFY,
     }
     assert plan.renames == {"fct_orders.amount": "fct_orders.amount_usd"}
+    assert [card.card_id for card in plan.writing] == [401]
 
 
 def test_mend_plan_honours_the_configured_autonomy(tmp_path, monkeypatch):
@@ -227,6 +236,24 @@ def test_mend_plan_honours_the_configured_autonomy(tmp_path, monkeypatch):
     downgraded = {card.card_id: card.downgraded_from for card in plan.cards}
     assert downgraded[402] is MendAction.STRIP
     assert downgraded[404] is MendAction.STRIP
+    assert next(card for card in plan.cards if card.card_id == 403).action is MendAction.ARCHIVE
+
+
+def test_mend_plan_can_explicitly_opt_into_strip_and_archive(tmp_path, monkeypatch):
+    project = _project(tmp_path, CONFIG + "\nmend:\n  auto: [repoint, strip, archive]\n")
+    monkeypatch.chdir(project)
+    result = runner.invoke(
+        app,
+        ["mend", "--plan", "--use-cache", "--rename", "fct_orders.amount=fct_orders.amount_usd"],
+    )
+    assert result.exit_code == 0, result.output
+    plan = read_plan(project / ".stitch" / "mend_plan.json")
+    assert {card.card_id: card.action for card in plan.writing} == {
+        401: MendAction.REPOINT,
+        402: MendAction.STRIP,
+        403: MendAction.ARCHIVE,
+        404: MendAction.STRIP,
+    }
 
 
 @pytest.mark.parametrize("output_format", ["slack", "github-comment", "text"])
@@ -286,7 +313,7 @@ def fake_client(monkeypatch):
 
 
 def test_mend_apply_writes_and_summarises(tmp_path, monkeypatch, fake_client):
-    project = _project(tmp_path)
+    project = _project(tmp_path, CONFIG + "\nmend:\n  auto: [strip]\n")
     write_plan(plan_of(strip_card()), plan_path(project / ".stitch"))
     monkeypatch.chdir(project)
     result = runner.invoke(app, ["mend", "--apply"])
@@ -296,10 +323,53 @@ def test_mend_apply_writes_and_summarises(tmp_path, monkeypatch, fake_client):
     assert fake_client.writes
 
 
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("policy", [None, [], ["repoint"], ["repoint", "strip", "archive"]])
+def test_saved_plan_obeys_current_policy(tmp_path, monkeypatch, fake_client, policy, force):
+    config = CONFIG if policy is None else CONFIG + f"\nmend:\n  auto: {json.dumps(policy)}\n"
+    project = _project(tmp_path, config)
+    plan = plan_of(
+        strip_card(card_id=401, action=MendAction.REPOINT),
+        strip_card(),
+        strip_card(card_id=403, action=MendAction.ARCHIVE, archive=True, after=None),
+    )
+    path = write_plan(plan, plan_path(project / ".stitch"))
+    original = path.read_bytes()
+    monkeypatch.chdir(project)
+    result = runner.invoke(app, ["mend", "--apply", *(["--force"] if force else [])])
+    assert result.exit_code == 0, result.output
+    allowed = ["repoint"] if policy is None else policy
+    assert [card_id for card_id, _ in fake_client.writes] == [
+        card.card_id for card in plan.cards if card.action.value in allowed
+    ]
+    assert path.read_bytes() == original
+    for card in plan.cards:
+        if card.action.value not in allowed:
+            assert f"'{card.action.value}' is not in current mend.auto" in plain(result.output)
+
+
+def test_saved_plan_obeys_current_notify_only_collections(tmp_path, monkeypatch):
+    project = _project(tmp_path, CONFIG + '\nmend:\n  notify_only_collections: ["Finance"]\n')
+    client = FakeMetabase(
+        cards={401: {"id": 401, "collection_id": 9}},
+        collections=[{"id": 9, "name": "Finance", "location": "/"}],
+    )
+    monkeypatch.setattr(cli, "_metabase_client", lambda cfg, cache_dir=None: client)
+    write_plan(
+        plan_of(strip_card(card_id=401, action=MendAction.REPOINT, collection="Old collection")),
+        plan_path(project / ".stitch"),
+    )
+    monkeypatch.chdir(project)
+    result = runner.invoke(app, ["mend", "--apply", "--force"])
+    assert result.exit_code == 0, result.output
+    assert "current collection is notify-only" in plain(result.output)
+    assert client.writes == []
+
+
 def test_mend_apply_exits_non_zero_when_a_card_fails(tmp_path, monkeypatch):
     client = FakeMetabase(query_results={402: {"status": "failed", "error": "boom"}})
     monkeypatch.setattr(cli, "_metabase_client", lambda cfg, cache_dir=None: client)
-    project = _project(tmp_path)
+    project = _project(tmp_path, CONFIG + "\nmend:\n  auto: [strip]\n")
     write_plan(plan_of(strip_card()), plan_path(project / ".stitch"))
     monkeypatch.chdir(project)
     result = runner.invoke(app, ["mend", "--apply"])
@@ -309,7 +379,7 @@ def test_mend_apply_exits_non_zero_when_a_card_fails(tmp_path, monkeypatch):
 
 
 def test_mend_apply_takes_a_named_plan_file(tmp_path, monkeypatch, fake_client):
-    project = _project(tmp_path)
+    project = _project(tmp_path, CONFIG + "\nmend:\n  auto: [strip]\n")
     write_plan(plan_of(strip_card()), project / "custom_plan.json")
     monkeypatch.chdir(project)
     result = runner.invoke(app, ["mend", "--apply", "custom_plan.json"])
@@ -398,7 +468,7 @@ def test_a_redirected_plan_carries_no_spinner_debris(tmp_path, monkeypatch, outp
 
 
 def test_a_redirected_apply_carries_no_spinner_debris(tmp_path, monkeypatch, fake_client):
-    project = _project(tmp_path)
+    project = _project(tmp_path, CONFIG + "\nmend:\n  auto: [strip]\n")
     write_plan(plan_of(strip_card()), plan_path(project / ".stitch"))
     monkeypatch.chdir(project)
     result = runner.invoke(app, ["mend", "--apply"])
@@ -546,7 +616,8 @@ def test_write_access_reports_identity_writability_and_the_autonomy_dial(tmp_pat
     assert "1/2 cards report can_write" in plain(result.output)
     assert "1 card(s) are read-only" in plain(result.output)
     assert "revision history readable" in plain(result.output)
-    assert "mend.auto: repoint, strip, archive" in plain(result.output)
+    assert "mend.auto: repoint" in plain(result.output)
+    assert "mend.auto: repoint, strip" not in plain(result.output)
     assert "notice and summary print locally only" in plain(result.output)
 
 

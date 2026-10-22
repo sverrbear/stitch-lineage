@@ -20,6 +20,8 @@ from stitch_lineage.mend.models import (
     MendPlan,
 )
 
+ALL_AUTO = [MendAction.REPOINT, MendAction.STRIP, MendAction.ARCHIVE]
+
 
 class FakeMetabase:
     """A Metabase that records what it was asked to do and can be told to misbehave."""
@@ -31,13 +33,17 @@ class FakeMetabase:
         query_results: dict[int, dict] | None = None,
         revisions: dict[int, int | None] | None = None,
         dashboards: dict[int, dict] | None = None,
+        collections: list[dict] | None = None,
         fail_on: tuple[str, ...] = (),
     ) -> None:
         self.cards = cards or {}
         self.query_results = query_results or {}
         self.revisions = revisions or {}
         self.dashboards = dashboards or {}
+        self.collections = collections or []
         self.fail_on = fail_on
+        self.collection_reads = 0
+        self.card_reads: list[int] = []
         self.writes: list[tuple[int, dict]] = []
         self.reverts: list[tuple[int, int]] = []
         self.dashboard_writes: list[tuple[int, list[dict]]] = []
@@ -48,8 +54,16 @@ class FakeMetabase:
             raise MetabaseAPIError(f"HTTP 500: {what} exploded")
 
     def get_card(self, card_id: int) -> dict:
+        self.card_reads.append(card_id)
         self._maybe_fail("get_card")
-        return self.cards.get(card_id, {"id": card_id, "updated_at": scenario.UPDATED_AT})
+        return self.cards.get(
+            card_id, {"id": card_id, "updated_at": scenario.UPDATED_AT, "collection_id": None}
+        )
+
+    def list_collections(self) -> list[dict]:
+        self.collection_reads += 1
+        self._maybe_fail("list_collections")
+        return self.collections
 
     def update_card(self, card_id: int, changes: dict) -> dict:
         self._maybe_fail("update_card")
@@ -137,10 +151,110 @@ def test_query_error_is_silent_on_success(result):
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("force", [False, True])
+def test_current_empty_policy_blocks_every_saved_action_before_any_api_call(force):
+    client = FakeMetabase(fail_on=("get_card", "list_collections"))
+    plan = plan_of(
+        strip_card(action=MendAction.REPOINT, card_id=401),
+        strip_card(),
+        strip_card(action=MendAction.ARCHIVE, card_id=403, archive=True, after=None),
+    )
+    seen = []
+    outcome = apply_plan(
+        plan,
+        client,
+        auto=[],
+        notify_only_collections=["*Personal*"],
+        force=force,
+        on_progress=lambda done, total: seen.append((done, total)),
+    )
+    assert [entry.status for entry in outcome.cards] == ["notify", "notify", "notify"]
+    assert client.card_reads == []
+    assert client.collection_reads == 0
+    assert client.writes == client.dashboard_writes == client.queries_run == []
+    assert seen == [(1, 3), (2, 3), (3, 3)]
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_personal_collection_is_checked_live_even_if_saved_name_is_unrestricted(force):
+    client = FakeMetabase(
+        cards={402: {"id": 402, "collection_id": 9, "updated_at": "changed"}},
+        collections=[{"id": 9, "name": "My scratchpad", "personal_owner_id": 7}],
+    )
+    outcome = apply_plan(
+        plan_of(strip_card(collection="Public")),
+        client,
+        auto=ALL_AUTO,
+        notify_only_collections=["*Personal*"],
+        force=force,
+    )
+    assert outcome.cards[0].status == "notify"
+    assert "current collection is notify-only" in outcome.cards[0].detail
+    assert client.writes == client.queries_run == []
+
+
+def test_current_collection_path_uses_the_same_matching_as_planning():
+    client = FakeMetabase(
+        cards={402: {"id": 402, "collection_id": 9}},
+        collections=[
+            {"id": 8, "name": "Finance", "location": "/"},
+            {"id": 9, "name": "Internal", "location": "/8/"},
+        ],
+    )
+    outcome = apply_plan(
+        plan_of(strip_card()), client, auto=ALL_AUTO, notify_only_collections=["Finance/*"]
+    )
+    assert outcome.cards[0].status == "notify"
+    assert client.writes == []
+
+
+def test_unavailable_collection_listing_blocks_writes_but_preserves_action_notifications():
+    client = FakeMetabase(fail_on=("list_collections",))
+    outcome = apply_plan(
+        plan_of(strip_card(action=MendAction.REPOINT, card_id=401), strip_card()),
+        client,
+        auto=[MendAction.REPOINT],
+        notify_only_collections=["*Personal*"],
+    )
+    assert [entry.status for entry in outcome.cards] == ["failed", "notify"]
+    assert "could not check current notify-only collections" in outcome.cards[0].detail
+    assert client.card_reads == client.writes == []
+
+
+@pytest.mark.parametrize(
+    "current",
+    [
+        {"id": 402, "collection_id": 99},
+        {"id": 402},
+        {"id": 402, "collection_id": []},
+        {"id": 402, "collection_id": "unknown"},
+        {"id": 402, "collection_id": False},
+    ],
+)
+def test_unknown_current_collection_blocks_writes(current):
+    client = FakeMetabase(cards={402: current})
+    outcome = apply_plan(
+        plan_of(strip_card()), client, auto=ALL_AUTO, notify_only_collections=["*Personal*"]
+    )
+    assert outcome.cards[0].status == "failed"
+    assert "cannot check notify-only policy" in outcome.cards[0].detail
+    assert client.writes == []
+
+
+@pytest.mark.parametrize("collection_id", [None, "root"])
+def test_explicit_root_collection_allows_a_policy_permitted_write(collection_id):
+    client = FakeMetabase(cards={402: {"id": 402, "collection_id": collection_id}})
+    outcome = apply_plan(
+        plan_of(strip_card()), client, auto=ALL_AUTO, notify_only_collections=["*Personal*"]
+    )
+    assert outcome.cards[0].status == "applied"
+    assert len(client.writes) == 1
+
+
 def test_a_strip_writes_the_query_then_validates_it():
     card = strip_card()
     client = FakeMetabase()
-    outcome = apply_plan(plan_of(card), client)
+    outcome = apply_plan(plan_of(card), client, auto=ALL_AUTO, notify_only_collections=())
     assert [entry.status for entry in outcome.cards] == ["applied"]
     assert client.writes == [(402, {"dataset_query": card.after})]
     assert client.queries_run == [402]
@@ -149,7 +263,13 @@ def test_a_strip_writes_the_query_then_validates_it():
 
 def test_the_written_diff_is_logged():
     lines: list[str] = []
-    apply_plan(plan_of(strip_card()), FakeMetabase(), log=lines.append)
+    apply_plan(
+        plan_of(strip_card()),
+        FakeMetabase(),
+        auto=ALL_AUTO,
+        notify_only_collections=(),
+        log=lines.append,
+    )
     body = "\n".join(lines)
     assert "#402 Orders, promo cohort (before)" in body
     assert '-      "filter"' in body or '"filter"' in body
@@ -158,7 +278,7 @@ def test_the_written_diff_is_logged():
 def test_an_archive_sets_the_flag_and_does_not_re_execute():
     card = strip_card(action=MendAction.ARCHIVE, archive=True, after=None)
     client = FakeMetabase()
-    outcome = apply_plan(plan_of(card), client)
+    outcome = apply_plan(plan_of(card), client, auto=ALL_AUTO, notify_only_collections=())
     assert [entry.status for entry in outcome.cards] == ["archived"]
     assert client.writes == [(402, {"archived": True})]
     assert client.queries_run == []
@@ -172,7 +292,7 @@ def test_notify_entries_are_reported_and_never_written():
         reason="collection is notify-only",
     )
     client = FakeMetabase()
-    outcome = apply_plan(plan_of(card), client)
+    outcome = apply_plan(plan_of(card), client, auto=ALL_AUTO, notify_only_collections=())
     assert [entry.status for entry in outcome.cards] == ["notify"]
     assert outcome.cards[0].detail == "collection is notify-only"
     assert client.writes == []
@@ -186,7 +306,7 @@ def test_notify_entries_are_reported_and_never_written():
 
 def test_a_card_edited_since_the_plan_is_skipped_as_stale():
     client = FakeMetabase(cards={402: {"id": 402, "updated_at": "2026-08-11T12:00:00Z"}})
-    outcome = apply_plan(plan_of(strip_card()), client)
+    outcome = apply_plan(plan_of(strip_card()), client, auto=ALL_AUTO, notify_only_collections=())
     assert [entry.status for entry in outcome.cards] == ["stale"]
     assert "outranks ours" in outcome.cards[0].detail
     assert client.writes == []
@@ -194,7 +314,9 @@ def test_a_card_edited_since_the_plan_is_skipped_as_stale():
 
 def test_force_overrides_the_staleness_guard():
     client = FakeMetabase(cards={402: {"id": 402, "updated_at": "2026-08-11T12:00:00Z"}})
-    outcome = apply_plan(plan_of(strip_card()), client, force=True)
+    outcome = apply_plan(
+        plan_of(strip_card()), client, auto=ALL_AUTO, notify_only_collections=(), force=True
+    )
     assert [entry.status for entry in outcome.cards] == ["applied"]
     assert outcome.forced is True
     assert client.writes
@@ -202,7 +324,7 @@ def test_force_overrides_the_staleness_guard():
 
 def test_a_card_with_no_observed_updated_at_is_not_treated_as_stale():
     client = FakeMetabase(cards={402: {"id": 402}})
-    outcome = apply_plan(plan_of(strip_card()), client)
+    outcome = apply_plan(plan_of(strip_card()), client, auto=ALL_AUTO, notify_only_collections=())
     assert [entry.status for entry in outcome.cards] == ["applied"]
 
 
@@ -210,7 +332,7 @@ def test_a_card_the_key_cannot_write_is_skipped_not_failed():
     client = FakeMetabase(
         cards={402: {"id": 402, "updated_at": scenario.UPDATED_AT, "can_write": False}}
     )
-    outcome = apply_plan(plan_of(strip_card()), client)
+    outcome = apply_plan(plan_of(strip_card()), client, auto=ALL_AUTO, notify_only_collections=())
     assert [entry.status for entry in outcome.cards] == ["skipped"]
     assert client.writes == []
     assert outcome.failures == []
@@ -218,7 +340,7 @@ def test_a_card_the_key_cannot_write_is_skipped_not_failed():
 
 def test_a_card_that_cannot_be_re_read_fails_before_writing_anything():
     client = FakeMetabase(fail_on=("get_card",))
-    outcome = apply_plan(plan_of(strip_card()), client)
+    outcome = apply_plan(plan_of(strip_card()), client, auto=ALL_AUTO, notify_only_collections=())
     assert [entry.status for entry in outcome.cards] == ["failed"]
     assert client.writes == []
 
@@ -233,7 +355,7 @@ BROKEN = {"status": "failed", "error": "Column PROMO_CODE does not exist"}
 
 def test_a_query_that_does_not_run_is_reverted_through_the_revisions_api():
     client = FakeMetabase(query_results={402: BROKEN})
-    outcome = apply_plan(plan_of(strip_card()), client)
+    outcome = apply_plan(plan_of(strip_card()), client, auto=ALL_AUTO, notify_only_collections=())
     entry = outcome.cards[0]
     assert entry.status == "failed"
     assert entry.reverted is True
@@ -245,7 +367,7 @@ def test_a_query_that_does_not_run_is_reverted_through_the_revisions_api():
 def test_without_a_revision_id_the_captured_query_is_restored_instead():
     card = strip_card(revision_id=None)
     client = FakeMetabase(query_results={402: BROKEN})
-    outcome = apply_plan(plan_of(card), client)
+    outcome = apply_plan(plan_of(card), client, auto=ALL_AUTO, notify_only_collections=())
     assert outcome.cards[0].reverted is True
     assert client.reverts == []
     assert client.writes[-1] == (402, {"dataset_query": card.before})
@@ -254,14 +376,14 @@ def test_without_a_revision_id_the_captured_query_is_restored_instead():
 def test_a_revision_id_missing_from_the_plan_is_fetched_before_the_write():
     card = strip_card(revision_id=None)
     client = FakeMetabase(revisions={402: 7777}, query_results={402: BROKEN})
-    apply_plan(plan_of(card), client)
+    apply_plan(plan_of(card), client, auto=ALL_AUTO, notify_only_collections=())
     assert client.reverts == [(402, 7777)]
 
 
 def test_a_failed_revert_says_so_loudly():
     card = strip_card(revision_id=None)
     client = FakeMetabase(query_results={402: BROKEN}, fail_on=("revert",))
-    outcome = apply_plan(plan_of(card), client)
+    outcome = apply_plan(plan_of(card), client, auto=ALL_AUTO, notify_only_collections=())
     entry = outcome.cards[0]
     assert entry.status == "failed"
     assert entry.reverted is False
@@ -271,21 +393,21 @@ def test_a_failed_revert_says_so_loudly():
 def test_a_revisions_api_revert_that_fails_falls_back_to_the_captured_query():
     card = strip_card()
     client = FakeMetabase(query_results={402: BROKEN}, fail_on=("revert_card",))
-    outcome = apply_plan(plan_of(card), client)
+    outcome = apply_plan(plan_of(card), client, auto=ALL_AUTO, notify_only_collections=())
     assert outcome.cards[0].reverted is True
     assert client.writes[-1] == (402, {"dataset_query": card.before})
 
 
 def test_a_validation_call_that_errors_is_treated_as_a_failure():
     client = FakeMetabase(fail_on=("run_card_query",))
-    outcome = apply_plan(plan_of(strip_card()), client)
+    outcome = apply_plan(plan_of(strip_card()), client, auto=ALL_AUTO, notify_only_collections=())
     assert outcome.cards[0].status == "failed"
     assert client.reverts == [(402, 9402)]
 
 
 def test_a_write_that_fails_does_not_get_validated_or_reverted():
     client = FakeMetabase(fail_on=("update_card",))
-    outcome = apply_plan(plan_of(strip_card()), client)
+    outcome = apply_plan(plan_of(strip_card()), client, auto=ALL_AUTO, notify_only_collections=())
     assert outcome.cards[0].status == "failed"
     assert client.queries_run == []
     assert client.reverts == []
@@ -326,7 +448,9 @@ def _dashboard() -> dict:
 
 def test_dashcard_mappings_are_written_with_the_rest_of_the_dashboard_intact():
     client = FakeMetabase(dashboards={10: _dashboard()})
-    outcome = apply_plan(plan_of(_dashcard_plan()), client)
+    outcome = apply_plan(
+        plan_of(_dashcard_plan()), client, auto=ALL_AUTO, notify_only_collections=()
+    )
     assert outcome.cards[0].status == "applied"
     assert outcome.cards[0].dashcards_written == 1
     dash_id, written = client.dashboard_writes[0]
@@ -339,7 +463,9 @@ def test_dashcard_mappings_are_written_with_the_rest_of_the_dashboard_intact():
 
 def test_a_dashcard_that_moved_off_the_dashboard_is_reported_without_reverting_the_card():
     client = FakeMetabase(dashboards={10: {"id": 10, "dashcards": []}})
-    outcome = apply_plan(plan_of(_dashcard_plan()), client)
+    outcome = apply_plan(
+        plan_of(_dashcard_plan()), client, auto=ALL_AUTO, notify_only_collections=()
+    )
     entry = outcome.cards[0]
     assert entry.status == "failed"
     assert "no longer on it" in entry.detail
@@ -350,7 +476,9 @@ def test_a_dashcard_that_moved_off_the_dashboard_is_reported_without_reverting_t
 
 def test_a_dashboard_write_failure_is_reported_on_the_card():
     client = FakeMetabase(dashboards={10: _dashboard()}, fail_on=("update_dashcards",))
-    outcome = apply_plan(plan_of(_dashcard_plan()), client)
+    outcome = apply_plan(
+        plan_of(_dashcard_plan()), client, auto=ALL_AUTO, notify_only_collections=()
+    )
     assert outcome.cards[0].status == "failed"
     assert "write failed" in outcome.cards[0].detail
 
@@ -364,13 +492,18 @@ def test_cards_are_applied_in_the_order_the_plan_lists_them():
     first = strip_card(card_id=401, name="upstream")
     second = strip_card(card_id=406, name="downstream", depends_on=[401])
     client = FakeMetabase()
-    apply_plan(plan_of(first, second), client)
+    apply_plan(plan_of(first, second), client, auto=ALL_AUTO, notify_only_collections=())
     assert [card_id for card_id, _ in client.writes] == [401, 406]
 
 
 def test_one_failure_does_not_stop_the_rest_of_the_plan():
     client = FakeMetabase(query_results={402: BROKEN})
-    outcome = apply_plan(plan_of(strip_card(), strip_card(card_id=404, name="other")), client)
+    outcome = apply_plan(
+        plan_of(strip_card(), strip_card(card_id=404, name="other")),
+        client,
+        auto=ALL_AUTO,
+        notify_only_collections=(),
+    )
     assert [entry.status for entry in outcome.cards] == ["failed", "applied"]
     assert len(outcome.failures) == 1
 
@@ -378,12 +511,12 @@ def test_one_failure_does_not_stop_the_rest_of_the_plan():
 def test_a_plan_entry_with_nothing_to_write_is_skipped():
     card = strip_card(after=None, action=MendAction.STRIP)
     # writes is False, so the loop reports it as notify rather than inventing a write
-    outcome = apply_plan(plan_of(card), FakeMetabase())
+    outcome = apply_plan(plan_of(card), FakeMetabase(), auto=ALL_AUTO, notify_only_collections=())
     assert outcome.cards[0].status == "notify"
 
 
 def test_an_empty_plan_produces_an_empty_outcome():
-    outcome = apply_plan(MendPlan(), FakeMetabase())
+    outcome = apply_plan(MendPlan(), FakeMetabase(), auto=ALL_AUTO, notify_only_collections=())
     assert outcome.cards == []
     assert outcome.failures == []
 
@@ -396,7 +529,13 @@ def test_an_empty_plan_produces_an_empty_outcome():
 def test_on_progress_reports_one_step_per_card_against_a_stable_total():
     seen: list[tuple[int, int]] = []
     plan = plan_of(strip_card(), strip_card(card_id=404, name="other"))
-    apply_plan(plan, FakeMetabase(), on_progress=lambda done, total: seen.append((done, total)))
+    apply_plan(
+        plan,
+        FakeMetabase(),
+        auto=ALL_AUTO,
+        notify_only_collections=(),
+        on_progress=lambda done, total: seen.append((done, total)),
+    )
     assert seen == [(1, 2), (2, 2)]
 
 
@@ -409,7 +548,11 @@ def test_on_progress_counts_notify_entries_too_so_the_total_matches_the_plan():
         CardPlan(card_id=405, name="Scratch", action=MendAction.NOTIFY, reason="personal"),
     )
     outcome = apply_plan(
-        plan, FakeMetabase(), on_progress=lambda done, total: seen.append((done, total))
+        plan,
+        FakeMetabase(),
+        auto=ALL_AUTO,
+        notify_only_collections=(),
+        on_progress=lambda done, total: seen.append((done, total)),
     )
     assert [entry.status for entry in outcome.cards] == ["applied", "notify"]
     assert seen == [(1, 2), (2, 2)]
@@ -419,8 +562,14 @@ def test_watching_the_apply_loop_does_not_change_what_it_writes():
     """on_progress is observation only: omitting it must not alter a single write."""
     watched, unwatched = FakeMetabase(), FakeMetabase()
     plan = plan_of(strip_card(), strip_card(card_id=404, name="other"))
-    with_progress = apply_plan(plan, watched, on_progress=lambda done, total: None)
-    without = apply_plan(plan, unwatched)
+    with_progress = apply_plan(
+        plan,
+        watched,
+        auto=ALL_AUTO,
+        notify_only_collections=(),
+        on_progress=lambda done, total: None,
+    )
+    without = apply_plan(plan, unwatched, auto=ALL_AUTO, notify_only_collections=())
     assert with_progress == without
     assert watched.writes == unwatched.writes
 
@@ -431,7 +580,9 @@ def test_changed_dashboard_mappings_are_preserved_even_with_force(force):
     dashboard["dashcards"][1]["parameter_mappings"].append({"parameter_id": "new-human-filter"})
     original = deepcopy(dashboard)
     client = FakeMetabase(dashboards={10: dashboard})
-    outcome = apply_plan(plan_of(_dashcard_plan()), client, force=force)
+    outcome = apply_plan(
+        plan_of(_dashcard_plan()), client, auto=ALL_AUTO, notify_only_collections=(), force=force
+    )
     assert outcome.cards[0].status == "failed"
     assert "changed since planning" in outcome.cards[0].detail
     assert outcome.cards[0].dashcards_written == 0
@@ -446,7 +597,7 @@ def test_partial_missing_dashcards_prevent_every_write_to_that_dashboard():
     dashboard = _dashboard()
     original = deepcopy(dashboard)
     client = FakeMetabase(dashboards={10: dashboard})
-    outcome = apply_plan(plan_of(card), client)
+    outcome = apply_plan(plan_of(card), client, auto=ALL_AUTO, notify_only_collections=())
     assert outcome.cards[0].status == "failed"
     assert "[99] are no longer on it" in outcome.cards[0].detail
     assert client.dashboard_writes == []
@@ -458,7 +609,9 @@ def test_reassigned_dashcard_is_not_written(card_id):
     dashboard = _dashboard()
     dashboard["dashcards"][1]["card_id"] = card_id
     client = FakeMetabase(dashboards={10: dashboard})
-    outcome = apply_plan(plan_of(_dashcard_plan()), client)
+    outcome = apply_plan(
+        plan_of(_dashcard_plan()), client, auto=ALL_AUTO, notify_only_collections=()
+    )
     assert outcome.cards[0].status == "failed"
     assert "no longer belongs to card 402" in outcome.cards[0].detail
     assert client.dashboard_writes == []
@@ -467,7 +620,9 @@ def test_reassigned_dashcard_is_not_written(card_id):
 def test_dashboard_archived_after_planning_is_not_written():
     dashboard = {**_dashboard(), "archived": True}
     client = FakeMetabase(dashboards={10: dashboard})
-    outcome = apply_plan(plan_of(_dashcard_plan()), client)
+    outcome = apply_plan(
+        plan_of(_dashcard_plan()), client, auto=ALL_AUTO, notify_only_collections=()
+    )
     assert outcome.cards[0].status == "failed"
     assert "archived since planning" in outcome.cards[0].detail
     assert client.dashboard_writes == []
@@ -479,7 +634,7 @@ def test_one_conflicting_dashboard_does_not_stop_an_unchanged_dashboard():
     client = FakeMetabase(
         dashboards={10: {"id": 10, "dashcards": []}, 11: {**_dashboard(), "id": 11}}
     )
-    outcome = apply_plan(plan_of(card), client)
+    outcome = apply_plan(plan_of(card), client, auto=ALL_AUTO, notify_only_collections=())
     assert outcome.cards[0].status == "failed"
     assert outcome.cards[0].dashcards_written == 1
     assert [dashboard_id for dashboard_id, _ in client.dashboard_writes] == [11]

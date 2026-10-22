@@ -1153,12 +1153,16 @@ def mend(
 
     `stitch mend --apply PLAN` executes it: per card, re-read and skip if a human edited it
     since (--force overrides), snapshot the revision, PUT the rewrite, re-execute the card,
-    and revert through the revisions API if it does not run. Every diff it writes is printed.
-    Any card that ends `failed` exits non-zero.
+    and attempt rollback if it does not run. Execution does not validate business meaning.
+    Archives are not query-validated; dashboard writes can partially fail without reverting
+    the card. Rollback can fail and is reported. Every diff it writes is printed; any card
+    that ends `failed` exits non-zero.
 
     The plan IS the dry run -- there is no --dry-run flag because there is nothing it would
-    add. Autonomy is per action, in stitch.yml: an action outside `mend.auto` downgrades to
-    notify, and cards in `mend.notify_only_collections` are never written to.
+    add. Only declared renames (`repoint`) are enabled by default. Opt into `strip` or
+    `archive` in stitch.yml if needed. The CURRENT `mend.auto` and
+    `mend.notify_only_collections` also restrict saved plans at apply time; --force cannot
+    override them. An empty `auto: []` disables every write.
     """
     if make_plan == do_apply:
         _fail("pass exactly one of --plan or --apply")
@@ -1317,6 +1321,8 @@ def _mend_apply(*, cfg: StitchConfig, path: Path, force: bool, slack: bool) -> N
         outcome = apply_plan(
             plan,
             _metabase_client(cfg),
+            auto=[MendAction(action) for action in cfg.mend.auto],
+            notify_only_collections=cfg.mend.notify_only_collections,
             force=force,
             log=_paused_echo(progress),
             on_progress=lambda done, total: progress.update(
@@ -1684,11 +1690,14 @@ def _print_write_access(cfg: StitchConfig) -> None:
     if probe is None:
         console.print("skip  no card to probe revision history with")
     elif client.card_revisions(probe):
-        console.print("ok    revision history readable -- a failed write reverts through it")
+        console.print(
+            "ok    revision history readable -- failed query validation attempts rollback "
+            "through it"
+        )
     else:
         console.print(
-            "warn  revision history not readable -- a failed write reverts by restoring the "
-            "query captured in the plan instead"
+            "warn  revision history not readable -- failed query validation attempts to restore "
+            "the query captured in the plan instead; rollback can fail"
         )
 
     auto = ", ".join(cfg.mend.auto) or "<empty: every action downgrades to notify>"

@@ -19,22 +19,27 @@
 #   5. `stitch mend --apply` -- execute it while the plan is byte-fresh, then post the
 #      summary. Any card that ends `failed` fails the job.
 #
-# Why no approval gate: a plan rots while it waits. Every hour of waiting, more cards drift
-# and silently degrade to `stale`, so a slow approval is a partial repair. The safety comes
-# from the apply loop, not from a button -- staleness guard, revision snapshot, post-write
-# re-execution, auto-revert on failure, notify-only collections, and a summary that names
-# every card. A human-gated variant is at the bottom of this file.
+# The default action policy follows declared renames only. The explicit --apply step
+# checks CURRENT policy again, even for a saved plan. A human-gated variant is at the end.
+# Staleness checks, query execution checks and rollback attempts reduce risk; successful
+# execution does not prove that a report's meaning or numbers are correct.
 #
 # Autonomy is configured per action in stitch.yml, NOT here:
 #
 #   mend:
 #     slack_webhook: ${STITCH_SLACK_WEBHOOK_URL}
-#     auto: [repoint, strip, archive]   # remove an action -> it downgrades to notify
+#     auto: [repoint]                  # default; [] disables every write
 #     notify_only_collections: ["*Personal*"]
 #
-# `strip` is the one worth a decision: a card with a dead filter removed still runs, and
-# shows different numbers under the same title, which re-execution cannot catch. Removing
-# `strip` from `auto` lists those cards in the notice for a human instead of editing them.
+# Explicitly add `strip` to permit removing broken clauses, which can silently change the
+# answer, or `archive` to permit hiding cards. Neither is enabled by default. An existing
+# explicit [repoint, strip, archive] list remains broad after upgrading; change it to
+# [repoint] to adopt the safer policy. --force never bypasses current policy restrictions.
+#
+# Rewritten card queries are re-executed. Failed execution triggers rollback attempts;
+# rollback can fail and is reported for manual recovery. Archives are not query-validated.
+# Dashboard writes can partially fail, leaving the repaired card and completed dashboard
+# updates in place. Any failed outcome exits non-zero; this workflow is not a transaction.
 #
 # Before the first run: `stitch doctor --write-access` checks that the API key can write and
 # that revision history (the revert target) is readable. It writes nothing.
@@ -71,8 +76,8 @@ jobs:
       STITCH_METABASE_API_KEY: ${{ secrets.STITCH_METABASE_API_KEY }}
       STITCH_SLACK_WEBHOOK_URL: ${{ secrets.STITCH_SLACK_WEBHOOK_URL }}
       # Every column this deploy renamed, space-separated old=new pairs. Nothing is
-      # inferred: an undeclared rename is treated as a removal, which is the conservative
-      # reading and is what the notice will say.
+      # inferred: an undeclared rename is treated as a removal and is notify-only under
+      # the default action policy.
       RENAMES: ${{ github.event.inputs.renames }}
     steps:
       - uses: actions/checkout@v4

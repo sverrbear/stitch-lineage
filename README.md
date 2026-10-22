@@ -21,8 +21,9 @@ writes one plain local file, `.stitch/graph.json`, which the CLI queries and the
 stitch is **local-first**: no server, no warehouse backend, no hosted anything, and nothing it
 generates needs to be committed. It reads Metabase, and the only thing it ever writes into your repo
 is a relationship or description you explicitly asked it to apply. One command writes *out* —
-[`stitch mend`](#repairing-what-broke-stitch-mend) repairs the cards a schema change broke, and every
-write it makes is snapshotted, re-executed and reverted if the card does not run. Nothing else in the
+[`stitch mend`](#repairing-what-broke-stitch-mend) plans supported repairs and, when you apply them,
+re-executes rewritten queries and attempts rollback on execution failure. Declared renames are
+the default; removing clauses or archiving cards requires explicit opt-in. Nothing else in the
 tool touches Metabase with anything but a GET.
 
 Requires **Python 3.11+**, a dbt project whose artifacts you can generate, and **Metabase 49 or
@@ -200,7 +201,9 @@ In CI, `stitch impact --format github-comment` posts the same blast radius as a 
 
 ## Repairing what broke: `stitch mend`
 
-Knowing that a deprecation broke 29 cards is only half a tool. `stitch mend` writes the repair.
+`stitch mend` plans supported repairs and applies them when you explicitly run `--apply`.
+By default it only repoints **declared renames**. Clause removal (`strip`) and archiving
+(`archive`) are listed for a human unless you enable those actions in `stitch.yml`.
 
 ```
 stitch mend --plan --rename fct_orders.amount=fct_orders.amount_usd
@@ -214,6 +217,9 @@ It reads the impact diff and gives every affected card exactly one action:
 | **strip** | the dead column only appears in clauses the card is not *about* — a filter, one breakout of several, an order-by | delete that clause |
 | **archive** | the dead column *is* the card — its only aggregation, its sole dimension | `archived: true`, never a delete |
 | **notify** | personal collections, native SQL, actions you dialed off — anything mend will not guess at | nothing; listed for a human |
+
+For a project that has explicitly opted into `auto: [repoint, strip, archive]`, a plan can look
+like this. With the default `[repoint]`, the strip and archive entries become `notify` instead.
 
 ```
 ⚠ stitch mend: 6 cards affected -- 2 strip, 1 archive, 1 repoint, 2 notify
@@ -241,17 +247,40 @@ dry run.** Nothing has been written yet.
 stitch mend --apply           # THIS writes to Metabase
 ```
 
-Per card: re-read it and skip it if a human edited it since the plan (their edit outranks ours),
-snapshot the revision, write, **re-execute the card**, and revert through Metabase's revision history
-if it does not run. Every diff it writes is printed. Any card that ends `failed` exits non-zero.
+Apply first checks the **current** action policy and collection restrictions, including when
+you load an older plan. It re-reads each eligible card and skips it if someone edited it since
+planning. For a query rewrite it captures an available revision, writes, and **re-executes the
+card**. If execution fails, it attempts rollback through Metabase's revision history, then by
+restoring the captured query. Rollback can fail; the outcome reports that for manual recovery.
+Every diff is printed, and any card that ends `failed` exits non-zero.
+
+Execution validation does **not** prove that the report's meaning or numbers are correct.
+Archive actions set a reversible flag and are not query-validated. Dashboard filter updates
+can partially fail after a card query succeeds; the repaired card and any completed dashboard
+updates remain in place, and the failure is reported.
 
 Nothing is inferred: a repoint happens only where you declared `old=new`. A rename mend cannot follow
 — because Metabase has not synced the new column yet, say — becomes a `notify`, never a strip, since
 "I cannot find the new column" and "the column is gone" call for opposite repairs.
 
-Autonomy is per action, in `stitch.yml`. `strip` is the one worth a decision: a card with a dead
-filter removed still runs, and shows different numbers under the same title. Remove it from
-`mend.auto` and those cards get listed instead of edited. `stitch doctor --write-access` checks that
+Autonomy is per action, in `stitch.yml`:
+
+```yaml
+mend:
+  auto: [repoint]  # default; [] makes all actions notify-only
+  notify_only_collections: ["*Personal*"]
+```
+
+Add `strip` only if you accept removing query clauses: a card with a filter removed can run
+and show different numbers under the same title. Add `archive` only if you want affected
+cards archived automatically when applying a plan. Both require an explicit choice.
+
+**Upgrading:** omitted `mend.auto` now means `[repoint]`. Explicit existing lists are preserved,
+including `[repoint, strip, archive]` and `[]`; change an old broad list to `[repoint]` to adopt
+the safer policy. Saved plans obey the current restrictions, even with `--force`. Relaxing
+policy does not turn an old `notify` entry into a repair: generate a new plan.
+
+`stitch doctor --write-access` checks that
 the API key can write, and writes nothing itself. The post-deploy workflow — sync, build, impact,
 plan, Slack notice, apply, summary, in one job — is
 [`action/stitch-mend.yml`](https://github.com/sverrbear/stitch-lineage/blob/main/action/stitch-mend.yml), which documents a human-gated variant alongside.
@@ -378,7 +407,7 @@ What [`stitch mend`](#repairing-what-broke-stitch-mend) is allowed to do without
 | Key | Required | Default | Description |
 | --- | -------- | ------- | ----------- |
 | `slack_webhook` | no | none | Where the plan notice and the apply summary are posted. Must be an env reference (`${STITCH_SLACK_WEBHOOK_URL}`) — a literal URL in `stitch.yml` is an error, like a literal API key. |
-| `auto` | no | `[repoint, strip, archive]` | Actions applied without a human gate. Remove one and it downgrades to `notify`: the card is listed and written to by nobody. `notify` itself is not a valid entry — it is the absence of a write, not an autonomy level. |
+| `auto` | no | `[repoint]` | Actions allowed by `--apply`. Add `strip` or `archive` to opt in; `[]` disables all writes. Current policy is checked again when applying saved plans. Explicit existing lists are preserved. `notify` is not a valid entry: it means no write. |
 | `notify_only_collections` | no | `["*Personal*"]` | Globs on collection name or full path (personal collections match `*Personal*` whatever they are named). Cards here are never written to. |
 
 ## Coverage
@@ -422,7 +451,7 @@ reverse ETL, a notebook or another BI tool. Candidates to review, never a delete
 | **1** | `serve`: search, impact-first summaries and lineage; `export --format site` | **shipped** |
 | **2** | Description staging and apply; compatibility with existing staged relationships | **shipped** — ERD canvas, suggestions, and their planned extensions retired (#242) |
 | 3 | Native SQL cards via sqlglot and MBQL 5 stages (**shipped**, ahead of phase order); rename heuristics, `--verify-lineage`, Metabase version matrix | ongoing |
-| 4 | `stitch mend`: impact-driven card remediation — plan, Slack notice, reversible auto-apply; `doctor --write-access` | ongoing |
+| 4 | `stitch mend`: impact-driven card remediation — plan, Slack notice, guarded apply with rollback attempts; `doctor --write-access` | ongoing |
 
 The issue tracker, not this table, is the operational truth.
 

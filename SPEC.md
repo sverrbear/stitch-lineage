@@ -13,6 +13,7 @@
 - **Amended 2026-08-11** (distribution): **the "PyPI deliberately skipped" decision is reversed.** stitch publishes to PyPI as `stitch-lineage`, and `pip install stitch-lineage` is the primary install. The original reasoning — that installing from a ref you chose keeps you in control of when the tool changes — argues for pinning, not against a registry: a tagged release is just as pinnable and far easier to install, and git-install remains documented for riding `main`. Releases are tag-triggered: pushing a `v*` tag runs `.github/workflows/publish.yml`, which refuses to build unless the tag matches the version in `pyproject.toml`, refuses to publish a wheel that does not contain the built frontend (`app/frontend/dist/`), and uploads through PyPI Trusted Publishing (OIDC, `environment: pypi`) with no API token stored anywhere. Nothing else in the spec changes: distribution is a delivery channel, and local-first is unaffected.
 - **Amended 2026-08-12** (badges, #187): the node badge answers **who manages this table**, not which system it lives in — §9's "System badges" becomes "Manager badges". dbt-produced nodes (models, seeds, snapshots) take the dbt mark; dbt `source`s, which land in Snowflake by something outside this repo, keep the Snowflake mark; columns take their table's manager; the Metabase side is unchanged. One mark for the whole warehouse was a distinction nobody could act on — the actionable fact is whether `dbt run` builds the thing you are about to change. Nothing else moves: the graph, the resolvers and the node types are untouched, this is what the app *says* about them.
 - **Amended 2026-10-22** (product focus, #242): remove the ERD canvas and relationship suggestions, including their CLI/API, layout engine and dismissal store. Keep column lineage, impact, `mend`, and unused-downstream analysis (`doctor --dead`). Description editing and existing staged changes retain a standalone review/apply page. Retire ERD saved views and additional relationship drawing shapes from the roadmap.
+- **Amended 2026-10-22** (Mend defaults, #246): only declared rename repoints are enabled by default. Strip and archive require explicit config; apply re-checks current action and collection policy for saved plans. Execution validation does not prove business meaning, and rollback is attempted rather than guaranteed.
 - **Amended 2026-10-22** (onboarding, #244): `stitch init` connects, builds and opens the app; OS-stored credentials and existing configuration support retries. Environment credentials remain available for CI.
 
 ---
@@ -50,7 +51,7 @@ dbt artifacts + Metabase API -> stitch build -> .stitch/graph.json
                                               + local baselines/history
 stitch impact -> changed columns and affected reports
 stitch serve  -> search, impact-first Summary, column/table Lineage
-stitch mend   -> plan, explicit apply, validation and rollback in Metabase
+stitch mend   -> plan, explicit apply, execution checks and rollback attempts in Metabase
 stitch doctor --dead -> unused-downstream candidates for review
 ```
 
@@ -467,7 +468,7 @@ A scheduled nightly job runs full `stitch build` (with Metabase) on main and com
 | **1** | `serve`: search, impact-first summaries, lineage; static export | **shipped** |
 | **2** | Description editing, staged review and apply; existing relationship compatibility | **shipped** — ERD/suggestions and planned canvas extensions retired (#242) |
 | **3** | Metabase **native SQL** cards via sqlglot + template-tag substitution (#32, shipped; modern Metabase also emits **MBQL 5 lib/stages** for saved questions — #22, shipped ahead of phase order); rename heuristics (#33), `--verify-lineage` over ACCESS_HISTORY (#34), Metabase version matrix (#35) | ongoing |
-| **4** | **`stitch mend`** — impact-driven card remediation (§14, #143): `impact --format json`, a deterministic plan with one action per affected card (repoint / strip / archive / notify), per-action autonomy, and an apply loop whose every write is snapshotted, re-executed and auto-reverted; `doctor --write-access`; the one-job post-deploy Action template | ongoing |
+| **4** | **`stitch mend`** — impact-driven card remediation (§14, #143): `impact --format json`, a deterministic plan with one action per affected card (repoint / strip / archive / notify), per-action autonomy, and an apply loop that checks current policy, validates rewritten queries and attempts rollback on execution failure; `doctor --write-access`; the one-job post-deploy Action template | ongoing |
 
 Work is tracked as GitHub issues; the tracker, not this table, is the operational truth.
 
@@ -518,14 +519,14 @@ prod dbt rebuild ──► Metabase sync_schema ──► stitch build ──►
                                                                      │
                                                                stitch mend --apply
                                                                      │
-                                                 per card: write ► validate ► revert on error
+                                                 query rewrite: write ► execute ► attempt rollback on error
                                                                      │
                                                                Slack summary
 ```
 
 One post-deploy job. No artifact handoff, no environment gate, no runner held pending.
 
-**Why no approval gate (decided 2026-08-11, #143).** A plan rots while it waits: every hour, more cards drift and silently degrade to `stale`, so a slow approval is a *partial* repair. The gate was never the safety mechanism either — safety is the staleness guard, the revision snapshot, post-write re-execution, auto-revert, notify-only collections and a summary that names every card, all of which are retained. And for **repoint**, the largest action class, human approval already happened: the rename was made deliberately in a reviewed PR and declared explicitly on the command line. A second button approves nothing new. The honest exception is **strip**, which is handled by per-action autonomy rather than by gating the whole plan. The gated flow survives as a documented variant in `action/stitch-mend.yml`.
+**Explicit apply and conservative defaults (#246).** `--plan` writes no Metabase content; `--apply` is the explicit write step. Only `repoint` is enabled by default, and only for a declared rename. Teams may opt into `strip` or `archive` in `mend.auto`, or add a separate human gate using the variant in `action/stitch-mend.yml`. The staleness guard, query execution checks, rollback attempts and per-card outcomes remain in every apply path; none can prove that a report still answers the intended business question.
 
 ### 14.1 The plan — one action per card
 
@@ -553,21 +554,25 @@ The plan is a deterministic file (`.stitch/mend_plan.json`): per card the id, ac
 ```yaml
 mend:
   slack_webhook: ${STITCH_SLACK_WEBHOOK_URL}   # env reference only, like metabase.api_key
-  auto: [repoint, strip, archive]               # remove one -> it downgrades to notify
+  auto: [repoint]                              # default; strip/archive require explicit opt-in
   notify_only_collections: ["*Personal*"]       # never written to; listed for humans
 ```
 
-All three on by default. `strip` is the one worth a decision: a card with a dead filter removed does not *look* broken — it runs, and shows different numbers under the same title, which re-execution validation cannot catch. Some owners would rather see the error card and decide. `notify` is deliberately not configurable: it is the absence of a write, not an autonomy level.
+Only `repoint` is enabled by default. `strip` can remove a filter and leave a report running with different numbers under the same title; re-execution cannot detect that semantic change. `archive` hides the card until someone unarchives it. Both require explicit opt-in. `notify` is deliberately not configurable: it is the absence of a write, not an autonomy level.
 
-### 14.3 Apply — every write reversible
+**Migration:** an omitted `auto` now resolves to `[repoint]`; existing explicit lists, including the old `[repoint, strip, archive]` and an empty `[]`, are preserved. To adopt the safer policy, replace an explicit broad list with `[repoint]`. An empty list disables every write.
 
-Per card, in order: **staleness guard** (re-read the card; `updated_at` moved since plan time → skip as `stale`, because a human edited it and their edit outranks ours — the same principle as `stitch apply`'s dirty-file refusal; `--force` overrides) → **snapshot** the revision id → **`PUT /api/card/:id`** with only what changed → **validate** by re-executing the card (a failure arrives as a status code, a `status` that is not a success word, *or* an `error` beside a happy status — all three are read) → **revert** through the revisions API, falling back to restoring the `before` query the plan captured, and saying loudly when it could neither.
+### 14.3 Apply — current policy, execution checks and rollback attempts
 
-Archive actions set the flag and are not re-executed: the query did not change, so a run would prove nothing, and Metabase's archive is already reversible. A dashcard write is done by reading the dashboard back and replacing only the named dashcards — `PUT /api/dashboard/:id` takes the whole array, and sending the plan's copy would silently revert anything else that moved. A dashcard failure does **not** revert the card: the card is repaired and proved to run, and undoing that because a dashboard write failed helps nobody.
+Before writing, apply checks each action against **current** `mend.auto`, never the saved plan's allowlist. Disallowed actions become `notify` outcomes without API reads or writes. Existing `notify` entries stay notify even if policy is relaxed; re-plan to authorize a new repair. When collection restrictions are configured, apply fetches the current collection listing and checks each freshly read card's current collection id using the same name, path and personal-collection matching as planning. Unreadable collection policy fails closed. `--force` cannot bypass action or collection restrictions.
 
-The summary — applied / archived / stale / failed / skipped / notify, every card named, `failed` first because it is an alarm and strips next because they are silent — goes to Slack and to stdout. Any `failed` exits non-zero. **The plan is the dry run**; apply additionally prints a unified diff of every `dataset_query` it writes into the job log, so a CI log answers "what exactly changed in card #412" without opening Metabase.
+For each eligible card, in order: **staleness guard** (re-read the card; changed `updated_at` → skip as `stale`; `--force` overrides this guard only) → **snapshot** an available revision id → **`PUT /api/card/:id`** with only what changed → **validate query rewrites** by re-executing the card (read the HTTP status, query `status`, and `error`) → **attempt rollback on execution failure** through the revisions API, falling back to restoring the captured `before` query. Rollback can itself fail; the outcome records that failure for manual recovery. Successful execution does not validate business meaning or numeric correctness.
 
-`stitch doctor --write-access` is the pre-flight: who the API key is, how many cards report `can_write`, whether revision history (the revert target) is readable, and what `mend.auto` will actually do. It writes nothing.
+Archive actions set the flag and are not re-executed; they can be reversed by unarchiving in Metabase. A dashcard write reads the dashboard back and replaces only the named dashcards, preserving unrelated changes. Dashboard writes can partially fail after the card query passes execution validation. That failure does **not** revert the card or previously completed dashboard writes; the summary names the failure and how many dashcards were updated. Apply is not a transaction across cards and dashboards.
+
+The summary — applied / archived / stale / failed / skipped / notify, every card named, `failed` first and strips next — goes to Slack when requested and to stdout. Any `failed` exits non-zero. **The plan is the dry run**; apply additionally prints a unified diff of every rewritten `dataset_query`.
+
+`stitch doctor --write-access` is the pre-flight: who the API key is, how many cards report `can_write`, whether revision history is readable, and what `mend.auto` allows. It writes nothing and does not guarantee rollback will succeed.
 
 ### 14.4 Why this is post-deploy, not PR-time
 
@@ -589,5 +594,6 @@ Two additions to §4, both of them the existing rules holding rather than bendin
 
 ### 14.7 Risks
 
-- **This writes to user-authored BI content without a human gate.** The protections are structural rather than ceremonial: every write is snapshotted against Metabase's revision history, validated by re-execution, auto-reverted on error, confined to declared renames and dead references, and named card-by-card in the summary. The worst case is a revert, not a loss. Trust erodes on the first silent bad strip — which is exactly why `strip` is dialable and why the summary shows strips before anything that merely worked.
-- **Revisions API drift.** Same posture as the standing Metabase-API risk (§13): version matrix, untrusted response shapes, raw payloads retained. If an instance will not serve revisions, mend says so in `doctor --write-access` and reverts by restoring the captured query instead.
+- **Semantic correctness is not execution success.** Even a declared rename can point at a column whose meaning changed. Strip and archive require explicit opt-in, and clause removal can silently change the answer. Inspect the plan and the resulting report; a successful query is not evidence that its numbers are correct.
+- **Partial writes and failed rollback.** Card and dashboard writes are not transactional. Query failures trigger rollback attempts, which can fail. Dashboard failures leave the repaired card and any successful dashboard updates in place. Outcomes report these cases for manual recovery; reversal is never guaranteed.
+- **Revisions API drift.** Same posture as the standing Metabase-API risk (§13): version matrix, untrusted response shapes, raw payloads retained. If an instance will not serve revisions, mend says so in `doctor --write-access` and attempts to restore the captured query instead.
