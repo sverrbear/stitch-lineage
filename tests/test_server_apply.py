@@ -135,11 +135,9 @@ def client(repo, stores):
         create_app(
             repo / ".stitch" / "graph.json",
             None,
-            None,
-            stores[0],
-            repo / ".stitch" / "layout.yml",
-            stores[1],
-            context,
+            staged_path=stores[0],
+            descriptions_path=stores[1],
+            apply_context=context,
         )
     )
 
@@ -148,7 +146,12 @@ def client(repo, stores):
 def read_only(repo, stores):
     """The app without an apply context: staging works, the repo is untouchable."""
     return TestClient(
-        create_app(repo / ".stitch" / "graph.json", None, None, stores[0], None, stores[1])
+        create_app(
+            repo / ".stitch" / "graph.json",
+            None,
+            staged_path=stores[0],
+            descriptions_path=stores[1],
+        )
     )
 
 
@@ -458,11 +461,9 @@ def test_an_unimplemented_write_form_is_a_422(repo, stores):
         create_app(
             repo / ".stitch" / "graph.json",
             None,
-            None,
-            stores[0],
-            None,
-            stores[1],
-            apply_service.ApplyContext(config=config, cfg=load_config(config)),
+            staged_path=stores[0],
+            descriptions_path=stores[1],
+            apply_context=apply_service.ApplyContext(config=config, cfg=load_config(config)),
         )
     )
     response = client.post("/api/apply/preview")
@@ -635,7 +636,6 @@ def test_browser_requests_cannot_apply_staged_changes_from_another_origin(client
         ("DELETE", f"/api/staged-relationships/{DRAWN_ID}", None),
         ("PUT", "/api/staged-descriptions", {**EDIT, "new_description": "unwanted"}),
         ("DELETE", f"/api/staged-descriptions/{EDIT_ID}", None),
-        ("POST", f"/api/suggestions/{DRAWN_ID}/dismiss", None),
         ("POST", "/api/apply", None),
         ("POST", "/api/apply/preview", None),
         ("PATCH", "/api/staged-descriptions", EDIT),

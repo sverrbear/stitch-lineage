@@ -79,8 +79,7 @@ def relationship_id(from_model: str, from_column: str, to_model: str, to_column:
     same relationship, so it dedupes instead of stacking up a second entry.
 
     It lives here, not in io/staged_store.py where it is used most, because
-    graph/suggest.py must mint the SAME id for a suggested pair -- accepting or
-    dismissing a suggestion has to survive a graph rebuild -- and graph/ may not import
+    IDs must survive a graph rebuild, and graph/ may not import
     io/ (SPEC.md section 4). One definition, no drift.
     """
     payload = f"{from_model}.{from_column}->{to_model}.{to_column}".lower()

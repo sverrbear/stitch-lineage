@@ -8,7 +8,6 @@ const DEFAULT_META: StitchMeta = {
   metabase_url: null,
   generated_at: null,
   schema_version: 1,
-  erd_default_scope: null,
   strip_model_prefixes: [],
   table_prefixes: [],
 }

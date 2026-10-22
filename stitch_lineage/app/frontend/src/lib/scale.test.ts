@@ -9,7 +9,6 @@ import { describe, expect, it } from 'vitest'
 import type { StitchGraph } from '../types'
 import { buildIndex } from './graph'
 import { lineageFor, layoutLineage } from './lineage'
-import { defaultScope, erdForScope, listScopes } from './erd'
 import { GraphSearch } from './search'
 
 const graphPath = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'dev-public', 'dev-graph.json')
@@ -55,13 +54,4 @@ describe.skipIf(!existsSync(graphPath))('real graph scale', () => {
     expect(elapsed).toBeLessThan(500)
   })
 
-  it('ERD scopes partition the graph into digestible views', () => {
-    const index = buildIndex(graph)
-    const scopes = listScopes(index)
-    expect(scopes.length).toBeGreaterThan(0)
-    const scope = defaultScope(scopes)!
-    const erd = erdForScope(index, scope)
-    expect(erd.models.length).toBeGreaterThan(0)
-    expect(erd.models.length).toBeLessThan(graph.nodes.length)
-  })
 })

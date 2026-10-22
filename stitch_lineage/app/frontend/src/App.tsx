@@ -9,7 +9,7 @@ import { useRoute } from './router'
 import { copy } from './copy'
 
 // The React Flow canvases are the heavy chunk; keep search/detail first-load light.
-const ErdPage = lazy(() => import('./pages/ErdPage').then((m) => ({ default: m.ErdPage })))
+const StagedPage = lazy(() => import('./pages/StagedPage').then((m) => ({ default: m.StagedPage })))
 
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
@@ -65,7 +65,7 @@ function Shell() {
             </article>
           </main>
         )}
-        {(route.page === 'node' || route.page === 'lineage' || route.page === 'relationships') && (
+        {(route.page === 'node' || route.page === 'lineage') && (
           <ObjectWorkspace key={route.nodeId} route={route} />
         )}
         {route.page === 'coverage' && (
@@ -73,7 +73,7 @@ function Shell() {
             <CoveragePage kind={route.kind} />
           </main>
         )}
-        {route.page === 'erd' && <ErdPage scopeKind={route.scopeKind} scopeValue={route.scopeValue} />}
+        {route.page === 'staged' && <StagedPage />}
       </Suspense>
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
       {origin === 'dev-fixture' && <div className="dev-banner">{copy.app.devFixtureBanner}</div>}

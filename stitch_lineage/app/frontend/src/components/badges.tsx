@@ -102,7 +102,7 @@ const MARK: Record<Manager, (props: MarkProps) => ReactElement> = {
 }
 
 /**
- * The badge used everywhere: search results, panels, lineage nodes, ERD headers.
+ * The badge used everywhere: search results, panels, lineage nodes.
  *
  * `nodeId` is what makes a COLUMN answerable — a column's manager is its parent
  * table's, and the id is where the parent is written. Pass it whenever there is one;

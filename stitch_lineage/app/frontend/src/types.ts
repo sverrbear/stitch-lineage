@@ -74,8 +74,6 @@ export interface StitchMeta {
   metabase_url: string | null
   generated_at: string | null
   schema_version: number
-  /** `schema:<name>` / `tag:<name>` the ERD opens on (serve.erd_default_scope). */
-  erd_default_scope?: string | null
   /** Routing prefixes hidden from model display names (serve.strip_model_prefixes). */
   strip_model_prefixes?: string[]
   /**

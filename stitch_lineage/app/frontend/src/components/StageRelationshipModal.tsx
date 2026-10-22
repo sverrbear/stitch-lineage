@@ -1,11 +1,3 @@
-// Confirm a relationship drawn on the ERD before staging it (#24).
-//
-// The modal is deliberately explicit about what happens next: drawing stages a
-// declaration locally, and only `stitch apply` writes it into the dbt repo. The
-// server's own 422 message is shown verbatim — it names the exact problem
-// ("from column 'ghost_id' is not a column of model 'fct_orders'") far better
-// than anything this component could infer.
-
 import { useEffect, useState } from 'react'
 import { displayModelName } from '../lib/present'
 import { CARDINALITIES, cardinalitySentence, type Cardinality } from '../lib/staging'
@@ -16,15 +8,12 @@ export interface StageTarget {
    * Set when an ALREADY staged declaration is being revisited (#71): the same
    * decision, so the same modal, and the save is a PUT rather than a POST.
    */
-  id?: string
+  id: string
   fromModel: string
   fromColumn: string
   toModel: string
   toColumn: string
-  /** Prefilled when the pair came from a suggestion rather than a drag. */
   cardinality?: string
-  /** Why stitch proposed it — shown so accepting is a judgement, not a reflex. */
-  provenance?: string
 }
 
 export function StageRelationshipModal({
@@ -67,11 +56,7 @@ export function StageRelationshipModal({
         onClick={(event) => event.stopPropagation()}
       >
         <h2 id="stage-modal-title">
-          {target.id
-            ? copy.stage.titleEdit
-            : target.provenance
-              ? copy.stage.titleAccept
-              : copy.stage.titleStage}
+          {copy.stage.titleEdit}
         </h2>
         <p className="modal-endpoints">
           <code>
@@ -82,8 +67,6 @@ export function StageRelationshipModal({
             {displayModelName(target.toModel)}.{target.toColumn}
           </code>
         </p>
-
-        {target.provenance && <p className="modal-provenance">{target.provenance}</p>}
 
         <label className="modal-field" htmlFor="stage-cardinality">
           {copy.stage.cardinality}
@@ -123,13 +106,7 @@ export function StageRelationshipModal({
             {copy.stage.cancel}
           </button>
           <button type="button" className="button" onClick={submit} disabled={busy}>
-            {busy
-              ? target.id
-                ? copy.stage.saving
-                : copy.stage.staging
-              : target.id
-                ? copy.stage.saveEdit
-                : copy.stage.stageRelationship}
+            {busy ? copy.stage.saving : copy.stage.saveEdit}
           </button>
         </div>
       </div>

@@ -104,10 +104,9 @@ Every other command reads that one graph file:
 | `stitch build` | Resolve dbt + Metabase into `graph.json`. `--no-metabase` does the dbt side only; `--check` exits 1 on drift against a committed graph. |
 | `stitch impact` | What the last build changed, and what it hits. `--column <model.column>` for a point query, `--base <ref>` to diff a git ref. |
 | `stitch mend` | Repair the Metabase cards a column change broke. `--plan` classifies and writes `.stitch/mend_plan.json`; `--apply` executes it. The only command that writes to Metabase. |
-| `stitch serve` | The local lineage + ERD app on `127.0.0.1:8787` (`--port`, `--host`, `--no-open`). |
+| `stitch serve` | The local lineage and impact app on `127.0.0.1:8787` (`--port`, `--host`, `--no-open`). |
 | `stitch search <term>` | Find models, columns, Metabase fields, cards and dashboards. |
-| `stitch suggest` | Relationships worth declaring, strongest evidence first. |
-| `stitch apply` | Write staged relationships and descriptions into model YAML (`--dry-run` shows the diff). |
+| `stitch apply` | Write staged descriptions and existing staged relationships into model YAML (`--dry-run` shows the diff). |
 | `stitch doctor` | Config, artifacts, graph and Metabase connectivity. `--unbound`, `--untraced`, `--unresolved-cards`, `--dead`, `--list-databases`, `--write-access`. |
 | `stitch history` | The graph baselines past builds stored locally, keyed by commit sha. |
 | `stitch export` | `--format jsonl` for agents and warehouses, `--format site` for a static build of the app. |
@@ -115,7 +114,7 @@ Every other command reads that one graph file:
 
 Everything except `build` and `doctor`'s connectivity checks works without the Metabase environment
 variables set (`mend` is the exception: it needs them to read the cards it plans against). `--json` is
-available on `impact --column`, `search`, `suggest`, `history` and `doctor --dead`, and
+available on `impact --column`, `search`, `history` and `doctor --dead`, and
 `impact --format json` emits the machine-readable diff. Add `.stitch/` to `.gitignore`; the graph is a local artifact.
 
 ## What breaks if I change this column?
@@ -241,18 +240,11 @@ selected column, model, card or dashboard in context; table-grain lineage still 
 selected column. Summary drafts and scroll position stay with that object while you inspect its
 graph. Following another node opens that object's workspace.
 
-Tables and their columns also offer **Relationships**: a diagram focused on the table and its
-joins, with a schema or dbt-tag selector to widen the view. A column keeps its own identity while
-the diagram uses its owning table. Semantic views retain Summary and Lineage without posing as
-tables. Existing node, lineage and ERD bookmarks continue to work.
-
-Diagrams open at readable scale around the selection. **Focus selection** returns to that view;
-**Show overview** deliberately fits the whole drawing. Lineage groups traced columns under their
-models and opens a small neighbourhood, with counted upstream/downstream controls to reveal more.
-Metabase field bindings remain inspectable inside each model and can also be shown as nodes.
-Impact totals still come from the full graph, and grouped edges retain their weakest evidence.
-Relationship cards initially show join keys and the selected column; **Show all columns** expands
-the schema without moving the selected table or zooming the diagram out.
+Lineage opens at readable scale around the selection. **Focus selection** returns to that view;
+**Show overview** fits the whole drawing. Traced columns are grouped under their models, with
+counted upstream/downstream controls to reveal more. Metabase field bindings remain inspectable
+inside each model and can also be shown as nodes. Impact totals still come from the full graph,
+and grouped edges retain their weakest evidence.
 
 Every node carries the badge of who manages it — dbt on what the pipeline builds, Snowflake on
 the source tables your loaders land, Metabase on the BI side — so a glance separates the columns
@@ -266,43 +258,19 @@ the current graph, not a guarantee that a change will break a card or that an em
 recorded trace gaps and partial lists are called out beside the answer. Definitions, upstream
 dependencies, descriptions and relationship details remain below it.
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/sverrbear/stitch-lineage/main/assets/erd.png" alt="The stitch ERD: two scoped models with a validated relationship drawn between their key columns" width="100%">
-</p>
+Model and column descriptions can still be edited. Edits stage locally, then **Staged changes**
+opens a standalone review page with diff preview and apply. `stitch apply` remains available in
+the CLI. Previously staged relationships can also be reviewed, edited, discarded, and applied;
+existing declarations remain readable as evidence in object details.
 
-In Relationships you can **draw** relationships: drag one column's handle onto another's, name the
-cardinality, and the declaration stages locally. Nothing you do in the app touches your repo.
-Relationships stage to `.stitch/staged_relationships.yml` and description edits to
-`.stitch/staged_descriptions.yml`; `stitch apply` materializes them into your model YAML as one
-reviewable step:
-
-```diff
---- a/models/marts/_schema.yml
-+++ b/models/marts/_schema.yml
-       - name: customer_id
-         description: 'Who placed the order'
-+        config:
-+          meta:
-+            metabase.fk_target_table: marts.dim_customers
-+            metabase.fk_target_field: customer_id
-+            relationship_type: many-to-one
-```
-
-The write is deliberately conservative. It is **insert-only** — comments, quoting, key order and
-blank lines survive byte-identically, and a file stitch cannot reproduce exactly is reported as
-unappliable instead of reformatted. It **never invents files**: the target comes from the manifest's
-`patch_path`, and a model with no schema YAML is reported, not scaffolded. A target with uncommitted
-changes is refused unless you pass `--force`. What was applied is then patched into `graph.json`, so
-the relationship is in the app on a refresh rather than after the next build.
-
-Where to start is `stitch suggest`, which ranks the relationships nobody has declared yet.
-**Implicit joins** come from Metabase itself — when a card reaches a column by joining through an
-FK, the score is the number of cards already relying on a relationship nobody wrote down — and the
-weaker **naming** convention (`<entity>_id` → matching-grain model) always ranks below a single
-witnessing card. Pairs you have declared, staged or dismissed never come back.
+The ERD canvas and relationship suggestions have been retired. Old object Relationships links
+open that object's Summary, and old global ERD links return to search. `stitch suggest` and the
+suggestion API are removed. Existing `serve.erd_default_scope` settings are ignored, and existing
+`.stitch/layout.yml` files are left untouched. Column lineage, `stitch mend`, and unused-downstream
+analysis (`stitch doctor --dead`) remain supported.
 
 `stitch export --format site` writes the same app as a static directory with the graph inlined into
-`index.html` — no server, no API, and so read-only: the drawing affordances are simply absent.
+`index.html` — no server, no API, and so read-only.
 
 ## Configuration
 
@@ -323,9 +291,6 @@ metabase:
       table_prefix: ${USER_PREFIX}_     # optional, stripped before matching
   include_schemas: [marts, reporting]
   exclude_models: ["stg_*"]
-
-serve:
-  erd_default_scope: "schema:marts"
 
 output:
   history_retention: 20
@@ -357,7 +322,7 @@ Required — stitch has no default Metabase to talk to.
 
 ### `relationships`
 
-Controls what `stitch apply` writes for a relationship you declared in the app.
+Controls existing relationship evidence and how `stitch apply` writes previously staged relationships.
 
 | Key | Required | Default | Description |
 | --- | -------- | ------- | ----------- |
@@ -380,7 +345,6 @@ Presentation defaults, shared by `stitch serve` and `export --format site`.
 
 | Key | Required | Default | Description |
 | --- | -------- | ------- | ----------- |
-| `erd_default_scope` | no | none | ERD scope to open on: `schema:<name>` or `tag:<name>`. Anything else is a config error. |
 | `strip_model_prefixes` | no | `[]` | Routing prefixes stripped from a model's *display* name, e.g. `["viz_"]`. Purely cosmetic — ids, search keys and everything written back keep the real dbt name. |
 
 ### `mend`
@@ -431,8 +395,8 @@ reverse ETL, a notebook or another BI tool. Candidates to review, never a delete
 | Phase | Scope | Status |
 |---|---|---|
 | **0** | `build` (dbt column lineage via sqlglot + MBQL cards), deterministic `graph.json` + `--check`, coverage report, recursive `impact` incl. `--column` and SHA-keyed history, `search`, `doctor` incl. `--dead` | **shipped** |
-| **1** | `serve`: search + detail panels, lineage view, catalog, read-only ERD; `export --format site` | **shipped** |
-| **2** | Editable ERD canvas: staged relationships and descriptions, `stitch apply` with diff preview, suggestions, `stitch init` | **shipped** — except saved views and node positions (#31), composite and conceptual relationship shapes (#55) |
+| **1** | `serve`: search, impact-first summaries and lineage; `export --format site` | **shipped** |
+| **2** | Description staging and apply; compatibility with existing staged relationships | **shipped** — ERD canvas, suggestions, and their planned extensions retired (#242) |
 | 3 | Native SQL cards via sqlglot and MBQL 5 stages (**shipped**, ahead of phase order); rename heuristics, `--verify-lineage`, Metabase version matrix | ongoing |
 | 4 | `stitch mend`: impact-driven card remediation — plan, Slack notice, reversible auto-apply; `doctor --write-access` | ongoing |
 

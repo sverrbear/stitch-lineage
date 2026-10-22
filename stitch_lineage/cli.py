@@ -47,10 +47,7 @@ from stitch_lineage.graph.schema import (
     Graph,
     NodeType,
 )
-from stitch_lineage.graph.scopes import erd_scopes
 from stitch_lineage.graph.search import search as search_graph
-from stitch_lineage.graph.suggest import Suggestion
-from stitch_lineage.graph.suggest import suggest as suggest_relationships
 from stitch_lineage.init_wizard import ConsolePrompter, StitchInitError, run_init
 from stitch_lineage.io import git
 from stitch_lineage.io.artifacts import StitchArtifactError, load_catalog, load_manifest
@@ -71,7 +68,6 @@ from stitch_lineage.io.history_store import (
     resolve_baseline,
     store_snapshot,
 )
-from stitch_lineage.io.layout_store import LAYOUT_FILENAME, LayoutStoreError, read_dismissed
 from stitch_lineage.io.mend_store import MendStoreError, plan_path, read_plan, write_plan
 from stitch_lineage.io.metabase_client import MetabaseAPIError, MetabaseClient, load_cached
 from stitch_lineage.io.slack_webhook import SlackWebhookError, post_message, split_message
@@ -80,7 +76,6 @@ from stitch_lineage.io.staged_store import (
     STAGED_FILENAME,
     StagedRelationship,
     StagedStoreError,
-    read_staged,
 )
 from stitch_lineage.mend.apply import apply_plan
 from stitch_lineage.mend.models import MendAction
@@ -183,13 +178,6 @@ def _metabase_url(config: Path) -> str | None:
     return url if url and "${" not in url else None
 
 
-def _erd_default_scope(config: Path) -> str | None:
-    """Configured ERD landing scope -- None when there is no config."""
-    if not config.is_file():
-        return None
-    return _load_config_or_fail(config).serve.erd_default_scope
-
-
 def _strip_model_prefixes(config: Path) -> list[str]:
     """Routing prefixes the app hides from model display names (serve.strip_model_prefixes)."""
     if not config.is_file():
@@ -209,25 +197,6 @@ def _table_prefixes(config: Path) -> list[str]:
     cfg = _load_config_or_fail(config)
     prefixes = (db.table_prefix for db in cfg.metabase.databases if db.table_prefix)
     return list(dict.fromkeys(prefix for prefix in prefixes if "${" not in prefix))
-
-
-def _warn_unknown_erd_scope(scope: str | None, graph_path: Path) -> None:
-    """Whether the scope exists is a property of the graph, so it is checked here
-    rather than at config load. The app still opens -- on its auto-picked scope."""
-    if not scope:
-        return
-    try:
-        available = erd_scopes(read_graph(graph_path))
-    except ValueError:
-        return
-    if scope in available:
-        return
-    sample = ", ".join(sorted(available)[:5]) or "none"
-    console.print(
-        f"[yellow]warning:[/] serve.erd_default_scope '{scope}' is not in the graph "
-        f"-- opening the auto-picked scope instead (available: {sample})",
-        soft_wrap=True,
-    )
 
 
 def _require_metabase_env(
@@ -1471,63 +1440,6 @@ def search(
 
 
 @app.command()
-def suggest(
-    json_output: Annotated[
-        bool, typer.Option("--json", help="Emit suggestions as JSON lines for piping.")
-    ] = False,
-    limit: Annotated[int, typer.Option("--limit", help="Maximum suggestions (0 for all).")] = 0,
-    config: ConfigOpt = None,
-) -> None:
-    """List candidate relationships nobody has declared yet, strongest evidence first.
-
-    Sources: Metabase implicit joins (cards already joining through an FK, scored by how
-    many) and `<entity>_id` naming conventions. Pairs already declared, already staged or
-    previously dismissed in the app never appear.
-    """
-    config = _resolve_config(config)
-    graph = _read_graph_or_fail(_graph_path(config))
-    try:
-        staged = [
-            (entry.from_model, entry.from_column, entry.to_model, entry.to_column)
-            for entry in read_staged(_default_out_dir(config, STAGED_FILENAME))
-        ]
-    except StagedStoreError as exc:
-        _fail(str(exc))
-    try:
-        dismissed = read_dismissed(_default_out_dir(config, LAYOUT_FILENAME))
-    except LayoutStoreError as exc:
-        _fail(str(exc))
-
-    suggestions = suggest_relationships(graph, staged, dismissed)
-    if limit > 0:
-        suggestions = suggestions[:limit]
-    if json_output:
-        for suggestion in suggestions:
-            typer.echo(json.dumps(suggestion.model_dump(mode="json"), sort_keys=True))
-        return
-    if not suggestions:
-        console.print("no suggestions")
-        return
-    table = Table("source", "score", "from", "to", "why")
-    for suggestion in suggestions:
-        table.add_row(
-            suggestion.source,
-            f"{suggestion.score:g}",
-            f"{suggestion.from_model}.{suggestion.from_column}",
-            f"{suggestion.to_model}.{suggestion.to_column}",
-            _suggestion_why(suggestion),
-        )
-    console.print(table)
-
-
-def _suggestion_why(suggestion: Suggestion) -> str:
-    if suggestion.source == "implicit_join":
-        cards = len(suggestion.evidence.get("card_ids") or [])
-        return f"{cards} card{'s' if cards != 1 else ''} join through it"
-    return f"names the '{suggestion.evidence.get('entity')}' grain"
-
-
-@app.command()
 def doctor(
     list_databases: Annotated[
         bool,
@@ -1845,13 +1757,10 @@ def export(
     if output_format == "site":
         out = out or _default_out_dir(config, "site")
         try:
-            scope = _erd_default_scope(config)
-            _warn_unknown_erd_scope(scope, graph_path)
             site_dir = export_site(
                 graph_path,
                 out,
                 _metabase_url(config),
-                scope,
                 strip_model_prefixes=_strip_model_prefixes(config),
                 table_prefixes=_table_prefixes(config),
             )
@@ -2239,7 +2148,7 @@ def serve(
     ] = True,
     config: ConfigOpt = None,
 ) -> None:
-    """Run the local lineage + ERD app."""
+    """Run the local lineage and impact app."""
     # deferred: importing FastAPI/uvicorn costs every other command a few hundred ms
     import uvicorn
 
@@ -2247,10 +2156,7 @@ def serve(
 
     config = _resolve_config(config)
     graph_path = _graph_path_or_fail(_graph_path(config))
-    scope = _erd_default_scope(config)
-    _warn_unknown_erd_scope(scope, graph_path)
     staged = _default_out_dir(config, STAGED_FILENAME)
-    layout = _default_out_dir(config, LAYOUT_FILENAME)
     descriptions = _default_out_dir(config, DESCRIPTIONS_FILENAME)
     # apply from the app needs the config it would apply with; without a stitch.yml the app
     # still serves the graph, it just cannot write the repo
@@ -2263,11 +2169,9 @@ def serve(
         server = create_app(
             graph_path,
             _metabase_url(config),
-            scope,
-            staged,
-            layout,
-            descriptions,
-            context,
+            staged_path=staged,
+            descriptions_path=descriptions,
+            apply_context=context,
             strip_model_prefixes=_strip_model_prefixes(config),
             table_prefixes=_table_prefixes(config),
             bind_host=host,

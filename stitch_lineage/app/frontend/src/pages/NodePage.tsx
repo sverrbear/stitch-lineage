@@ -4,7 +4,7 @@
 // as their Metabase display name, and the physical warehouse relation is only
 // ever a secondary fact row.
 
-import { Suspense, lazy, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ObjectWorkspaceContext } from '../components/NodeIdentity'
 import { NodeBadge } from '../components/badges'
 import {
@@ -27,20 +27,16 @@ import {
   type ChainGap,
   type RelationshipRef,
 } from '../lib/details'
-import { resolveStaged, type ErdStagedRelationship } from '../lib/erd'
 import { layerGroups } from '../lib/fanout'
 import { metabaseLink } from '../lib/graph'
 import type { GraphIndex, Reach } from '../lib/graph'
-import { modelStar } from '../lib/modelStar'
 import {
-  listStaged,
   listStagedDescriptions,
   fetchWriteability,
   probeStaging,
   refusalFor,
   type StagedDescription,
   type Writeability,
-  type StagedRelationship,
 } from '../lib/staging'
 import {
   NODE_TYPE_NAME,
@@ -65,21 +61,13 @@ import { lineageHref } from '../router'
 import type { GraphNode } from '../types'
 import { copy, plural } from '../copy'
 
-// React Flow is the heavy chunk and a detail panel must stay light: the mini star
-// loads with the section, not with the page (same reasoning as App's canvases).
-const ModelStar = lazy(() =>
-  import('../components/ModelStar').then((m) => ({ default: m.ModelStar })),
-)
-
 /**
  * The staged declarations this build can see, resolved onto the graph. Empty on a
  * static export or a serve too old for the endpoint — a read-only build must read
- * as read-only, not as broken (same probe the ERD uses).
+ * as read-only, not as broken.
  */
 interface Staging {
   canStage: boolean
-  /** Staged relationships, resolved onto the graph (what the mini star draws). */
-  relationships: ErdStagedRelationship[]
   descriptions: StagedDescription[]
   /** Models whose schema file apply could never write, and why (#132). */
   writeability: Writeability
@@ -89,26 +77,20 @@ interface Staging {
 /**
  * What is staged, for this page. Empty and read-only on a static export or a serve
  * too old for the endpoints — a read-only build must read as read-only, not as
- * broken (the same probe the ERD uses).
+ * broken.
  */
 export function useStaging(index: GraphIndex): Staging {
   const { meta } = useStitch()
   const visible = useContext(ObjectWorkspaceContext)?.summaryActive ?? true
   const [canStage, setCanStage] = useState(false)
-  const [staged, setStaged] = useState<StagedRelationship[]>([])
   const [descriptions, setDescriptions] = useState<StagedDescription[]>([])
   const [writeability, setWriteability] = useState<Writeability>(new Map())
 
   const refreshGeneration = useRef(0)
   const refresh = useCallback(async () => {
     const generation = ++refreshGeneration.current
-    const [relationships, edits] = await Promise.all([
-      listStaged().catch(() => [] as StagedRelationship[]),
-      // A static export or older serve has no description store.
-      listStagedDescriptions().catch(() => [] as StagedDescription[]),
-    ])
+    const edits = await listStagedDescriptions().catch(() => [] as StagedDescription[])
     if (generation !== refreshGeneration.current) return
-    setStaged(relationships)
     setDescriptions(edits)
   }, [])
 
@@ -129,11 +111,10 @@ export function useStaging(index: GraphIndex): Staging {
       refreshGeneration.current += 1
     }
   // Summary remains mounted across views so drafts survive. Its staged snapshot
-  // must refresh after editing/applying in Relationships, without resetting that editor.
+  // must refresh after editing/applying staged changes, without resetting that editor.
   }, [meta.staging_enabled, refresh, visible, index])
 
-  const relationships = useMemo(() => resolveStaged(index, staged).drawable, [index, staged])
-  return { canStage, relationships, descriptions, writeability, refresh }
+  return { canStage, descriptions, writeability, refresh }
 }
 
 /** The staged edit sitting over this entity's description, if there is one. */
@@ -515,21 +496,11 @@ function BiPanel({ nodeId }: { nodeId: string }) {
   )
 }
 
-function StandaloneRelationships({ children }: { children: ReactNode }) {
-  return useContext(ObjectWorkspaceContext) ? null : children
-}
-
 function ModelPanel({ nodeId }: { nodeId: string }) {
   const { index, consequence } = useStitch()
   const usage = consequence.of(nodeId)
-  // Staged declarations belong on the canvas too: a relationship drawn a minute ago
-  // is a relationship, and this page would otherwise deny it exists (#81).
   const staging = useStaging(index)
   const detail = modelDetail(index, nodeId)
-  const star = useMemo(
-    () => modelStar(index, nodeId, staging.relationships),
-    [index, nodeId, staging.relationships],
-  )
   const upstreamGroups = useMemo(() => layerGroups(detail?.upstream ?? [], 'up'), [detail])
   const downstreamGroups = useMemo(() => layerGroups(detail?.downstream ?? [], 'down'), [detail])
   if (!detail) return <NotFound nodeId={nodeId} />
@@ -597,17 +568,11 @@ function ModelPanel({ nodeId }: { nodeId: string }) {
         )}
       </Section>
 
-      {/* Relationships get the canvas, dependencies get the lists below (#81/#82). */}
-      <StandaloneRelationships>
-      <Section title={copy.node.relationships(star?.joinCount ?? 0)}>
-        <Suspense fallback={<div className="star-canvas" />}>
-          <ModelStar star={star} />
-        </Suspense>
-        {detail.relationships.length > 0 && (
+      {detail.relationships.length > 0 && (
+        <Section title={copy.node.declaredRelationships}>
           <RelationshipList relationships={detail.relationships} />
-        )}
-      </Section>
-      </StandaloneRelationships>
+        </Section>
+      )}
 
       <Section
         title={copy.node.dependencies(

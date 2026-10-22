@@ -9,12 +9,9 @@
 // SPEC §12.2: description editing rides the existing staged store and earns no
 // surface beyond this panel and the staged workspace. There is no bulk editor.
 
-import { useContext, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { copy } from '../copy'
-import { ObjectWorkspaceContext } from './NodeIdentity'
-import { useStitch } from '../data'
-import { relationshipScope, relationshipTable } from '../lib/objectWorkspace'
-import { erdHref, relationshipsHref } from '../router'
+import { stagedHref } from '../router'
 import {
   StagingError,
   stageDescription,
@@ -23,13 +20,7 @@ import {
 } from '../lib/staging'
 
 function DescriptionWorkspaceLink() {
-  const nodeId = useContext(ObjectWorkspaceContext)?.nodeId
-  const { index } = useStitch()
-  const node = nodeId ? index.nodesById.get(nodeId) : null
-  const table = node ? relationshipTable(index, node) : null
-  // Unsupported/scopeless entities still need a route to the shared staged review.
-  const href = node && table && relationshipScope(index, table) ? relationshipsHref(node.node_id) : erdHref()
-  return <a className="desc-workspace-link" href={href}>{copy.description.workspaceLink}</a>
+  return <a className="desc-workspace-link" href={stagedHref()}>{copy.description.workspaceLink}</a>
 }
 
 export function DescriptionEditor({

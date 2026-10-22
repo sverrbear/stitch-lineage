@@ -22,7 +22,7 @@ import { copy } from '../copy'
  * put the words next to it — a spinner alone says "wait" without saying what for.
  *
  * Under prefers-reduced-motion it stops turning and stays a ring, because the label
- * beside it is what actually reports the state (same trade the .erd-reset pulse makes).
+ * beside it is what actually reports the state.
  */
 export function Spinner({ label }: { label?: string }) {
   return <span className="spinner" role="presentation" aria-hidden="true" title={label} />
@@ -114,18 +114,8 @@ export function ManagedByFact({ node }: { node: GraphNode }) {
   )
 }
 
-/** Footer legend for the lineage / ERD / map canvases (spec §9 + confidence styling). */
-export function GraphLegend({
-  erd = false,
-  rollup = false,
-  staged = false,
-  suggested = false,
-}: {
-  erd?: boolean
-  rollup?: boolean
-  staged?: boolean
-  suggested?: boolean
-}) {
+/** Footer legend for the lineage canvas (spec §9 + confidence styling). */
+export function GraphLegend({ rollup = false }: { rollup?: boolean }) {
   return (
     <div className="graph-legend">
       {/* Who manages the table, in the order a chain runs: a source lands in the
@@ -147,55 +137,18 @@ export function GraphLegend({
           {copy.legend.rollupThickness}
         </span>
       )}
-      {erd ? (
-        <>
-          <span className="legend-item">
-            <svg width="26" height="8">
-              <line x1="0" y1="4" x2="26" y2="4" className="legend-line-solid" />
-            </svg>
-            {copy.legend.declared}
-          </span>
-          {/* Weight only reads against something, so the legend holds the pair: this
-              is the reference the lines on the canvas are compared to (#164). */}
-          <span className="legend-item">
-            <svg width="26" height="8">
-              <line x1="0" y1="4" x2="26" y2="4" className="legend-line-strong" />
-            </svg>
-            {copy.legend.validated()}
-          </span>
-          {staged && (
-            <span className="legend-item">
-              <svg width="26" height="8">
-                <line x1="0" y1="4" x2="26" y2="4" className="legend-line-dashed" />
-              </svg>
-              {copy.legend.staged()}
-            </span>
-          )}
-          {suggested && (
-            <span className="legend-item">
-              <svg width="26" height="8">
-                <line x1="0" y1="4" x2="26" y2="4" className="legend-line-dotted" />
-              </svg>
-              {copy.legend.suggested}
-            </span>
-          )}
-        </>
-      ) : (
-        <>
-          <span className="legend-item">
-            <svg width="26" height="8">
-              <line x1="0" y1="4" x2="26" y2="4" className="legend-line-solid" />
-            </svg>
-            {copy.legend.exact}
-          </span>
-          <span className="legend-item">
-            <svg width="26" height="8">
-              <line x1="0" y1="4" x2="26" y2="4" className="legend-line-dashed" />
-            </svg>
-            {copy.legend.inexact}
-          </span>
-        </>
-      )}
+      <span className="legend-item">
+        <svg width="26" height="8">
+          <line x1="0" y1="4" x2="26" y2="4" className="legend-line-solid" />
+        </svg>
+        {copy.legend.exact}
+      </span>
+      <span className="legend-item">
+        <svg width="26" height="8">
+          <line x1="0" y1="4" x2="26" y2="4" className="legend-line-dashed" />
+        </svg>
+        {copy.legend.inexact}
+      </span>
     </div>
   )
 }

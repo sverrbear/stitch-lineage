@@ -67,14 +67,8 @@ export const copy = {
   workspace: {
     summary: 'Summary',
     lineage: 'Lineage',
-    relationships: 'Relationships',
     views: 'Object views',
     archived: 'archived',
-    noRelationships: 'Relationships are available for tables and their columns. Use Lineage to inspect this object’s dependencies.',
-    noRelationshipScope: 'This table has no schema or dbt tag in this build, so its relationship diagram is unavailable.',
-    unknownScope: 'This relationship scope is not present in this build.',
-    resetRelationships: 'Return to this object’s relationships',
-    unavailableFocus: 'The focused table is not in this scope. Showing the whole scope.',
   },
 
   /** Search, inline on the home page and inside the palette. */
@@ -129,63 +123,6 @@ export const copy = {
     backToOverview: '← Overview',
     openGroup: (label: string) => `Open ${label} →`,
     empty: 'Nothing here — this build has full coverage.',
-  },
-
-  /** The ERD canvas, its toolbar and the suggestions panel. */
-  erd: {
-    openHint: 'Open details · ⌘/Ctrl-click for lineage',
-    focusHint: 'Show only this table and what it joins · click again for the whole scope',
-    unfocusHint: 'Back to the whole scope',
-    relateHint: 'Drag onto another column to declare a relationship',
-    externalTag: 'Other scope',
-    physicalTable: (table: string) => `${table} — physical table in the warehouse`,
-    phantomColumn: (openHint: string) =>
-      `${openHint} · declared by a relationship, not in the catalog`,
-    empty: 'No models in the graph — nothing to draw.',
-    scope: 'Scope',
-    externalCount: (n: number) =>
-      `${n} model${n === 1 ? '' : 's'} from other scopes, drawn because a relationship in this one points at them`,
-    internalScope: 'Tooling schema — not part of the analytics models',
-    configuredScopeTitle: 'serve.erd_default_scope in stitch.yml',
-    configuredScopeMissing: (scope: ReactNode): ReactNode => (
-      <>
-        configured scope <code>{scope}</code> is not in this graph
-      </>
-    ),
-    resetStale: 'The relationships changed — reset to lay the scope out again',
-    reset: 'Lay the scope out again and fit it to the window (drops dragged positions)',
-    resetView: 'Reset view',
-    resetMoved: (moved: number) => ` (${moved} moved)`,
-    stagedTitle: 'Everything waiting for `stitch apply` — relationships and description edits',
-    stagedButton: (total: number) => `Staged changes (${total})`,
-    suggestedButton: (n: number) => `Suggested (${n})`,
-    /** The live focus filter, stated next to the way out of it (#163). */
-    showingFocus: (name: string) => `Showing ${name} + relations — show all`,
-    hintStaging:
-      "Click a table to see only what it joins · drag from a column's edge onto another column to declare a relationship · ↗ for details",
-    hintReadOnly: 'Click a table to see only what it joins · ↗ or a column for details',
-    suggestPanelLabel: 'Suggested relationships',
-    suggestTitle: (n: number) => `Suggested (${n})`,
-    suggestCapTitle: 'The panel lists them all - the canvas draws the strongest',
-    suggestNotDrawnCount: (n: number) => `${n} not drawn`,
-    hideSuggestions: 'Hide suggestions',
-    suggestReachLabel: 'Suggestion reach',
-    suggestInScopeTitle: (scope: string) =>
-      `Candidates with both models in ${scope} — the ones this canvas draws`,
-    suggestInScope: (scope: string, n: number) => `in ${scope} (${n})`,
-    suggestAllScopesTitle:
-      'Every candidate in the graph, including pairs that join a model in another scope — accepting one does not need it drawn',
-    suggestAllScopes: (n: number) => `All scopes (${n})`,
-    suggestSourceLabel: 'Suggestion source',
-    suggestEveryCandidate: 'Every candidate',
-    suggestAll: 'All',
-    notDrawnTitle: 'Listed here, but not drawn on this canvas',
-    notDrawn: 'Not drawn',
-    elsewhereTitle: (scope: string) =>
-      `This pair lives in ${scope} — accepting it stages the columns by name, no drawing needed`,
-    accept: 'Accept…',
-    dismissTitle: 'Dismissed permanently — it will not be suggested again',
-    dismiss: 'Dismiss',
   },
 
   /** The detail panels: column, model, source, card, dashboard, field. */
@@ -253,7 +190,6 @@ export const copy = {
         columns above. {why}
       </>
     ),
-    relationships: (count: number) => `Relationships — ${count}`,
     dependencies: (upstream: string, downstream: string) =>
       `Dependencies — ${upstream} upstream, ${downstream} downstream`,
     columns: (count: number) => `Columns — ${count}`,
@@ -353,8 +289,7 @@ export const copy = {
       <>
         Graph updated in place: {edges} relationship
         {edges === 1 ? '' : 's'}, {descriptions} description
-        {descriptions === 1 ? '' : 's'} — the canvas and the panels
-        already show it.
+        {descriptions === 1 ? '' : 's'} — the panels already show it.
       </>
     ),
     close: 'Close',
@@ -382,16 +317,18 @@ export const copy = {
 
   /** The staged workspace: everything waiting for `stitch apply`. */
   staged: {
+    pageTitle: 'Staged changes',
+    readOnly: 'This view is read-only. Open stitch serve to review staged changes.',
     panelLabel: 'Staged changes',
     title: (total: number) => `Staged changes (${total})`,
     hide: 'Hide staged changes',
     empty:
-      'Nothing staged yet — drag a column handle onto another, accept a suggestion, or edit a description on a table’s page.',
+      'Nothing staged yet — edit a description on a table or column page.',
     relationships: 'Relationships',
     descriptions: 'Description edits',
     unresolved: 'Not in this graph',
     unresolvedTitle: 'Its model is not in this graph',
-    editRelationshipTitle: 'Change columns or cardinality',
+    editRelationshipTitle: 'Change cardinality',
     editRelationshipLabel: (model: string, column: string) =>
       `Edit staged relationship ${model}.${column}`,
     discardRelationshipTitle: 'Discard this staged relationship',
@@ -415,6 +352,7 @@ export const copy = {
 
   /** Reading and staging a description, on a model or column page. */
   description: {
+    staging: 'Staging…',
     fieldLabel: 'Description',
     /** Where the edit goes, and the two keys that end it. */
     hint: (): ReactNode => (
@@ -423,7 +361,6 @@ export const copy = {
         <code>_schema.yml</code>. ⌘/Ctrl-Enter saves, Esc cancels.
       </>
     ),
-    staging: 'Staging…',
     stageEdit: 'Stage edit',
     cancel: 'Cancel',
     discardTitle: 'Drop the staged edit and reset state',
@@ -439,31 +376,9 @@ export const copy = {
     notEditable: 'Not editable here',
   },
 
-  /** The mini relationship star on a model's page. */
-  star: {
-    openNode: (label: string) => `${label} — open`,
-    hubNode: (label: string) => `${label} — you are here`,
-    /** Nothing to draw yet, and the one place to go and draw it. */
-    empty: (erdLink: string): ReactNode => (
-      <>
-        No relationships on this table yet — <a href={erdLink}>draw one in the ERD</a> and it shows
-        up here.
-      </>
-    ),
-    /**
-     * The hub is a table the ERD does not draw (#191), so there is no canvas to
-     * send anyone to — sending them anyway would be an invitation they cannot take.
-     */
-    emptyNotDrawn:
-      'A semantic view declares its own tables and joins, so the ERD draws the models underneath it instead of this one.',
-    seeAll: 'see them all in the ERD →',
-  },
-
-  /** Staging a relationship a reader has just drawn, or accepting a suggestion. */
+  /** Editing a previously staged relationship. */
   stage: {
     titleEdit: 'Edit this staged relationship',
-    titleAccept: 'Accept this relationship',
-    titleStage: 'Stage a relationship',
     cardinality: 'Cardinality',
     /** Where the declaration goes, and what it takes to make it real. */
     note: (): ReactNode => (
@@ -474,9 +389,7 @@ export const copy = {
     ),
     cancel: 'Cancel',
     saving: 'Saving…',
-    staging: 'Staging…',
     saveEdit: 'Save edit',
-    stageRelationship: 'Stage relationship',
   },
 
   /** The legend under each canvas: what a mark and what a line mean. */
@@ -486,19 +399,6 @@ export const copy = {
     snowflake: 'source — landed in Snowflake, not dbt-managed',
     metabase: 'Metabase / BI',
     rollupThickness: 'thickness = contributing columns',
-    declared: 'declared relationship — hover or click it to light the columns it joins',
-    /** The heavier stroke and what proves it (#164) — the `<code>` is the test's name. */
-    validated: (): ReactNode => (
-      <>
-        heavier line — validated by a dbt <code>relationships</code> test
-      </>
-    ),
-    staged: (): ReactNode => (
-      <>
-        staged — not in the repo until <code>stitch apply</code>
-      </>
-    ),
-    suggested: 'suggested — nobody has declared this yet',
     exact: 'exact',
     inexact: 'parsed / inferred / name match — hover an edge for evidence',
   },

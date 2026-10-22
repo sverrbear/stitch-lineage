@@ -67,25 +67,22 @@ against `dev-public/dev-graph.json` when present and skips silently otherwise.
 ```
 src/
   lib/        pure TS, no DOM (unit-tested): graph index + traversal, lineage
-              extraction + layered layout, ERD scoping + relationship-aware
-              placement (erdLayout), search ranking, detail computations,
+              extraction + layered layout, search ranking, detail computations,
               naming/presentation rules, data loading
   components/ badges (inline Snowflake/Metabase SVG marks), search panel,
               command palette, header, shared bits
-  pages/      Home (search-first), Node (detail panels), Lineage, ERD
+  pages/      Home (search-first), Node (impact/details), Lineage, Staged changes
   router.ts   hash router · theme.ts light/dark · data.tsx graph context
 scripts/      make-dev-graph.mjs
 dev-public/   dev-only static dir (never bundled into dist/)
 ```
 
-## Staging (ERD drawing)
+## Staged review
 
-Dragging a column handle onto another in the ERD stages a relationship through
-the `stitch serve` API (`src/lib/staging.ts`); nothing touches the dbt repo until
-somebody runs `stitch apply`. The capability is detected, never assumed:
-`GET /api/meta`'s `staging_enabled` is a definitive no when false, and otherwise
-the endpoint is probed once — so a static export, or a `serve` that predates the
-flag, renders a plain read-only ERD with no handles rather than a broken canvas.
+Description edits stage through the local API and are reviewed at `#/staged` before apply.
+Previously staged relationships remain editable, discardable and applicable on that page.
+Static exports have no editing controls. The ERD canvas and relationship suggestions are retired;
+legacy object relationship URLs resolve to Summary and global ERD URLs resolve to Home.
 
 ## Naming rules
 

@@ -12,7 +12,7 @@ import pytest
 
 from stitch_lineage import apply as apply_service
 from stitch_lineage.graph.schema import Graph, Node, NodeType
-from stitch_lineage.io import graph_store, layout_store, staged_store
+from stitch_lineage.io import graph_store, staged_store
 from stitch_lineage.io.file_lock import file_lock
 from stitch_lineage.io.staged_store import StagedRelationship
 
@@ -23,7 +23,7 @@ def entry(column):
     )
 
 
-@pytest.mark.parametrize("store_kind", ["relationships", "descriptions", "layout", "graph"])
+@pytest.mark.parametrize("store_kind", ["relationships", "descriptions", "graph"])
 def test_concurrent_transactions_wait_until_the_first_read_and_write_finish(
     tmp_path, monkeypatch, store_kind
 ):
@@ -47,14 +47,6 @@ def test_concurrent_transactions_wait_until_the_first_read_and_write_finish(
 
         def read():
             return [item.entity for item in staged_store.read_descriptions(path)]
-    elif store_kind == "layout":
-        module, name = layout_store, "read_layout"
-
-        def write(key):
-            return layout_store.add_dismissed(key, path)
-
-        def read():
-            return layout_store.read_dismissed(path)
     else:
         graph_store.write_graph(
             Graph(

@@ -6,23 +6,15 @@ import { useEffect, useState } from 'react'
 import type { CoverageListKind } from './lib/coverage'
 import type { Grain } from './lib/rollup'
 
-export interface RelationshipView {
-  scopeKind?: 'schema' | 'tag'
-  scopeValue?: string
-  /** Undefined starts at the object's table; null shows the whole scope. */
-  focusId?: string | null
-}
-
 export type ObjectRoute =
   | { page: 'node'; nodeId: string }
   | { page: 'lineage'; nodeId: string; grain: Grain }
-  | ({ page: 'relationships'; nodeId: string } & RelationshipView)
 
 export type Route =
   | { page: 'home' }
   | { page: 'not-found' }
   | ObjectRoute
-  | { page: 'erd'; scopeKind?: 'schema' | 'tag'; scopeValue?: string }
+  | { page: 'staged' }
   | { page: 'coverage'; kind: CoverageListKind }
 
 const COVERAGE_KINDS: CoverageListKind[] = [
@@ -41,19 +33,8 @@ export function parseHash(hash: string): Route {
   } catch {
     return { page: 'not-found' }
   }
-  if (segments[0] === 'node' && segments[1] && segments[2] === 'relationships') {
-    const params = new URLSearchParams(query)
-    const scopeKind = params.has('schema') ? 'schema' : params.has('tag') ? 'tag' : undefined
-    const scopeValue = scopeKind ? params.get(scopeKind) : null
-    if ((params.has('schema') && params.has('tag')) || (scopeKind && !scopeValue)) {
-      return { page: 'not-found' }
-    }
-    return {
-      page: 'relationships', nodeId: segments[1],
-      ...(scopeKind && scopeValue ? { scopeKind, scopeValue } : {}),
-      ...(params.has('focus') ? { focusId: params.get('focus') || null } : {}),
-    }
-  }
+  if (segments[0] === 'staged') return { page: 'staged' }
+  // Retired object relationship bookmarks retain their selected object.
   if (segments[0] === 'node' && segments[1]) return { page: 'node', nodeId: segments[1] }
   if (segments[0] === 'lineage' && segments[1]) {
     return { page: 'lineage', nodeId: segments[1], grain: segments[2] === 'table' ? 'table' : 'column' }
@@ -61,12 +42,7 @@ export function parseHash(hash: string): Route {
   if (segments[0] === 'coverage' && COVERAGE_KINDS.includes(segments[1] as CoverageListKind)) {
     return { page: 'coverage', kind: segments[1] as CoverageListKind }
   }
-  if (segments[0] === 'erd') {
-    if ((segments[1] === 'schema' || segments[1] === 'tag') && segments[2]) {
-      return { page: 'erd', scopeKind: segments[1], scopeValue: segments[2] }
-    }
-    return { page: 'erd' }
-  }
+  // Retired global ERD bookmarks return to search.
   return { page: 'home' }
 }
 
@@ -89,21 +65,12 @@ export function lineageHref(nodeId: string, grain: Grain = 'column'): string {
   return grain === 'table' ? `${base}/table` : base
 }
 
-export function relationshipsHref(nodeId: string, view: RelationshipView = {}): string {
-  const params = new URLSearchParams()
-  if (view.scopeKind && view.scopeValue) params.set(view.scopeKind, view.scopeValue)
-  if (view.focusId !== undefined) params.set('focus', view.focusId ?? '')
-  const query = params.toString()
-  return `${nodeHref(nodeId)}/relationships${query ? `?${query}` : ''}`
-}
-
 export function coverageHref(kind: CoverageListKind): string {
   return `#/coverage/${kind}`
 }
 
-export function erdHref(scopeKind?: 'schema' | 'tag', scopeValue?: string): string {
-  if (scopeKind && scopeValue) return `#/erd/${scopeKind}/${encodeURIComponent(scopeValue)}`
-  return '#/erd'
+export function stagedHref(): string {
+  return '#/staged'
 }
 
 export function navigate(href: string): void {
