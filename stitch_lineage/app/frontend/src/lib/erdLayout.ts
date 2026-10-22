@@ -208,6 +208,17 @@ function placeComponent(
     idealLength: number
   },
 ): SeparationBox[] {
+  // Two joined tables read side by side. Stacking tall schemas makes fit-to-view
+  // shrink both; compact cards also keep the join rows near the same baseline.
+  if (component.ids.length === 2) {
+    const [left, right] = component.ids
+    const a = size.get(left)!
+    const b = size.get(right)!
+    return [
+      { id: left, cx: a.w / 2, cy: a.h / 2, w: a.w, h: a.h },
+      { id: right, cx: a.w + options.gap + b.w / 2, cy: b.h / 2, w: b.w, h: b.h },
+    ]
+  }
   const { gutter } = options
   const adjacency = neighbours(component)
   const communities = communitiesOf(component, adjacency)

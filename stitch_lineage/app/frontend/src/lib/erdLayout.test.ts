@@ -40,6 +40,14 @@ function overlaps(layout: Map<string, { x: number; y: number }>, all: ErdLayoutN
 }
 
 describe('layoutErd — star-schema arrangement', () => {
+  it('places two joined tables side by side with their headers aligned', () => {
+    const all = nodes('fact', 'dimension')
+    all[0].height = erdNodeHeight(40, true)
+    const layout = layoutErd(all, [edge('fact', 'dimension')])
+    expect(layout.get('fact')!.y).toBe(layout.get('dimension')!.y)
+    expect(Math.abs(layout.get('fact')!.x - layout.get('dimension')!.x)).toBeGreaterThan(CARD_W)
+    expect(overlaps(layout, all)).toEqual([])
+  })
   it('places every node exactly once', () => {
     const layout = layoutErd(nodes('a', 'b', 'c'), [edge('a', 'b')])
     expect([...layout.keys()].sort()).toEqual(['a', 'b', 'c'])

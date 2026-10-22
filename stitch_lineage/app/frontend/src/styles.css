@@ -2701,6 +2701,79 @@ kbd {
   border: none;
 }
 
+.lineage-block .flow-node-name { font-size: 14px; }
+
+.lineage-block {
+  width: 310px;
+  max-width: 310px;
+  box-sizing: border-box;
+}
+
+.lineage-columns {
+  margin-top: 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.lineage-column {
+  display: block;
+  padding: 3px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 13px/19px var(--mono);
+  color: var(--text-2);
+}
+
+.lineage-column.selected {
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.lineage-expand {
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.lineage-frontier {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin-top: 7px;
+  border-top: 1px solid var(--border);
+}
+
+.lineage-bindings {
+  position: relative;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.lineage-bindings summary { cursor: pointer; }
+.lineage-binding-list {
+  position: absolute;
+  z-index: 10;
+  width: 290px;
+  max-height: 200px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  box-shadow: var(--shadow);
+}
+.lineage-binding-list a { display: block; padding: 4px 0; }
+.diagram-actions { display: flex; gap: 8px; margin-left: auto; }
+.diagram-context { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; padding: 7px 28px; font-size: 12px; border-bottom: 1px solid var(--border); }
+.edge-tooltip { max-height: 240px; overflow: auto; overflow-wrap: anywhere; }
+
 /* ERD node */
 
 .erd-node {
