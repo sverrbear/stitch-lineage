@@ -18,6 +18,30 @@ from stitch_lineage.graph.schema import (
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
+@pytest.fixture(autouse=True)
+def credential_backend(monkeypatch):
+    """Never read or mutate a developer's real OS credential store in tests."""
+    from stitch_lineage.io import credentials
+
+    class MemoryBackend:
+        def __init__(self):
+            self.values = {}
+            self.reads = 0
+            self.writes = 0
+
+        def get_password(self, service, account):
+            self.reads += 1
+            return self.values.get((service, account))
+
+        def set_password(self, service, account, value):
+            self.writes += 1
+            self.values[service, account] = value
+
+    backend = MemoryBackend()
+    monkeypatch.setattr(credentials, "_backend", lambda: backend)
+    return backend
+
+
 def uncoloured(output: str) -> str:
     """Console output with Rich's colour taken out and its layout left alone.
 

@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, NoReturn
+from urllib.parse import quote
 
 import typer
 from rich.console import Console
@@ -41,6 +42,7 @@ from stitch_lineage.graph.impact import (
     impact_json,
     resolve_column_ref,
 )
+from stitch_lineage.graph.onboarding import first_impact_column
 from stitch_lineage.graph.schema import (
     Coverage,
     EdgeType,
@@ -49,7 +51,7 @@ from stitch_lineage.graph.schema import (
 )
 from stitch_lineage.graph.search import search as search_graph
 from stitch_lineage.init_wizard import ConsolePrompter, StitchInitError, run_init
-from stitch_lineage.io import git
+from stitch_lineage.io import credentials, git
 from stitch_lineage.io.artifacts import StitchArtifactError, load_catalog, load_manifest
 from stitch_lineage.io.dbt_runner import StitchDbtRunnerError, run_docs_generate
 from stitch_lineage.io.graph_store import (
@@ -208,6 +210,7 @@ def _require_metabase_env(
     will hit the API dies before any work, and _metabase_client() guards every other
     command that talks to Metabase.
     """
+    credentials.restore_api_key(cfg)
     try:
         cfg.metabase.require_env()
     except StitchConfigError as exc:
@@ -216,7 +219,8 @@ def _require_metabase_env(
         console.print(f"[red]error:[/red] {exc}", soft_wrap=True)
         console.print(f"  {command} needs {pronoun} to call the Metabase API.", soft_wrap=True)
         console.print(
-            f"  fix: set {pronoun} in your environment (create a key in Metabase: "
+            f"  fix: run 'stitch init' to reconnect, or set {pronoun} in your environment "
+            f"(create a key in Metabase: "
             f"Admin settings -> Authentication -> API keys){',' if dbt_only_alternative else '.'}",
             soft_wrap=True,
         )
@@ -1558,6 +1562,7 @@ def doctor(
         failed = True
         console.print(f"fail  graph.json not found at {graph_path} -- run 'stitch build'")
 
+    credentials.restore_api_key(cfg)
     if cfg.metabase.missing_env:
         names = ", ".join(dict.fromkeys(cfg.metabase.missing_env))
         console.print(f"skip  Metabase: {names} not set -- skipping connectivity check")
@@ -2118,20 +2123,68 @@ def init(
     force: Annotated[
         bool, typer.Option("--force", help="Overwrite an existing stitch.yml without asking.")
     ] = False,
+    configure_only: Annotated[
+        bool,
+        typer.Option(
+            "--configure-only", help="Configure the connection without building or serving."
+        ),
+    ] = False,
+    no_serve: Annotated[
+        bool,
+        typer.Option("--no-serve", help="Complete setup and build, then exit without serving."),
+    ] = False,
+    open_browser: Annotated[
+        bool, typer.Option("--open/--no-open", help="Open the app after setup and build.")
+    ] = True,
+    port: Annotated[int, typer.Option("--port", min=1, max=65535, help="Local app port.")] = 8787,
 ) -> None:
-    """Set up stitch.yml: derive everything dbt knows, ask only the unknowables.
+    """Connect your dbt project to Metabase, build lineage, and open Stitch.
 
-    Reads dbt_project.yml and target/manifest.json for the project, databases, schemas and
-    model inventory, asks for the Metabase URL and API key, proposes the database mapping
-    and include_schemas, writes stitch.yml plus a .env.example line and a .gitignore entry,
-    and finishes with a mini-doctor. The API key is never written anywhere.
+    Existing settings and OS-stored credentials are reused on retry. Environment keys
+    take precedence for CI. Secrets never go into project files.
     """
     try:
-        result = run_init(start_dir=Path.cwd(), prompter=ConsolePrompter(console), force=force)
+        result = run_init(
+            start_dir=Path.cwd(),
+            prompter=ConsolePrompter(console),
+            force=force,
+            configure_only=configure_only,
+        )
     except StitchInitError as exc:
         _fail(str(exc))
+    except OSError as exc:
+        _fail(f"could not prepare project files: {exc} -- re-run 'stitch init' to continue")
     if not result.healthy:
         raise typer.Exit(code=1)
+    if configure_only:
+        console.print("Configured. Run 'stitch init' to build and open Stitch.")
+        return
+    with credentials.credential_environment(result.credentials):
+        console.print("Building your column lineage...")
+        try:
+            # init has already checked/generated artifacts; do not run dbt twice.
+            _run_build(config=result.config_path, docs=False)
+        except typer.Exit:
+            console.print("Setup is saved. Re-run 'stitch init' to retry the build.")
+            raise
+        graph = _read_graph_or_fail(_graph_path(result.config_path))
+        column = first_impact_column(graph)
+        console.print("Baseline saved. Future builds compare changes against this graph.")
+        if column:
+            radius = column_blast_radius(graph, column)
+            console.print(
+                f"Start with {radius.label} to inspect its downstream reports.",
+                soft_wrap=True,
+            )
+        else:
+            console.print("Search your models and columns. Review coverage gaps in the app.")
+        if no_serve:
+            console.print("Ready. Run 'stitch serve' to open the app.")
+            return
+        console.print("Starting Stitch. Press Ctrl+C when you are done.")
+        _run_serve(
+            config=result.config_path, port=port, open_browser=open_browser, initial_node=column
+        )
 
 
 def _open_browser_soon(url: str) -> None:
@@ -2149,6 +2202,17 @@ def serve(
     config: ConfigOpt = None,
 ) -> None:
     """Run the local lineage and impact app."""
+    _run_serve(config=config, port=port, host=host, open_browser=open_browser)
+
+
+def _run_serve(
+    *,
+    config: Path | None = None,
+    port: int = 8787,
+    host: str = "127.0.0.1",
+    open_browser: bool = True,
+    initial_node: str | None = None,
+) -> None:
     # deferred: importing FastAPI/uvicorn costs every other command a few hundred ms
     import uvicorn
 
@@ -2181,5 +2245,6 @@ def serve(
     url = f"http://{host}:{port}"
     console.print(f"stitch serve -> {url}   (graph: {graph_path})", soft_wrap=True)
     if open_browser:
-        _open_browser_soon(url)
+        destination = f"{url}/#/node/{quote(initial_node, safe='')}" if initial_node else url
+        _open_browser_soon(destination)
     uvicorn.run(server, host=host, port=port, log_level="warning")

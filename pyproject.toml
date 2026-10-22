@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stitch-lineage"
-version = "0.3.4"
+version = "0.4.0"
 description = "dbt <-> Metabase column impact, repair, and downstream usage"
 readme = "README.md"
 license = "MIT"
@@ -50,6 +50,7 @@ dependencies = [
     "rich>=13",
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "keyring>=25,<26",
 ]
 
 [project.optional-dependencies]
@@ -150,6 +151,7 @@ source_modules = [
     "stitch_lineage.mend",
     "stitch_lineage.io.artifacts",
     "stitch_lineage.io.dbt_runner",
+    "stitch_lineage.io.credentials",
     "stitch_lineage.io.git",
     "stitch_lineage.io.graph_store",
     "stitch_lineage.io.history_store",
