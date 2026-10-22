@@ -1,6 +1,6 @@
 import { useStitch } from '../data'
 import { buildStamp } from '../lib/coverage'
-import { useRoute } from '../router'
+import { stagedHref, useRoute } from '../router'
 import { useTheme } from '../theme'
 import { copy } from '../copy'
 
@@ -24,6 +24,12 @@ export function Header({ onOpenPalette }: { onOpenPalette: () => void }) {
         <a className={route.page === 'home' ? 'current' : undefined} aria-current={route.page === 'home' ? 'page' : undefined} href="#/">
           {copy.header.home}
         </a>
+        {meta.staging_enabled && (
+          <a className={route.page === 'staged' ? 'current' : undefined}
+            aria-current={route.page === 'staged' ? 'page' : undefined} href={stagedHref()}>
+            {copy.staged.pageTitle}
+          </a>
+        )}
       </nav>
       <div className="app-header-right">
         <button

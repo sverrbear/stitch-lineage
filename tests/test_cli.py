@@ -18,11 +18,9 @@ from stitch_lineage.graph.schema import (
     Node,
     NodeType,
     column_node_id,
-    relationship_id,
 )
 from stitch_lineage.io.dbt_runner import StitchDbtRunnerError
 from stitch_lineage.io.graph_store import write_graph
-from stitch_lineage.io.layout_store import LAYOUT_FILENAME, add_dismissed
 
 runner = CliRunner()
 
@@ -37,6 +35,26 @@ metabase:
 
 
 SCOPED_CONFIG = VALID_CONFIG + 'serve:\n  erd_default_scope: "schema:MARTS"\n'
+
+
+def test_retired_suggest_command_is_unavailable():
+    result = runner.invoke(app, ["suggest"])
+    assert result.exit_code == 2
+    assert "No such command" in plain(result.output)
+
+
+def test_retired_erd_config_does_not_block_serve_or_static_export(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stitch.yml").write_text(SCOPED_CONFIG)
+    _write_graph(tmp_path)
+    calls = _stub_uvicorn(monkeypatch)
+    result = runner.invoke(app, ["serve", "--no-open"])
+    assert result.exit_code == 0, result.output
+    meta = TestClient(calls[0][0], base_url="http://127.0.0.1:8787").get("/api/meta").json()
+    assert "erd_default_scope" not in meta
+    result = runner.invoke(app, ["export", "--format", "site"])
+    assert result.exit_code == 0, result.output
+    assert '"erd_default_scope"' not in (tmp_path / ".stitch/site/index.html").read_text()
 
 
 def _write_graph(tmp_path, nodes=()):
@@ -57,7 +75,6 @@ def test_help_lists_commands():
     assert {
         "build",
         "search",
-        "suggest",
         "doctor",
         "export",
         "impact",
@@ -168,30 +185,6 @@ def test_serve_defaults_to_localhost_8787_and_opens_a_browser(tmp_path, monkeypa
     served = TestClient(calls[0][0], base_url="http://127.0.0.1:8787")
     assert served.get("/api/graph").status_code == 200
     assert served.get("/api/graph", headers={"Host": "attacker.example:8787"}).status_code == 403
-
-
-def test_serve_warns_once_about_an_erd_scope_the_graph_does_not_have(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "stitch.yml").write_text(SCOPED_CONFIG.replace("schema:MARTS", "schema:nope"))
-    _write_graph(tmp_path, [_marts_model()])
-    calls = _stub_uvicorn(monkeypatch)
-    result = runner.invoke(app, ["serve", "--no-open"])
-    assert result.exit_code == 0, result.output
-    assert "schema:nope" in plain(result.output)
-    assert "schema:MARTS" in plain(result.output)
-    assert len(calls) == 1  # it is a warning, not a failure
-
-
-def test_serve_hands_the_configured_erd_scope_to_the_app(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "stitch.yml").write_text(SCOPED_CONFIG)
-    _write_graph(tmp_path, [_marts_model()])
-    calls = _stub_uvicorn(monkeypatch)
-    result = runner.invoke(app, ["serve", "--no-open"])
-    assert result.exit_code == 0, result.output
-    assert "warning" not in plain(result.output)
-    meta = TestClient(calls[0][0], base_url="http://127.0.0.1:8787").get("/api/meta").json()
-    assert meta["erd_default_scope"] == "schema:MARTS"
 
 
 def test_serve_no_open_does_not_open_a_browser(tmp_path, monkeypatch):
@@ -327,83 +320,6 @@ def test_search_works_without_metabase_env(tmp_path, monkeypatch):
     assert rows[0]["node_id"] == "model.demo.fct_orders"
 
 
-def _suggestible_graph(tmp_path):
-    """fct_orders.customer_id names dim_customers' grain -- one naming suggestion."""
-    orders, customers = "model.demo.fct_orders", "model.demo.dim_customers"
-    _write_graph(
-        tmp_path,
-        [
-            Node(node_id=orders, node_type=NodeType.MODEL, name="fct_orders"),
-            Node(
-                node_id=column_node_id(orders, "customer_id"),
-                node_type=NodeType.COLUMN,
-                name="customer_id",
-            ),
-            Node(node_id=customers, node_type=NodeType.MODEL, name="dim_customers"),
-            Node(
-                node_id=column_node_id(customers, "customer_id"),
-                node_type=NodeType.COLUMN,
-                name="customer_id",
-            ),
-        ],
-    )
-
-
-def test_suggest_prints_a_table(tmp_path, monkeypatch, wide_console):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
-    _suggestible_graph(tmp_path)
-    result = runner.invoke(app, ["suggest"])
-    assert result.exit_code == 0, result.output
-    output = plain(result.output)
-    for expected in ("source", "score", "naming", "fct_orders", "dim_customers", "grain"):
-        assert expected in output, result.output
-
-
-def test_suggest_json_carries_the_same_rows(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
-    _suggestible_graph(tmp_path)
-    result = runner.invoke(app, ["suggest", "--json"])
-    assert result.exit_code == 0, result.output
-    rows = [json.loads(line) for line in result.output.splitlines() if line.strip()]
-    assert len(rows) == 1
-    assert rows[0]["from_model"] == "fct_orders"
-    assert rows[0]["to_column"] == "customer_id"
-    assert rows[0]["source"] == "naming"
-    assert rows[0]["id"] == relationship_id(
-        "fct_orders", "customer_id", "dim_customers", "customer_id"
-    )
-
-
-def test_suggest_honours_dismissals_from_layout_yml(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
-    _suggestible_graph(tmp_path)
-    dismissed = relationship_id("fct_orders", "customer_id", "dim_customers", "customer_id")
-    add_dismissed(dismissed, tmp_path / ".stitch" / LAYOUT_FILENAME)
-    result = runner.invoke(app, ["suggest"])
-    assert result.exit_code == 0, result.output
-    assert "no suggestions" in plain(result.output)
-
-
-def test_suggest_limit_caps_the_list(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "stitch.yml").write_text(VALID_CONFIG)
-    _suggestible_graph(tmp_path)
-    result = runner.invoke(app, ["suggest", "--json", "--limit", "0"])
-    assert len([line for line in result.output.splitlines() if line.strip()]) == 1
-    capped = runner.invoke(app, ["suggest", "--json", "--limit", "1"])
-    assert len([line for line in capped.output.splitlines() if line.strip()]) == 1
-
-
-def test_suggest_without_graph_points_at_build(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    result = runner.invoke(app, ["suggest"])
-    assert result.exit_code == 1
-    assert "stitch build" in plain(result.output)
-
-
 def test_impact_without_candidate_graph_fails(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("STITCH_METABASE_API_KEY", raising=False)
@@ -484,34 +400,6 @@ def test_export_site_without_graph_points_at_build(tmp_path, monkeypatch):
     result = runner.invoke(app, ["export", "--format", "site"])
     assert result.exit_code == 1
     assert "stitch build" in plain(result.output)
-
-
-def test_export_site_inlines_the_configured_erd_scope(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "stitch.yml").write_text(SCOPED_CONFIG)
-    _write_graph(tmp_path, [_marts_model()])
-    result = runner.invoke(app, ["export", "--format", "site"])
-    assert result.exit_code == 0, result.output
-    assert (
-        '"erd_default_scope":"schema:MARTS"'
-        in (tmp_path / ".stitch" / "site" / "index.html").read_text()
-    )
-    assert "warning" not in plain(result.output)
-
-
-def test_export_site_warns_about_an_erd_scope_the_graph_does_not_have(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "stitch.yml").write_text(SCOPED_CONFIG.replace("schema:MARTS", "tag:nope"))
-    _write_graph(tmp_path, [_marts_model()])
-    result = runner.invoke(app, ["export", "--format", "site"])
-    assert result.exit_code == 0, result.output
-    assert "tag:nope" in plain(result.output)
-    assert "schema:MARTS" in result.output  # names what is available
-    # still exported, and the app is told what was configured so it can say so too
-    assert (
-        '"erd_default_scope":"tag:nope"'
-        in (tmp_path / ".stitch" / "site" / "index.html").read_text()
-    )
 
 
 def test_export_site_inlines_the_configured_table_prefixes(tmp_path, monkeypatch):

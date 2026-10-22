@@ -15,7 +15,6 @@ import { copy } from '../copy'
 
 export function StagedWorkspace({
   view,
-  unresolvedIds,
   canApply,
   busy,
   notice,
@@ -27,8 +26,6 @@ export function StagedWorkspace({
   onApply,
 }: {
   view: WorkspaceView
-  /** Staged relationships whose models are not in this graph — cannot be drawn. */
-  unresolvedIds: readonly string[]
   canApply: boolean
   busy: boolean
   notice: string | null
@@ -84,11 +81,6 @@ export function StagedWorkspace({
                             {entry.to_column}
                           </code>
                           <span className="muted staged-cardinality">{entry.cardinality}</span>
-                          {unresolvedIds.includes(entry.id) && (
-                            <span className="muted" title={copy.staged.unresolvedTitle}>
-                              {copy.staged.unresolved}
-                            </span>
-                          )}
                           <button
                             type="button"
                             className="ghost-button staged-edit"

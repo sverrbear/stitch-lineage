@@ -7,7 +7,7 @@ import type { StagedDescription } from '../lib/staging'
 // small harness supplies React lifecycle ordering without requiring a browser.
 const h = vi.hoisted(() => ({
   slots: [] as any[], cursor: 0, effects: [] as Array<() => void>, active: true,
-  descriptions: vi.fn(), relationships: vi.fn(),
+  descriptions: vi.fn(),
 }))
 function same(a: unknown[] | undefined, b: unknown[] | undefined) {
   return !!a && !!b && a.length === b.length && a.every((value, i) => Object.is(value, b[i]))
@@ -44,7 +44,6 @@ vi.mock('../lib/staging', async () => ({
   ...await vi.importActual('../lib/staging'),
   probeStaging: async () => true,
   fetchWriteability: async () => new Map(),
-  listStaged: h.relationships,
   listStagedDescriptions: h.descriptions,
 }))
 
@@ -65,12 +64,11 @@ async function settle() {
 beforeEach(() => {
   h.slots = []
   h.active = true
-  h.relationships.mockReset().mockResolvedValue([])
   h.descriptions.mockReset().mockResolvedValue([])
 })
 
 describe('retained Summary staging snapshots', () => {
-  it('refreshes after Relationships edits and graph reloads without a remount', async () => {
+  it('refreshes after staged edits and graph reloads without a remount', async () => {
     h.descriptions.mockResolvedValue([edit('before')])
     render()
     await settle()

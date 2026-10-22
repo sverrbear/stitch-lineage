@@ -1,28 +1,30 @@
-# Design spec — dbt ↔ Metabase column lineage and interactive ERD
+# Design spec — dbt ↔ Metabase column-change impact and Metabase repair
 
 **Working name:** `stitch` (placeholder)
 **License:** MIT
 **Distribution:** `pip install stitch-lineage` from PyPI (tagged releases), or `pip install git+https://github.com/sverrbear/stitch-lineage.git` to ride `main`. Local-first: no server, no warehouse backend, no hosted anything. The dbt repo is the database.
-**Status:** v0.5 — supersedes v0.4. Deltas from v0.4, decided during real-world rollout:
+**Status:** v0.5, amended 2026-10-22 — supersedes v0.4. Deltas from v0.4, decided during real-world rollout:
 
 - **The graph is a purely local artifact.** `.stitch/` is gitignored in consumer repos; nothing generated is committed. The committed-baseline design (§3, §5, §10) remains documented but optional — teams that want git history of the graph can commit it, nothing requires it.
 - **`stitch impact` is a local command.** Every build snapshots the graph it overwrites to `.stitch/graph.prev.json` — the default baseline — and closes with a one-line blast-radius summary whenever the two differ, so impact needs no committed graph and no git. `--base-file <path>` and `--base <git-ref>` still take an explicit baseline, in that precedence order. Only the PR-comment CI workflow (§10) stays shelved, since that one does require the committed baseline.
-- **Phase 2 is a plan/apply model, not direct write-back** — §8.2 below. Drawings stage locally; an explicit `stitch apply` writes dbt `relationships` tests.
+- **Description edits and existing staged relationships use plan/apply** — §8.2 below. The ERD authoring surface is retired.
 - **Phases 0 and 1 are shipped**, including `stitch build --docs/auto_docs`, per-database `table_prefix` (dev artifacts bind to a prod-pointed BI database), manifest-columns fallback for the sqlglot schema map, and manager badges (dbt/Snowflake/Metabase marks) on every node in the app.
 - **Amended 2026-08-10** (product review): the order of work and the boundaries of the product are written down — §12.1 priority order, §12.2 scope guardrails. Phases are unchanged.
 - **Amended 2026-08-11** (distribution): **the "PyPI deliberately skipped" decision is reversed.** stitch publishes to PyPI as `stitch-lineage`, and `pip install stitch-lineage` is the primary install. The original reasoning — that installing from a ref you chose keeps you in control of when the tool changes — argues for pinning, not against a registry: a tagged release is just as pinnable and far easier to install, and git-install remains documented for riding `main`. Releases are tag-triggered: pushing a `v*` tag runs `.github/workflows/publish.yml`, which refuses to build unless the tag matches the version in `pyproject.toml`, refuses to publish a wheel that does not contain the built frontend (`app/frontend/dist/`), and uploads through PyPI Trusted Publishing (OIDC, `environment: pypi`) with no API token stored anywhere. Nothing else in the spec changes: distribution is a delivery channel, and local-first is unaffected.
 - **Amended 2026-08-12** (badges, #187): the node badge answers **who manages this table**, not which system it lives in — §9's "System badges" becomes "Manager badges". dbt-produced nodes (models, seeds, snapshots) take the dbt mark; dbt `source`s, which land in Snowflake by something outside this repo, keep the Snowflake mark; columns take their table's manager; the Metabase side is unchanged. One mark for the whole warehouse was a distinction nobody could act on — the actionable fact is whether `dbt run` builds the thing you are about to change. Nothing else moves: the graph, the resolvers and the node types are untouched, this is what the app *says* about them.
-- **Amended 2026-08-11** (status reconciliation): §12's table is brought current. Phase 2 shipped — staged relationships and `stitch apply` (#24/#27), staged descriptions and apply from the app (#70/#71/#72), the suggestion layer (#30) — except `layout.yml` saved views and node positions (#31), which are not built; phase 3's native SQL (#32) and MBQL 5 (#22) shipped, leaving #33/#34/#35. §12.1's three priorities are all delivered. Scope, phase boundaries and §12.2's guardrails are unchanged: this records what shipped, it decides nothing new.
+- **Amended 2026-10-22** (product focus, #242): remove the ERD canvas and relationship suggestions, including their CLI/API, layout engine and dismissal store. Keep column lineage, impact, `mend`, and unused-downstream analysis (`doctor --dead`). Description editing and existing staged changes retain a standalone review/apply page. Retire ERD saved views and additional relationship drawing shapes from the roadmap.
 
 ---
 
 ## 1. Problem
 
-Two gaps no open-source tool fills:
+Stitch answers which downstream reports depend on a dbt column, identifies affected reports
+when columns change, and helps update them through `stitch mend`. The same graph identifies
+columns with no known downstream Metabase consumers for review (`doctor --dead`).
 
-1. **Column lineage stops at the warehouse boundary.** `dbdocs`, `dbterd`, dbt Fusion and the dbt VS Code extension all compute column lineage inside the dbt DAG. None know that `fct_matches.match_intensity` feeds four cards on the Board dashboard. "If I rename this column, what breaks?" is unanswerable for the half of the stack where the damage shows up.
-
-2. **Relationships have no authoring surface.** dbt can express foreign keys three ways and every ERD tool renders from one of them, but the only way to *create* one is hand-editing YAML. No visual editor writes back to code.
+The product connects source columns through dbt models to Metabase fields, cards, and dashboards.
+It reports coverage gaps beside its answer; dependencies alone do not guarantee breakage, and
+no known Metabase consumers does not prove that a column is unused everywhere.
 
 ## 2. Not building
 
@@ -35,44 +37,26 @@ Mature, MIT-licensed, reuse rather than reimplement.
 | ERD conventions | `dbterd` | Match its `meta.relationship_type` convention for interop. |
 | SQL column lineage | `sqlglot` | Compiled dbt SQL (§7.3) and Metabase native cards (§7.4). |
 
-Greenfield: **column-level BI lineage** and **the visual editor that writes back to dbt YAML**.
+Product focus: **column-level BI impact, repair, and downstream usage**.
 
 ## 3. Architecture
 
-Everything is a file in (or derived from) the dbt repo. One CLI, three commands that matter.
+Everything is a file in (or derived from) the dbt repo. The generated graph, baselines,
+and staged changes are local and gitignored by default.
 
 ```
- dbt repo
- ├─ models/**/*.yml          ◄── source of truth for relationships (write-back target)
- ├─ target/manifest.json     ──┐
- ├─ target/catalog.json      ──┤
- │                             ├──► stitch build ──► .stitch/graph.json  (committed baseline)
- Metabase API ─────────────────┘                └──► .stitch/coverage.json
- │
- ├─ .stitch/
- │   ├─ graph.json           ◄── the database. Deterministic, committed.
- │   ├─ layout.yml           ◄── ERD positions, saved views, dismissed suggestions. Local (§8.2).
- │   └─ cache/               ◄── raw Metabase payloads. Gitignored.
- │
- stitch serve   ──► localhost app: catalog, column lineage, ERD editor
- │                   edits write YAML directly into models/ (with diff preview)
- │
- stitch impact  ──► CI: build graph on the PR branch, diff vs committed graph.json
-                     from the base branch, walk downstream, comment on the PR
+dbt artifacts + Metabase API -> stitch build -> .stitch/graph.json
+                                              + local baselines/history
+stitch impact -> changed columns and affected reports
+stitch serve  -> search, impact-first Summary, column/table Lineage
+stitch mend   -> plan, explicit apply, validation and rollback in Metabase
+stitch doctor --dead -> unused-downstream candidates for review
 ```
 
-Why local-first wins here:
-
-- **Zero standing infrastructure.** Nothing to host, secure, authenticate or pay for. `pip install`, point at the repo, go.
-- **The repo is already the source of truth for relationships** — dbt YAML. Storing the derived graph next to it means truth and derivation travel together, branch together, and diff together.
-- **Impact analysis needs no database.** The baseline is the `graph.json` committed on `main`; the candidate is built from the PR branch in CI. `git` is the versioning system, because it already is.
-- **Direct write-back returns.** The editor runs on the machine that has the repo checked out, so drawing an edge can write the YAML right there — no proposals table, no second GitHub Action, no key-pair CI auth. Review still happens, because the write lands on a branch and goes through a normal PR.
-
-What is knowingly given up relative to the warehouse version, so it's a decision and not an accident:
-
-- **Long run history.** Git gives you graph-at-every-commit, which is actually richer than N retained runs — but ad-hoc queries over history ("when did this card first touch this column") mean checking out old commits, not writing SQL.
-- **Warehouse-side agent access.** Cortex Agent can't query a JSON file in a repo. Mitigation: `graph.json` has a stable, documented schema and `stitch export --format jsonl` emits agent-friendly flat records; a Snowflake-loading script is a documented recipe, not a product feature.
-- **Multi-user concurrent editing.** The editor is single-user-at-a-time by nature. For a team of one this costs nothing; for a bigger team, last-writer-wins on `layout.yml` and git conflicts on YAML are the (acceptable) story.
+No standing database or hosted service is required. The app and CLI use the same graph.
+Static exports share a read-only view; JSONL exports remain available for other consumers.
+Description edits stage locally and use the existing guarded apply engine (§8.2).
+The relationship canvas and suggestion workflow are outside the product scope.
 
 ## 4. Package layout and the seam
 
@@ -140,7 +124,7 @@ Diff hygiene: volatile fields (`generated_at`, invocation id) live in a header b
 | `mb_card` | `mb_card::{card_id}` | `/api/card` |
 | `mb_dashboard` | `mb_dash::{dashboard_id}` | `/api/dashboard` |
 
-Node payload: `name`, `database/schema/table/column`, `data_type`, `data_type_source` (which source in §7.6's waterfall answered — absent when there is no type), `description`, `owner`, plus a `properties` object for type-specific extras (tags, materialization, collection_id, card creator, archived flag). On a model, `properties.materialization` is the manifest's `config.materialized` verbatim, and it is load-bearing rather than decorative: it is what says whether the node is a relation at all, which is how the ERD decides what it can draw (§9).
+Node payload: `name`, `database/schema/table/column`, `data_type`, `data_type_source` (which source in §7.6's waterfall answered — absent when there is no type), `description`, `owner`, plus a `properties` object for type-specific extras (tags, materialization, collection_id, card creator, archived flag). On a model, `properties.materialization` is the manifest's `config.materialized` verbatim, and it is load-bearing rather than decorative: it is what says whether the node is a relation at all, which helps explain the node in its object details.
 
 **Edges — direction pinned: `from → to` is always data flow, upstream to downstream.** Impact traversal walks `from → to`; a single edge type pointing the wrong way silently corrupts every impact report.
 
@@ -153,7 +137,7 @@ Node payload: `name`, `database/schema/table/column`, `data_type`, `data_type_so
 | `appears_on` | mb_card → mb_dashboard | dashcards | exact |
 | `relates_to` | FK column → referenced PK column | meta declaration, relationships test, or contract constraint (§8) | declared / validated |
 
-`relates_to` is a declaration, not a flow — **excluded from impact traversal**, rendered in the ERD only.
+`relates_to` is a declaration, not a flow — **excluded from impact traversal**, shown as relationship evidence in object details.
 
 Every edge carries `confidence` and `evidence` (manifest path, MBQL fragment, parsed SQL span). The UI renders `parsed`/`fuzzy`/`inferred` edges visibly differently from `exact`. One phantom dependency presented as fact costs the tool its credibility permanently.
 
@@ -221,13 +205,12 @@ relationships:
                                         # file already does and falls back to flat
 
 write:
-  strip_model_prefixes: ["viz_"]        # presentation-layer prefixes: a declaration drawn
+  strip_model_prefixes: ["viz_"]        # presentation-layer prefixes: a declaration staged
                                         # on `viz_dim_users` is WRITTEN onto `dim_users`.
                                         # Distinct from serve.strip_model_prefixes, which
                                         # only hides the prefix on screen
 
 serve:
-  erd_default_scope: "schema:MARTS"     # | tag:<name> — ERD scope the app opens on;
                                         # unknown scopes warn and fall back to the
                                         # auto-picked one, they are never an error
 
@@ -295,7 +278,7 @@ dbt column lineage   1,842/1,901 columns traced   (37 inferred via star-expansio
 
 ### 7.4 Card → column resolution
 
-**MBQL (exact).** `dataset_query.query` carries structured field refs. Walk `fields`, `breakout`, `aggregation`, `filter`, `expressions`, `joins[].condition`, `joins[].fields`, `order-by`. Each `["field", <id>, opts]` resolves through the metadata map — no parsing, no ambiguity. `opts.source-field` (implicit join via an existing FK) is itself relationship evidence → suggestion layer.
+**MBQL (exact).** `dataset_query.query` carries structured field refs. Walk `fields`, `breakout`, `aggregation`, `filter`, `expressions`, `joins[].condition`, `joins[].fields`, `order-by`. Each `["field", <id>, opts]` resolves through the metadata map — no parsing, no ambiguity. `opts.source-field` (implicit join via an existing FK) remains evidence used by query resolution; it does not generate relationship suggestions.
 
 **MBQL 5 / "lib" (exact).** Modern Metabase (Cloud v-latest) returns `{"lib/type": "mbql/query", "stages": [...]}` instead of `type`/`query`, and both shapes are live in the wild — older self-hosted instances still emit the legacy one, so the shape is detected per card. Differences: refs put the options map in the middle (`["field", {opts}, <id-or-name>]`); a query is a flat chain of stages instead of nested `source-query`; `filter`/`condition` become `filters`/`conditions`; a card source is `source-card: N`; a join carries its own `stages`; native SQL is a `mbql.stage/native` first stage. Clause labels in `evidence` stay shape-independent (`filter`, `joins.condition`, …) so a Metabase upgrade does not rewrite the graph; stages after the first are prefixed `stage1.`, `stage2.`, ….
 
@@ -348,99 +331,49 @@ column types        2874/3293 typed   (1902 catalog, 972 Metabase, 419 unknown)
 
 ### 8.1 Storage format
 
-**Relationships are user-declared, first and foremost.** You create them by drawing in the ERD or writing YAML by hand; no test, constraint, or database FK is ever required for a relationship to exist. Tests are an optional per-relationship upgrade (below), never the entry ticket. The resolver *also* reads relationships that happen to be expressed as existing `relationships` tests or contract constraints — a repo with history renders completely — but the tool never requires that route.
+Existing relationship metadata, dbt `relationships` tests, and contract constraints remain
+inputs to resolution. The graph retains their `relates_to` edges, including declared/validated
+provenance, and object details may show them as text. Those edges are not data-flow edges and
+remain excluded from lineage/impact traversal.
 
-Declarations live in model YAML `meta` — the repo-as-database principle: the relationship is data, next to the thing it describes, with zero build-time side effects.
-
-**Three relationship shapes**, because real models aren't all single-column FKs:
-
-**1. Simple (column pair)** — column-level meta, reusing `dbt-metabase`'s keys so FK sync into Metabase works unchanged, plus `dbterd`'s cardinality key:
-
-```yaml
-columns:
-  - name: user_id
-    config:
-      meta:
-        metabase.fk_target_table: dims.dim_users
-        metabase.fk_target_field: user_id
-        relationship_type: many-to-one
-```
-
-**2. Composite (multi-column) and 3. conceptual (table-level, no key)** — model-level meta under a `stitch.relationships` key, since neither fits a single column's meta and no existing tool has a convention for them:
-
-```yaml
-models:
-  - name: fct_matches
-    config:
-      meta:
-        stitch.relationships:
-          - to: dim_user_markets
-            type: many-to-one
-            columns:                      # composite: ordered column pairs
-              - [user_id, user_id]
-              - [country_code, country_code]
-          - to: fct_funnel_events
-            type: related                 # conceptual: no key, ERD-only
-            note: "Both grains describe the match funnel; see The Brain / Decisions"
-```
-
-Many-to-many is not a stored shape — it's what the ERD *renders* when a bridge table has two many-to-one edges out. The editor offers "create many-to-many via bridge…" as a gesture, and writes two simple relationships on the bridge model. Storing M:N directly would put the same fact in two places.
-
-**Interop degrades explicitly, never silently:** simple relationships sync to Metabase via dbt-metabase and export to dbterd. Composite ones render in the ERD and count in impact analysis, but Metabase's FK model can't hold them (its own tracker says as much) — `stitch doctor` lists what didn't sync and why. Conceptual edges are ERD and documentation only, excluded from impact traversal and Metabase sync by definition.
-
-**Two tiers, orthogonal to shape.** The tier is a property of what is ON DISK, not of who drew it — the resolver reads a repo it did not write, so the tier has to be readable from the YAML alone:
-
-| Tier | Stored as | Means | ERD rendering |
-|---|---|---|---|
-| **declared** | a meta declaration, or a contract constraint | "these relate" — documentation, zero build cost | solid edge |
-| **validated** | a `relationships` test (at `severity: warn`) | dbt checks referential integrity on every run | solid edge + ✓ badge |
-
-Since #134 the default written form IS the test, so a relationship drawn in the app and applied comes back **validated** on the next build. That is the point: the arrangement that costs nothing to maintain is also the one that is checked. `write_to: meta` still writes the declared tier for repos that want documentation without a test in their DAG.
-
-What the ✓ therefore means, precisely: *dbt is checking this join's referential integrity.* Not "a human drew it" (the app's staged styling says that, before apply) and not "stitch is confident" (that is the confidence scale on inferred edges). An edge with no ✓ is one nothing exercises against data.
-
-**A written test never fails a pipeline.** Every test stitch writes carries `severity: warn` explicitly, from `validated_test_severity`. A relationship someone drew in a diagramming tool must not be the reason a deploy goes red; a warning is the honest signal, and the team can promote it by hand.
-
-**The test is written in the spelling the repo already uses.** dbt 1.10 moved test arguments under an `arguments:` mapping, and a repo on an older dbt cannot read that form — so `test_argument_style: auto` reads the form off the column, then off the file, and falls back to flat, the same way the `data_tests`/`tests` key is decided. Both spellings are also read when checking whether a declaration is already there, or a repo on 1.10 grows a second copy of a test it already declares.
-
-**Arity lives beside the test, not in it.** A `relationships` test states that two columns join and has no field for many-to-one versus one-to-one, so the cardinality is written to `cardinality_meta_key` on the FK column and read back from there. Without that, drawing a one-to-one and rebuilding hands back a many-to-one.
-
-The honest cost of declared-only: nothing exercises it against data. Mitigated structurally — `stitch build` statically validates every declaration against the manifest (target model exists, columns exist, types join-compatible; conceptual edges: target exists) and dangling declarations are build warnings in coverage output. Static checks catch typos; only the validated tier catches orphaned rows.
-
-The edge modal exposes all of this: shape is inferred from what you dragged (column→column = simple; multi-select = composite; table header→table header = conceptual), and cardinality is a dropdown.
+Simple relationship metadata uses `metabase.fk_target_table`, `metabase.fk_target_field`, and
+`relationship_type` for interoperability with dbt-metabase and dbterd. The existing staged store
+and writer continue supporting single-column relationships so earlier staged work is not lost.
+Composite/conceptual drawing tools, bridge-creation gestures, and saved ERD layouts are retired
+plans; this change adds no new relationship shapes.
 
 ### 8.2 Write-back — staged, then `stitch apply` (v0.5, supersedes direct write)
 
 Editing in the app never touches the repo. The flow is plan/apply (issues #24 + #27, extended to documentation by #70 and to in-app apply by #72):
 
-1. Drawing an edge opens a modal: target column confirm, cardinality, shape. Confirming SAVES the declaration to a local staged store (`.stitch/staged_relationships.yml` — lives with the rest of the local state, never committed). Staged edges render visibly pending in the ERD and survive restarts. A staged relationship can be edited before it is applied (cardinality, or the endpoints — which re-hashes its id, so an edit is a replace that dedupes against what is already staged).
-   Editing a column or model **description** stages the same way, into the sibling `.stitch/staged_descriptions.yml`: one entry per entity+column, keyed on the target so re-editing replaces (last write wins) rather than queueing.
+1. Editing a column or model description stages to `.stitch/staged_descriptions.yml`.
+   **Staged changes** (`#/staged`) reviews these edits and any previously staged relationships
+   without a canvas. Existing entries can be edited/discarded and previewed before apply.
+   A static export shows no editing navigation and explains that staged review requires `serve`.
 2. **`stitch apply`** materializes everything staged into the repo in ONE run — relationships and descriptions, one diff preview, one confirmation, one clearing pass. Relationships go on the FK column in the form `relationships.write_to` selects (test by default; meta / contract available); a description is set on the model or column entry (created if the key is absent, emitted as a `|` block when it is multi-line, and left alone when the repo already says it):
    - a diff preview is always shown before writing; `--dry-run` shows it and stops; a confirmation prompt gates the write (`--yes` skips)
    - `ruamel.yaml` round-trip mode — comments, quoting, key order preserved. A PR that reformats every line of a hand-maintained schema file gets the tool banned; this is non-negotiable.
-   - target file from manifest `patch_path`; no YAML entry for the column → insert in catalog column order; no YAML file for the model → create per convention
+   - target file from manifest `patch_path`; no YAML entry for the column → insert in catalog column order; no YAML file for the model → report it as unappliable; never invent a file
    - refuse to write on a dirty target file (uncommitted changes) unless `--force` — the user's edits outrank ours
    - applied entries clear from their store; the next `stitch build` reads them back from the manifest (relationships as `relates_to`, validated; descriptions as node descriptions)
    - a successful apply also **patches `graph.json` in place** with what it wrote — the `relates_to` edges (confidence per the written form: validated for a test, declared for meta; evidence `source: stitch apply`) and the new node descriptions — so the app shows them on a refresh. Rewritten through `io/graph_store` so determinism holds, idempotent (an edge already present, or a description that already matches, rewrites nothing), skipped with a note when there is no graph or the target is not in it, and `--no-graph-update` opts out. The patch never rebuilds inside apply — `dbt parse` would drop compiled SQL and `dbt docs generate` hits the warehouse — and it never touches the previous-build snapshot, since neither a `relates_to` edge nor a description is a column change with a blast radius to report. `--build` runs a real `stitch build` afterwards for full reconciliation.
-   **Which model owns the write** — `write.strip_model_prefixes`. A repo whose BI layer is a set of views (`viz_dim_users` over `dim_users`) gives stitch no choice about what to bind: Metabase sees the view, so the view is the only name a relationship can be drawn on. It is not the name that should be written. The view's YAML is generated from the models underneath it in every repo that has one, so a declaration written there is regenerated away before anyone runs dbt — and where the convention is "no tests on the presentation layer", it was never allowed to land there in the first place. Configuring the prefix routes the write to the model underneath: the schema file, the model entry and the `ref()` in the emitted test all follow the routed name together, and both endpoints route independently. Routing is conditional on the stripped model existing in the manifest, so a model that genuinely owns a prefixed name keeps its own declaration, and it applies to staged descriptions on the same terms — the ownership question is the same one. `stitch migrate-relationships` is deliberately exempt: it restates a declaration where it already sits and strips the keys it replaces from that same column, so routing would write one half of the change to a different file.
+   **Which model owns the write** — `write.strip_model_prefixes`. A repo whose BI layer is a set of views (`viz_dim_users` over `dim_users`) gives stitch no choice about what to bind: Metabase sees the view, so existing staged entries may name that view. It is not the name that should be written. The view's YAML is generated from the models underneath it in every repo that has one, so a declaration written there is regenerated away before anyone runs dbt — and where the convention is "no tests on the presentation layer", it was never allowed to land there in the first place. Configuring the prefix routes the write to the model underneath: the schema file, the model entry and the `ref()` in the emitted test all follow the routed name together, and both endpoints route independently. Routing is conditional on the stripped model existing in the manifest, so a model that genuinely owns a prefixed name keeps its own declaration, and it applies to staged descriptions on the same terms — the ownership question is the same one. `stitch migrate-relationships` is deliberately exempt: it restates a declaration where it already sits and strips the keys it replaces from that same column, so routing would write one half of the change to a different file.
 
 3. The plan/guard/clear/patch behaviour lives in **`stitch_lineage/apply.py`**, the engine both callers drive: `stitch apply` renders it to a console, `stitch serve` serialises it over HTTP (`POST /api/apply/preview`, `POST /api/apply`). Neither reimplements it, so "the CLI and the app do the same thing" is structural rather than aspirational. Only that engine may import `write/` (import-linter contract), and the app never gets a force path — overwriting uncommitted edits stays a CLI decision. The static export gets no server at all, so it remains read-only by construction.
 
 4. **`stitch migrate-relationships`** rewrites declarations already written as `fk_meta_keys` into the form `relationships.write_to` selects, and removes the two keys it replaces — `cardinality_meta_key` stays, being the only thing a `relationships` test cannot express. It redraws nothing and infers nothing: only declarations the manifest already carries are rewritten, so it sees what the last `dbt docs generate` saw. Composite and conceptual `stitch.relationships` entries are left alone, having no test form to migrate into. Same ceremony as apply — round-trip proof, one diff preview, one confirmation, files with uncommitted changes refused — and no store to clear, since nothing was staged.
 
-Layout is presentation, not contract: node positions, saved views and suggestion dismissals live in `.stitch/layout.yml` (local like the rest of `.stitch/`), never in model YAML.
+Existing `.stitch/layout.yml` files are left untouched but no longer read or written. The suggestion command, API, engine, and dismissal store are removed. Legacy `serve.erd_default_scope` keys are ignored.
 
 ## 9. UI — `stitch serve`
 
 FastAPI on localhost serving a prebuilt React SPA (bundled in the wheel; installing the package requires no node toolchain). React Flow for the canvas. The frontend talks only to the local API; the local API reads `graph.json`, writes the staged stores, and reaches model YAML only through the apply engine (§8.2). `/api/meta` advertises `staging_enabled` and `apply_enabled` so the SPA hides what a given deployment cannot do.
 
-**Object workspace.** Search opens an object's Summary. Summary and Lineage share one qualified identity header and ordinary links with `aria-current`; choosing another view does not select a different object. Lineage grain belongs to the selected object, so a column at table grain remains that column, with its own consequences. Returning to Summary preserves its draft and scroll; opening a different object resets editor state. The canvases stay lazy-loaded. Existing `#/node/:id`, `#/lineage/:id[/table]` and `#/erd[/schema|tag/:value]` URLs remain valid, including in static exports. Relationships lives at `#/node/:id/relationships`, with scope and table focus encoded in the hash query so Back, Forward and shared links restore the same diagram.
-
-**Relationships (ERD canvas).** Reached from a table or column's workspace, focused on that table and its joins; a column retains its identity while the owning table supplies the diagram focus. Scope selection widens the diagram by schema or dbt tag. A table without either gets an explicit unavailable-diagram explanation, never an unrelated global default. Home offers search and coverage; it does not choose an arbitrary model for a global Lineage link, and Relationships is not a primary global navigation item. Legacy ERD bookmarks still open the standalone scope browser. The Summary omits its former duplicate mini relationship canvas. Tables as nodes with expandable columns; solid edges are declared relationships read from the repo. Three creation gestures: drag column-handle → column-handle (simple), multi-select column pairs (composite), drag table header → table header (conceptual). The modal infers the shape, offers cardinality, and shows the exact YAML diff before writing (§8.2). Saved views scope the canvas by dbt tag or schema — `marts_revenue` opens as its own diagram, never a 200-node hairball.
-
-**What the ERD draws is tables — and a materialization decides that, never a name.** A dbt model materialized as a Snowflake `semantic_view` is a semantic-layer *definition* — tables, joins and metrics declared as DDL over the facts and dims beneath it — not a relation with columns you join on, so a table card would state a shape it does not have. Semantic views are therefore absent from every ERD scope, from the model and relationship counts the scope picker offers, from auto-expansion, from the endpoints a scoped edge pulls in, and from the candidates `suggest` proposes (a suggestion is a candidate edge, and an edge needs a card to land on). This is an ERD exclusion and nothing more: the node stays in `graph.json`, its `references` are real lineage and are drawn as such, and it keeps its search hit, its node page and its place in impact and coverage. One predicate per side holds the rule — `graph/scopes.is_erd_table` for the CLI's scope check, `lib/erd.isErdTable` for the canvas — and the two must agree, or the CLI offers a scope the app then refuses to open.
-
-**Suggestion layer.** Dashed candidate edges from: (a) Metabase implicit-join `source-field` usage — users are already joining these tables; (b) naming conventions (`*_id` → `dim_*.id` etc.); (c) not built: join predicates observed in native card SQL — that SQL is parsed now (§7.4, #32), but nothing mines it for candidates, so `suggest` ships (a) and (b) only. Accept opens the write-back modal; dismiss records to `layout.yml` so it stays dismissed. This is what makes the initial backfill an hour of accepting suggestions instead of an afternoon of dragging.
+**Object workspace.** Search opens an object's Summary. Summary and Lineage share one qualified
+identity header; changing views keeps the selected object, its description draft, summary scroll,
+and lineage grain. The Lineage canvas stays lazy-loaded. There is no Relationships tab or ERD.
+Old `#/node/:id/relationships` bookmarks open that object's Summary, ignoring obsolete scope/focus
+parameters; old `#/erd` bookmarks return to search. Malformed URL encoding remains recoverable.
 
 **Search — first version, not later polish.** One search box, keyboard-first (`/` to focus, `⌘K` palette), querying everything in `graph.json`: dbt models, columns, Metabase fields, cards and dashboards — by name, description, tag, and card/dashboard title. Results grouped by node type, ranked exact-prefix > word-boundary > fuzzy, with type-ahead. Selecting a result opens its workspace Summary:
 
@@ -456,9 +389,9 @@ Implementation is deliberately boring: a Smitten-sized graph is a few thousand n
 
 **Column lineage view.** The Lineage link in an object's workspace shows the upstream chain to sources and downstream through models into fields, cards and dashboards. The shared identity and Summary link remain in place; no duplicate title or separate Details bounce is needed. Clicking a graph node's body re-roots the selected object while keeping the grain; its name opens the object's Summary or Metabase destination. Card nodes deep-link into Metabase and show creator + archived status.
 
-**Readable diagram defaults.** Automatic framing never scales below 1:1. If the drawing cannot fit at readable scale, it frames the selection; an explicit **Show overview** may zoom out to fit everything. **Focus selection** returns to readable framing. Column lineage groups only the columns in the selected trace under their owning models, initially shows the selected group and up to two neighbours in each direction, and exposes every remaining adjacent group through counted expansion controls (four groups per click). Columns expand inside their model; field bindings are inspectable there or as explicit field nodes. Grouped edges retain their contributing evidence and the weakest confidence among contributions. Full-graph impact counts remain independent of the displayed subset and the existing trace cap stays labelled. Branch expansion anchors the selected group and preserves the viewport. Relationship cards start with join keys and the selected column, regardless of table count; full schemas expand on demand, with Collapse at the top. Two-table components sit side by side. Expansion anchors the selected table and preserves the viewport; explicit resets can reframe it.
+**Readable diagram defaults.** Automatic framing never scales below 1:1. If the drawing cannot fit at readable scale, it frames the selection; an explicit **Show overview** may zoom out to fit everything. **Focus selection** returns to readable framing. Column lineage groups only the columns in the selected trace under their owning models, initially shows the selected group and up to two neighbours in each direction, and exposes every remaining adjacent group through counted expansion controls (four groups per click). Columns expand inside their model; field bindings are inspectable there or as explicit field nodes. Grouped edges retain their contributing evidence and the weakest confidence among contributions. Full-graph impact counts remain independent of the displayed subset and the existing trace cap stays labelled. Branch expansion anchors the selected group and preserves the viewport.
 
-**Manager badges.** Every node in the lineage view and ERD carries the mark of whoever **manages** it — not of the system it happens to sit in. The dbt mark on everything the pipeline produces (models, and the seeds and snapshots that reach the app as their dependents' upstreams); the **Snowflake mark on dbt `source`s**, which land in the warehouse by something nobody in this repo controls; the Metabase mark on fields, cards and dashboards. A column takes its table's manager. So a glance up a chain shows two boundaries rather than one: where the data arrived, where dbt starts owning it, and where the BI layer begins.
+**Manager badges.** Every node in the lineage view carries the mark of whoever **manages** it — not of the system it happens to sit in. The dbt mark on everything the pipeline produces (models, and the seeds and snapshots that reach the app as their dependents' upstreams); the **Snowflake mark on dbt `source`s**, which land in the warehouse by something nobody in this repo controls; the Metabase mark on fields, cards and dashboards. A column takes its table's manager. So a glance up a chain shows two boundaries rather than one: where the data arrived, where dbt starts owning it, and where the BI layer begins.
 
 "Which system does it live in" was the wrong question, and answering it hid the right one. Sources and marts both live in Snowflake, so one warehouse mark told a reader nothing they could act on — while the fact that decides whether a change is theirs to make at all is *who builds this*: `dbt run` creates a mart and can rename its columns; it cannot touch a source table, and a rename there arrives as someone else's decision.
 
@@ -494,7 +427,7 @@ fct_matches.match_intensity → removed
       #418 Weekly intensity trend      (Board dashboard, sverrir)
 ```
 
-Ship the GitHub Action in the repo. This is the feature that earns adoption; the ERD earns affection.
+Ship the GitHub Action in the repo. This brings the impact answer into the change-review workflow.
 
 A scheduled nightly job runs full `stitch build` (with Metabase) on main and commits the refreshed `graph.json` — so the baseline tracks Metabase-side drift (new cards, archived dashboards) without any human remembering to rebuild.
 
@@ -511,8 +444,8 @@ A scheduled nightly job runs full `stitch build` (with Metabase) on main and com
 | Phase | Scope | Status |
 |---|---|---|
 | **0** | `build`: dbt models **+ column lineage via sqlglot on compiled SQL** + MBQL cards; `graph.json` deterministic + `--check`; coverage report incl. lineage trace rate; recursive `impact` — previous-build baseline and build summary (#53), `--column` point query (#86), SHA-keyed local history (#87) — + GitHub Action; `stitch search` (CLI); `doctor` basics, plus `doctor --dead` for estate hygiene — unconsumed columns, models feeding nothing, archived-but-bound cards (#88) | **shipped** (only the committed-baseline PR-comment workflow stays optional — §10, #36) |
-| **1** | `serve`: **search + detail panels** (the entry point), end-to-end column lineage view, catalog, read-only ERD; `export --format site` | **shipped** |
-| **2** | Editable canvas → **staged relationships + `stitch apply`** (§8.2, issues #24/#27), staged descriptions and apply from the app (#70/#71/#72), suggestion layer (#30); `layout.yml` holds dismissed suggestions, but saved views and node positions (#31) are not built, and composite/conceptual shapes (#55) are backlogged | **shipped** except `layout.yml` saved views (#31) |
+| **1** | `serve`: search, impact-first summaries, lineage; static export | **shipped** |
+| **2** | Description editing, staged review and apply; existing relationship compatibility | **shipped** — ERD/suggestions and planned canvas extensions retired (#242) |
 | **3** | Metabase **native SQL** cards via sqlglot + template-tag substitution (#32, shipped; modern Metabase also emits **MBQL 5 lib/stages** for saved questions — #22, shipped ahead of phase order); rename heuristics (#33), `--verify-lineage` over ACCESS_HISTORY (#34), Metabase version matrix (#35) | ongoing |
 | **4** | **`stitch mend`** — impact-driven card remediation (§14, #143): `impact --format json`, a deterministic plan with one action per affected card (repoint / strip / archive / notify), per-action autonomy, and an apply loop whose every write is snapshotted, re-executed and auto-reverted; `doctor --write-access`; the one-job post-deploy Action template | ongoing |
 
@@ -528,14 +461,14 @@ Phases describe scope, not sequence. The current order of work cuts across them:
 
 **All three delivered as of 2026-08-11.** Sequence from here is the tracker's, not this section's.
 
-Canvas and ERD polish ranked below all three, and a broken core chain still outranks all cosmetic work — that ordering principle stands. Its example has expired: card detail showed no source columns (#25) and now shows them, so canvas and restyle work is no longer sitting behind a broken chain.
+A broken core lineage chain outranks cosmetic work. ERD and relationship suggestion work is retired; impact, mend, downstream usage, and coverage remain the priorities.
 
 ### 12.2 Scope guardrails — what stitch is not
 
 Each of these was a reasonable-sounding idea. They are decided against, not deferred.
 
-- **No third canvas.** The ERD is the canvas; the column lineage view is the flow view. The global overview/pipeline map is removed (#83) — its rollup lib survives because the lineage grain toggle uses it. Search is the entry point; Lineage and Relationships are contextual object views.
-- **Not a dbt YAML IDE.** `stitch apply` writes **relationships** (§8). Description editing exists only because it rides the same staged store, the same writer and the same diff preview (§8.2); it earns no UI surface of its own, and no further YAML key follows it in on that precedent.
+- **One lineage canvas, no ERD authoring.** Search is the entry point; Summary and Lineage are contextual object views. Relationship suggestions, drawing, saved canvas layouts, and extra relationship shapes are outside scope.
+- **Not a dbt YAML IDE.** `stitch apply` writes description edits and previously staged relationships (§8). They share one staged review page, writer and diff preview (§8.2); no further YAML key follows them in on that precedent.
 - **The home page stays a search box and a few numbers.** Search is the entry point (§9). A home page that grows tiles is a dashboard, and a dashboard is a thing nobody opens twice.
 - **One BI tool until the Metabase story is complete.** Looker, Tableau and the rest are a new `resolve/` module by construction (§4) — that is what the seam is for, not an invitation to use it while column lineage into Metabase is unfinished.
 - **No warehouse backend, no hosted anything.** Standing since v0.2/v0.3 (§3, §11): the warehouse is a consumer of `graph.json`, not its home.
@@ -546,7 +479,7 @@ Each of these was a reasonable-sounding idea. They are decided against, not defe
 - **Native SQL coverage — not a configuration problem.** Smitten is *almost* MBQL-only (8 native cards of 953), so the tool gets built against its easiest case while most Metabase shops live in the hard one. Closed as a gap (§7.4 resolves native cards), but the *exposure* remains: the resolver is exercised by a handful of real cards, and a shop that is native-first will find its edges here first. Coverage reporting is what keeps that legible — a `native SQL cards 12/41` line is a bug report with a number attached.
 - **Frontend bundling.** Shipping a prebuilt SPA in the wheel means a JS build step in *release* CI and wheel size in the tens of MB. Acceptable; the alternative (npm at install time) is not, for a pip package.
 - **Metabase API drift.** Pin 49+ (API keys), keep a tested version matrix, treat every response shape as untrusted, keep raw payloads for repro.
-- **Adjacency to `dbt-metabase`.** If it grows column-level exposures, Phase 0's differentiation shrinks. Open an issue with the maintainer early — Phase 0 might be strongest as an upstream contribution plus this repo owning the viewer/editor.
+- **Adjacency to `dbt-metabase`.** If it grows column-level exposures, Phase 0's differentiation shrinks. Open an issue with the maintainer early — Keep the differentiation in column impact and Metabase repair.
 - **Sole maintainer with a day job.** One maintainer is a repo, not a project, unless the CI feature earns contributors. Optimize the README for the impact-comment screenshot — done (#89): it opens on `impact --column` output, and the local commands need no CI to demo.
 - **Scope creep, one reasonable feature at a time.** No single addition looks like a mistake; the cost shows up as a second half-finished surface competing for the same maintainer. §12.2 is the answer, and its test is the core chain — a new surface waits until column → field → card → dashboard is complete and correct, not until the backlog is empty.
 

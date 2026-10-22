@@ -337,7 +337,6 @@ def render(**overrides) -> str:
         "metabase_url": '"https://mb.example.com"',
         "databases": [("Analytics", "analytics", "")],
         "include_schemas": ["marts", "dims"],
-        "erd_default_scope": "schema:marts",
     }
     kwargs.update(overrides)
     return render_stitch_yml(**kwargs)
@@ -351,7 +350,7 @@ def test_rendered_config_validates_against_todays_config_module(tmp_path):
     assert cfg.metabase.include_schemas == ["marts", "dims"]
     assert cfg.metabase.databases[0].metabase_name == "Analytics"
     assert cfg.metabase.databases[0].dbt_database == "analytics"
-    assert cfg.serve.erd_default_scope == "schema:marts"
+    assert "erd_default_scope" not in cfg.serve.model_dump()
     assert cfg.dbt.target_path == "target/"
     assert cfg.output.dir == ".stitch/"
     assert cfg.relationships.write_to == RelationshipsConfig().write_to == "relationships_test"
@@ -388,11 +387,11 @@ def test_rendered_config_survives_a_database_name_with_punctuation(tmp_path):
     assert cfg.metabase.databases[0].table_prefix == "sis_"
 
 
-def test_rendered_config_without_mart_schemas_has_a_null_scope(tmp_path):
+def test_rendered_config_without_mart_schemas_omits_retired_scope(tmp_path):
     path = tmp_path / "stitch.yml"
-    path.write_text(render(include_schemas=[], erd_default_scope=None), encoding="utf-8")
+    path.write_text(render(include_schemas=[]), encoding="utf-8")
     cfg = load_config(path)
-    assert cfg.serve.erd_default_scope is None
+    assert "erd_default_scope" not in path.read_text()
     assert cfg.metabase.include_schemas == []
 
 
@@ -501,7 +500,7 @@ def test_run_init_configures_a_repo_with_four_human_inputs(tmp_path):
     assert cfg.metabase.databases[0].metabase_name == "Analytics"
     assert cfg.metabase.databases[0].dbt_database == "analytics"
     assert cfg.metabase.include_schemas == ["marts", "dims"]
-    assert cfg.serve.erd_default_scope == "schema:marts"
+    assert "erd_default_scope" not in cfg.serve.model_dump()
     assert cfg.relationships.write_to == "relationships_test"
 
 

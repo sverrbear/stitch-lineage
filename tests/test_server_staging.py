@@ -54,7 +54,7 @@ def store(tmp_path):
 
 @pytest.fixture
 def client(graph_path, store):
-    return TestClient(create_app(graph_path, None, None, store))
+    return TestClient(create_app(graph_path, None, staged_path=store))
 
 
 @pytest.fixture

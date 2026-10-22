@@ -50,14 +50,15 @@ describe('the impact-first object answer', () => {
   })
 
   it.each(['model.demo.fct_revenue', 'source.demo.app.events'])(
-    'leads with exact BI impact for %s before metadata, relationship diagrams and dependencies',
+    'leads with exact BI impact for %s before metadata and dependencies',
     (nodeId) => {
       const html = render(nodeId)
       const impact = impactSection(html)
       expect(impact).toContain('Consumed by 2 cards on 1 dashboard.')
       const after = html.slice(html.indexOf(impact) + impact.length)
       expect(after).toContain('fact-list')
-      expect(after).toContain('Relationships —')
+      expect(after).not.toContain('star-canvas')
+      if (nodeId === 'model.demo.fct_revenue') expect(after).toContain('Declared relationships')
       expect(after).toContain('Dependencies —')
       expect(after).toContain('Columns —')
     },

@@ -1,4 +1,4 @@
-// Client for the staging API (#27) that the ERD's drawing gesture writes to (#24).
+// Client for description edits and previously staged relationships.
 //
 // Drawing stages a declaration in `.stitch/staged_relationships.yml`; nothing
 // touches the dbt repo until somebody runs `stitch apply`. The API only exists
@@ -63,7 +63,7 @@ type Fetcher = typeof fetch
  * Whether this build can stage at all. `staging_enabled: false` is a definitive
  * no (static export); otherwise the endpoint is probed once, because an older
  * `stitch serve` predates the flag and a missing endpoint must read as
- * read-only rather than as a broken canvas.
+ * read-only rather than as a broken editor.
  */
 export async function probeStaging(
   stagingEnabled: boolean | undefined,

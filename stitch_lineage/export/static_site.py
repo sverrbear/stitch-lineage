@@ -19,7 +19,7 @@ def export_site(
     graph_path: Path,
     out_dir: Path,
     metabase_url: str | None,
-    erd_default_scope: str | None = None,
+    *,
     strip_model_prefixes: list[str] | None = None,
     table_prefixes: list[str] | None = None,
 ) -> Path:
@@ -41,10 +41,9 @@ def export_site(
         "metabase_url": metabase_url,
         "generated_at": graph.get("generated_at"),
         "schema_version": graph.get("schema_version", 1),
-        "erd_default_scope": erd_default_scope,
         "strip_model_prefixes": list(strip_model_prefixes or []),
         "table_prefixes": list(table_prefixes or []),
-        # a hosted export has no server to stage against: the SPA hides drawing entirely
+        # a hosted export has no server to stage against: the SPA hides editing entirely
         "staging_enabled": False,
     }
     inlined = index.replace(

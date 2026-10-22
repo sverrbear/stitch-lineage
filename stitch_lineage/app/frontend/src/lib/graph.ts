@@ -14,7 +14,7 @@ export interface GraphIndex {
   synthesizedIds: Set<string>
 }
 
-/** `relates_to` is a declaration, not data flow — ERD only, never lineage/impact. */
+/** `relates_to` is a declaration, not data flow — metadata only, never lineage/impact. */
 export function isFlowEdge(edge: GraphEdge): boolean {
   return edge.edge_type !== 'relates_to'
 }

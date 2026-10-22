@@ -75,7 +75,7 @@ export function hasHiddenPrefix(node: GraphNode): boolean {
 
 /**
  * The display spelling of a dbt model NAME (as opposed to a node). The staging
- * and suggestion APIs speak real dbt names; every surface that shows one runs it
+ * APIs speak real dbt names; every surface that shows one runs it
  * through here, and every surface that SENDS one keeps the original (#69).
  */
 export function displayModelName(name: string): string {

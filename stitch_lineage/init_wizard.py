@@ -407,7 +407,6 @@ def render_stitch_yml(
     metabase_url: str,
     databases: Sequence[tuple[str, str, str]],
     include_schemas: Sequence[str],
-    erd_default_scope: str | None,
 ) -> str:
     """Render stitch.yml with every derived value explicit (SPEC.md section 6.0).
 
@@ -459,13 +458,6 @@ def render_stitch_yml(
         "",
         "serve:",
     ]
-    if erd_default_scope:
-        lines.append(
-            f"  erd_default_scope: {json.dumps(erd_default_scope)}"
-            "  # ERD scope the app opens on; 'tag:<name>' works too"
-        )
-    else:
-        lines.append('  erd_default_scope: null  # e.g. "schema:marts" or "tag:core"')
     lines += [
         '  strip_model_prefixes: []  # display-only, e.g. ["viz_"]',
         "",
@@ -800,7 +792,6 @@ def run_init(
             metabase_url=config_url,
             databases=[(str(chosen.get("name") or ""), dbt_database, table_prefix)],
             include_schemas=include_schemas,
-            erd_default_scope=f"schema:{include_schemas[0]}" if include_schemas else None,
         ),
         encoding="utf-8",
     )

@@ -600,7 +600,7 @@ def test_the_app_serves_the_patched_relationship(repo, store):
     _stage(store, _entry())
     assert _run("--yes").exit_code == 0
 
-    server = create_app(graph_path, None, None, store, repo / ".stitch" / "layout.yml")
+    server = create_app(graph_path, None, staged_path=store)
     with TestClient(server) as client:
         payload = client.get("/api/graph").json()
     assert [edge for edge in payload["edges"] if edge["edge_type"] == "relates_to"] == [

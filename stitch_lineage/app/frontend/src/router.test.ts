@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { coverageHref, erdHref, lineageHref, nodeHref, parseHash, relationshipsHref } from './router'
+import { coverageHref, lineageHref, nodeHref, parseHash, stagedHref } from './router'
 
 describe('parseHash', () => {
   it('routes the basics', () => {
@@ -9,12 +9,8 @@ describe('parseHash', () => {
       page: 'node',
       nodeId: 'model.demo.fct_revenue',
     })
-    expect(parseHash('#/erd')).toEqual({ page: 'erd' })
-    expect(parseHash('#/erd/schema/marts')).toEqual({
-      page: 'erd',
-      scopeKind: 'schema',
-      scopeValue: 'marts',
-    })
+    expect(parseHash('#/erd')).toEqual({ page: 'home' })
+    expect(parseHash('#/erd/schema/marts')).toEqual({ page: 'home' })
   })
 
   it('defaults lineage to column grain and reads the table grain off the path', () => {
@@ -65,11 +61,6 @@ describe('parseHash', () => {
     expect(parseHash(nodeHref(id))).toEqual({ page: 'node', nodeId: id })
     expect(parseHash(lineageHref(id))).toEqual({ page: 'lineage', nodeId: id, grain: 'column' })
     expect(parseHash(lineageHref(id, 'table'))).toEqual({ page: 'lineage', nodeId: id, grain: 'table' })
-    expect(parseHash(erdHref('schema', 'my schema'))).toEqual({
-      page: 'erd',
-      scopeKind: 'schema',
-      scopeValue: 'my schema',
-    })
     expect(parseHash(coverageHref('unresolved-cards'))).toEqual({
       page: 'coverage',
       kind: 'unresolved-cards',
@@ -78,31 +69,18 @@ describe('parseHash', () => {
 })
 
 
-describe('object relationship routes', () => {
-  it('keeps selected object separate from table focus and scope', () => {
+describe('retired relationship bookmarks', () => {
+  it.each(['#/erd', '#/erd/tag/daily', '#/erd/schema/my%20schema'])('returns %s to search', (hash) => {
+    expect(parseHash(hash)).toEqual({ page: 'home' })
+  })
+  it('retains the selected column and ignores obsolete scope and focus', () => {
     const nodeId = 'model.demo.orders::customer/id%'
-    const view = { scopeKind: 'schema' as const, scopeValue: 'marts café & sales', focusId: 'model.demo.orders' }
-    expect(parseHash(relationshipsHref(nodeId, view))).toEqual({ page: 'relationships', nodeId, ...view })
+    expect(parseHash(`${nodeHref(nodeId)}/relationships?schema=marts&focus=other`)).toEqual({ page: 'node', nodeId })
   })
-
-  it('distinguishes initial object focus from a deliberately widened scope', () => {
-    expect(parseHash(relationshipsHref('model.demo.orders'))).toEqual({ page: 'relationships', nodeId: 'model.demo.orders' })
-    expect(parseHash(relationshipsHref('model.demo.orders', { scopeKind: 'tag', scopeValue: 'daily', focusId: null }))).toEqual({
-      page: 'relationships', nodeId: 'model.demo.orders', scopeKind: 'tag', scopeValue: 'daily', focusId: null,
-    })
-  })
-
-  it.each([
-    '#/node/orders/relationships?schema=%',
-    '#/node/orders/relationships?schema=x&tag=y',
-    '#/node/orders/relationships?tag=',
-    '#/node/orders/relationships?focus=%FF',
-  ])('recovers from invalid relationship scope parameters in %s', (hash) => {
+  it.each(['#/node/orders/relationships?schema=%', '#/node/orders/relationships?focus=%FF'])('rejects malformed encoding in %s', (hash) => {
     expect(parseHash(hash)).toEqual({ page: 'not-found' })
   })
-
-  it('retains old schema and tag ERD bookmarks independently of object workspaces', () => {
-    expect(parseHash('#/erd/tag/daily')).toEqual({ page: 'erd', scopeKind: 'tag', scopeValue: 'daily' })
-    expect(parseHash('#/erd')).toEqual({ page: 'erd' })
+  it('opens staged review independently of a graph scope', () => {
+    expect(parseHash(stagedHref())).toEqual({ page: 'staged' })
   })
 })

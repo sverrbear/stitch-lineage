@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-stitch: dbt ↔ Metabase column lineage + interactive ERD. Local-first; the dbt repo is the database. `SPEC.md` is the design truth (v0.5) — **Claude owns SPEC.md as Sverrir's master agent** and updates it via docs PRs whenever decisions diverge from it.
+stitch: dbt ↔ Metabase column impact, repair (`mend`), and downstream usage. ERD canvas and relationship suggestions are retired. Local-first; the dbt repo is the database. `SPEC.md` is the design truth (v0.5) — **Claude owns SPEC.md as Sverrir's master agent** and updates it via docs PRs whenever decisions diverge from it.
 
 ## Session bootstrap (after a context clear)
 
@@ -27,6 +27,6 @@ stitch: dbt ↔ Metabase column lineage + interactive ERD. Local-first; the dbt 
 
 ## Using stitch on the Smitten data repo (`~/Desktop/data`)
 
-- Config: `stitch.yml` at that repo's root (Metabase "Analytics" ↔ `DEV_DBT`, `table_prefix: ${USER_PREFIX}_`, `auto_docs: true`, `serve.erd_default_scope`). Env: `METABASE_API_KEY` in `.env`.
+- Config: `stitch.yml` at that repo's root (Metabase "Analytics" ↔ `DEV_DBT`, `table_prefix: ${USER_PREFIX}_`, `auto_docs: true`). Env: `METABASE_API_KEY` in `.env`.
 - `stitch build` runs `dbt docs generate` (dev target → **one MFA push to Sverrir's phone — warn him first**); `stitch build --no-docs` reuses artifacts with no MFA. `.stitch/` is fully local, never committed.
 - `stitch serve` → http://127.0.0.1:8787.

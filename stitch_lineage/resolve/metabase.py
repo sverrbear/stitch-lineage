@@ -183,7 +183,7 @@ def collect_refs(
     """Recursively collect field refs of either shape with the clause they sit in.
 
     opts["source-field"] (implicit join through an FK) is emitted as an extra ref
-    flagged is_source_field=True -- suggestion-layer input per SPEC.md section 7.4.
+    flagged is_source_field=True as query evidence (SPEC.md section 7.4).
     A ["metric", ...] ref points at a saved metric card, so it is recorded as an
     upstream card and its fields propagate through the card-on-card machinery.
     """
