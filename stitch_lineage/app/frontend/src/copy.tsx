@@ -268,7 +268,20 @@ export const copy = {
   },
 
   /** The lineage canvas. */
+  diagram: {
+    focus: 'Focus selection',
+    overview: 'Show overview',
+    collapseColumns: 'Collapse columns',
+    allColumns: (n: number) => `Show all ${n} columns`,
+  },
   lineage: {
+    showing: (shown: number, total: number) => `Showing ${shown} of ${total} groups in this trace`,
+    moreGroups: (direction: 'up' | 'down', n: number) => `+ ${n} ${direction === 'up' ? 'upstream' : 'downstream'}`,
+    moreColumns: (n: number) => `+ ${n} more traced columns`,
+    bindings: (n: number) => `${n} Metabase field binding${n === 1 ? '' : 's'}`,
+    showBindings: 'Show field nodes',
+    hideBindings: 'Hide field nodes',
+    exploreHint: 'Expand a branch to follow it · totals include the full graph',
     unknownNode: (nodeId: string): ReactNode => <>Unknown node: {nodeId}</>,
     openInMetabase: (name: string) => `Open “${name}” in Metabase`,
     openDetail: (type: string, name: string) => `Open the ${type} page for ${name}`,

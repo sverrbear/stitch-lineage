@@ -29,6 +29,7 @@ import {
   type MouseEvent,
   type PointerEvent,
 } from 'react'
+import { readableViewport } from '../lib/diagramViewport'
 import { ApplyDialog } from '../components/ApplyDialog'
 import { NodeBadge } from '../components/badges'
 import { GraphLegend } from '../components/bits'
@@ -45,8 +46,6 @@ import {
   type Point,
 } from '../lib/canvas'
 import {
-  autoExpandedModels,
-  COLLAPSED_LIMIT,
   erdClickHref,
   erdColumnNodeId,
   erdCounts,
@@ -123,6 +122,7 @@ type ErdFlowNode = Node<
   {
     model: ErdModel
     expanded: boolean
+    selectedColumn?: string
     onToggle: (id: string) => void
     /** Handles are inert (and invisible) unless this build can stage. */
     connectable: boolean
@@ -196,7 +196,7 @@ function ErdColumnRow({
 }
 
 function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
-  const { model, expanded, onToggle, connectable, onFocus, focused } = data
+  const { model, expanded, selectedColumn, onToggle, connectable, onFocus, focused } = data
   const pressedAt = useRef<Point | null>(null)
 
   const onPointerDown = (event: PointerEvent) => {
@@ -247,7 +247,7 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
     onFocus(model.node.node_id)
   }
 
-  const visible = visibleColumns(model, expanded, COLLAPSED_LIMIT)
+  const visible = visibleColumns(model, expanded, selectedColumn)
   const hidden = model.columns.length - visible.length
   const collapsible = model.columns.some((column) => !column.isKey)
   // The dbt model name is the header; the physical table is a subtitle at most, and
@@ -256,6 +256,19 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
   // it gone the line is usually redundant and goes away entirely (#80).
   const name = displayName(model.node)
   const table = displayTableName(model.node.table)
+
+  const columnToggle = collapsible && (hidden > 0 || expanded) ? (
+    <button
+      type="button"
+      className="erd-expand nodrag"
+      onClick={(event) => {
+        event.stopPropagation()
+        onToggle(model.node.node_id)
+      }}
+    >
+      {expanded ? copy.diagram.collapseColumns : copy.diagram.allColumns(model.columns.length)}
+    </button>
+  ) : null
 
   return (
     <div
@@ -311,6 +324,7 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
           ) : null}
         </div>
       </div>
+      {expanded && columnToggle}
       <ul className="erd-columns">
         {visible.map((column) => (
           <ErdColumnRow
@@ -322,18 +336,7 @@ function ErdModelNode({ data }: NodeProps<ErdFlowNode>) {
           />
         ))}
       </ul>
-      {collapsible && (hidden > 0 || expanded) && (
-        <button
-          type="button"
-          className="erd-expand nodrag"
-          onClick={(e) => {
-            e.stopPropagation()
-            onToggle(model.node.node_id)
-          }}
-        >
-          {expanded ? 'collapse' : `+ ${hidden} more columns`}
-        </button>
-      )}
+      {!expanded && columnToggle}
     </div>
   )
 }
@@ -447,6 +450,8 @@ export function ErdPage({
   // whether a relationship landed since — which is what the reset control offers
   // to fix (see `resetView`).
   const flow = useRef<ReactFlowInstance<ErdFlowNode, Edge> | null>(null)
+  const canvas = useRef<HTMLDivElement | null>(null)
+  const layoutAnchor = useRef<{ id: string; x: number; y: number } | null>(null)
   const [manual, setManual] = useState<Record<string, { x: number; y: number }>>({})
   const [layoutStale, setLayoutStale] = useState(false)
   /** The one table the canvas is narrowed to, or null for the whole scope (#163). */
@@ -497,15 +502,33 @@ export function ErdPage({
   const panelCovers = canSuggest && panelOpen
   const drawerCovers = canStage && stagedOpen
 
+  const frameSelection = useCallback(() => {
+    const instance = flow.current
+    const element = canvas.current
+    if (!instance || !element) return
+    const measured = instance.getNodes().filter((node) => node.measured?.width && node.measured.height)
+    if (!measured.length) return
+    const selected = measured.find((node) => node.id === focused) ?? measured[0]
+    void instance.setViewport(readableViewport(
+      instance.getNodesBounds(measured), instance.getNodesBounds([selected]),
+      element.clientWidth, element.clientHeight,
+      { left: drawerCovers ? 344 : 0, right: panelCovers ? 344 : 0 },
+    ), { duration: 240 })
+  }, [focused, panelCovers, drawerCovers])
+
   const fitSoon = useCallback(() => {
-    // let React Flow measure the new nodes before it fits them
-    const options = fitOptions(panelCovers, drawerCovers)
-    window.setTimeout(() => void flow.current?.fitView(options), 80)
-  }, [panelCovers, drawerCovers])
+    window.setTimeout(frameSelection, 80)
+  }, [frameSelection])
+
+  const showOverview = () => {
+    setAutoFit(false)
+    void flow.current?.fitView(fitOptions(panelCovers, drawerCovers))
+  }
 
   /** Reset: back to the auto-layout, fitted, with every dragged table let go. */
   const resetView = () => {
     setManual({})
+    layoutAnchor.current = null
     setLayoutStale(false)
     // the layout owns the viewport again, so a later arrangement gets framed too
     setAutoFit(true)
@@ -816,11 +839,11 @@ export function ErdPage({
    */
   const positions = useMemo(() => {
     if (!erd) return new Map<string, { x: number; y: number }>()
-    return layoutErd(
+    const placed = layoutErd(
       erd.models.map((model) => {
         const open = expanded.has(model.node.node_id)
         const estimate = erdNodeHeight(
-          visibleColumns(model, open, COLLAPSED_LIMIT).length,
+          visibleColumns(model, open, workspaceNodeId).length,
           model.columns.some((column) => !column.isKey),
         )
         return {
@@ -838,13 +861,21 @@ export function ErdPage({
         to: rel.toModelId,
       })),
     )
+    const anchor = layoutAnchor.current
+    const at = anchor ? placed.get(anchor.id) : null
+    if (anchor && at) {
+      for (const [id, point] of placed) placed.set(id, { x: point.x - at.x + anchor.x, y: point.y - at.y + anchor.y })
+    }
+    return placed
     // measuredVersion: the ref it reads is mutated in place, so the counter is
     // what tells this memo a table now measures something else
-  }, [erd, expanded, measuredVersion])
+  }, [erd, expanded, measuredVersion, workspaceNodeId])
 
   const baseNodes = useMemo(() => {
     if (!erd) return [] as ErdFlowNode[]
     const onToggle = (id: string) => {
+      const anchor = flow.current?.getNode(focused ?? id)
+      if (anchor) layoutAnchor.current = { id: anchor.id, ...anchor.position }
       // expanding is the reader arranging the canvas: the layout still reflows around
       // the grown card (#62), but it stops re-aiming the viewport at them (#185)
       setAutoFit(false)
@@ -865,13 +896,14 @@ export function ErdPage({
       data: {
         model,
         expanded: expanded.has(model.node.node_id),
+        selectedColumn: workspaceNodeId,
         onToggle,
         connectable: canStage,
         onFocus: toggleFocus,
         focused: focused === model.node.node_id,
       },
     }))
-  }, [erd, expanded, canStage, positions, manual, focused, toggleFocus])
+  }, [erd, expanded, canStage, positions, manual, focused, toggleFocus, workspaceNodeId])
 
   /**
    * The relationships this scope draws — a function of the DRAWING only.
@@ -1017,8 +1049,8 @@ export function ErdPage({
     if (!autoFit || fittedTo.current === frame) return
     if (!flow.current || !canvasSettled(nodes, baseNodes)) return
     fittedTo.current = frame
-    void flow.current.fitView(fitOptions(frame.panelCovers, frame.drawerCovers))
-  }, [autoFit, frame, nodes, baseNodes])
+    frameSelection()
+  }, [autoFit, frame, nodes, baseNodes, frameSelection])
 
   // What a table actually measures, per expansion state — the layout's input.
   useEffect(() => {
@@ -1040,17 +1072,17 @@ export function ErdPage({
     if (changed) setMeasuredVersion((version) => version + 1)
   }, [nodes])
 
-  // A new scope is a new drawing: nobody's drags carry over to it, and a small
-  // one opens with every table's columns showing (#62).
+  // A new scope starts compact; prior expansion and dragged positions stay local.
   const activeKey = active ? scopeKey(active) : ''
   useEffect(() => {
     setManual({})
+    layoutAnchor.current = null
     setLayoutStale(false)
     // a relationship picked in the old scope is not on this canvas: put it out
     highlight.clear()
     // ...and neither is a table focused in it (#163)
     setLocalFocused(null)
-    setExpanded(autoExpandedModels(erd?.models ?? []))
+    setExpanded(new Set())
     // ...and the panel filters go back to whatever THIS scope's counts deserve,
     // rather than carrying a choice made about a different set of candidates
     setPickedSource(null)
@@ -1144,6 +1176,12 @@ export function ErdPage({
           {copy.erd.resetView}
           {movedCount > 0 ? copy.erd.resetMoved(movedCount) : ''}
         </button>
+        <button type="button" className="ghost-button" onClick={() => { setAutoFit(false); frameSelection() }}>
+          {copy.diagram.focus}
+        </button>
+        <button type="button" className="ghost-button" onClick={showOverview}>
+          {copy.diagram.overview}
+        </button>
         {canStage && !stagedOpen && workspace.total > 0 && (
           <button
             type="button"
@@ -1177,6 +1215,7 @@ export function ErdPage({
         )}
       </div>
       <div
+        ref={canvas}
         className={`graph-canvas${canSuggest && panelOpen ? ' with-panel' : ''}${
           canStage && stagedOpen ? ' with-staged' : ''
         }`}
@@ -1189,7 +1228,6 @@ export function ErdPage({
             edges={edges}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
-            fitView
             minZoom={0.05}
             nodesConnectable={canStage}
             // generous snap on the drop side: releasing near a column's strip counts
@@ -1246,8 +1284,8 @@ export function ErdPage({
             }}
           >
             <Background gap={24} />
-            <Controls showInteractive={false} />
-            <MiniMap pannable zoomable />
+            <Controls showInteractive={false} showFitView={false} />
+            {nodes.length > 8 && <MiniMap pannable zoomable />}
           </ReactFlow>
         </ErdHighlightProvider>
         {canStage && stagedOpen && (

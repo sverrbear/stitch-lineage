@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  AUTO_EXPAND_MAX_MODELS,
-  COLLAPSED_LIMIT,
   MAX_DRAWN_SUGGESTIONS,
-  autoExpandedModels,
   resolveStaged,
   defaultScope,
   erdClickHref,
@@ -92,7 +89,6 @@ describe('semantic views are not ERD tables (#191)', () => {
     expect(scopeModelIds(index, marts).has(SV)).toBe(false)
     const erd = erdForScope(index, marts)
     expect(erd.models.map((m) => m.node.node_id)).not.toContain(SV)
-    expect(autoExpandedModels(erd.models).has(SV)).toBe(false)
   })
 
   it('still resolves by name, so a staged entry on one is not reported missing', () => {
@@ -226,28 +222,23 @@ describe('visibleColumns', () => {
   }
 
   it('never hides a key column, even under the budget', () => {
-    const shown = visibleColumns(fct, false, 1)
+    const shown = visibleColumns(fct, false)
     expect(shown.map((c) => c.key)).toEqual(['user_id'])
   })
 
   it('shows everything when expanded', () => {
-    expect(visibleColumns(fct, true, 1)).toHaveLength(fct.columns.length)
+    expect(visibleColumns(fct, true)).toHaveLength(fct.columns.length)
   })
 
-  // The budget is the number this card's "+ N more columns" is measured against, so
-  // it is asserted here rather than left to whatever the component happens to pass.
-  it('draws a collapsed card up to the row budget, keys first (#192)', () => {
-    expect(COLLAPSED_LIMIT).toBe(13)
-    const shown = visibleColumns(wide, false)
-    expect(shown).toHaveLength(COLLAPSED_LIMIT)
-    expect(shown[0].key).toBe('user_id')
-    // ...and what is left is what the card offers to expand
-    expect(wide.columns.length - shown.length).toBe(27)
+  it('keeps a wide table compact with only the join keys visible', () => {
+    expect(visibleColumns(wide, false).map((column) => column.key)).toEqual(['user_id'])
+    expect(wide.columns.length - visibleColumns(wide, false).length).toBe(39)
   })
 
-  it('keeps a card narrower than the budget whole, with nothing to expand', () => {
-    expect(fct.columns.length).toBeLessThan(COLLAPSED_LIMIT)
-    expect(visibleColumns(fct, false)).toHaveLength(fct.columns.length)
+  it('keeps the selected non-key column visible beside the keys', () => {
+    const selected = fct.columns.find((column) => !column.isKey)!
+    expect(visibleColumns(fct, false, selected.nodeId).map((column) => column.nodeId)).toContain(selected.nodeId)
+    expect(visibleColumns(fct, false, selected.nodeId).some((column) => column.isKey)).toBe(true)
   })
 
   it('scopes by dbt tag', () => {
@@ -520,28 +511,6 @@ describe('scoping suggestions to the canvas (#60)', () => {
     expect(erd.models.some((model) => model.node.name === 'stg_payments')).toBe(false)
   })
 })
-
-describe('auto-expanding a small scope (#62)', () => {
-  const marts = () => listScopes(index).find((s) => s.kind === 'schema' && s.value === 'marts')!
-
-  it('opens every table of a small scope expanded', () => {
-    const erd = erdForScope(index, marts())
-    expect(erd.models.length).toBeLessThanOrEqual(AUTO_EXPAND_MAX_MODELS)
-    expect(autoExpandedModels(erd.models)).toEqual(
-      new Set(erd.models.map((model) => model.node.node_id)),
-    )
-  })
-
-  it('leaves a big scope collapsed, so the shape stays readable', () => {
-    const erd = erdForScope(index, marts())
-    expect(autoExpandedModels(erd.models, 2)).toEqual(new Set())
-  })
-
-  it('expands nothing when the scope is empty', () => {
-    expect(autoExpandedModels([])).toEqual(new Set())
-  })
-})
-
 
 // #120: the picker said "intermediate (100 models, 2 rels)" and the header beside
 // it said "102 models · 2 relationships" for the same scope. Whatever the canvas

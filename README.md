@@ -246,6 +246,14 @@ joins, with a schema or dbt-tag selector to widen the view. A column keeps its o
 the diagram uses its owning table. Semantic views retain Summary and Lineage without posing as
 tables. Existing node, lineage and ERD bookmarks continue to work.
 
+Diagrams open at readable scale around the selection. **Focus selection** returns to that view;
+**Show overview** deliberately fits the whole drawing. Lineage groups traced columns under their
+models and opens a small neighbourhood, with counted upstream/downstream controls to reveal more.
+Metabase field bindings remain inspectable inside each model and can also be shown as nodes.
+Impact totals still come from the full graph, and grouped edges retain their weakest evidence.
+Relationship cards initially show join keys and the selected column; **Show all columns** expands
+the schema without moving the selected table or zooming the diagram out.
+
 Every node carries the badge of who manages it — dbt on what the pipeline builds, Snowflake on
 the source tables your loaders land, Metabase on the BI side — so a glance separates the columns
 you can rename from the ones that arrive as somebody else's decision. Cards deep-link back into
