@@ -5,9 +5,9 @@ project name, target path, databases, schemas, model inventory, identifier quoti
 and never asked. What is left is genuinely unknowable: the Metabase URL, the API key,
 and (when the evidence is ambiguous) which Metabase database is which dbt database.
 
-The API key is env-only from the first second: the wizard holds it in memory for the
-one call it makes, writes the ${STITCH_METABASE_API_KEY} reference into stitch.yml and
-a name-only line into .env.example, and never the value.
+The API key is remembered in the operating system credential store, with environment
+variables taking precedence for CI. Project files contain only a reference. Setup
+resumes existing configuration and carries the credential through the first build.
 
 Terminal IO goes through the Prompter seam and Metabase through a client factory, so
 every step is exercisable non-interactively from the tests.
@@ -22,22 +22,24 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 import typer
 from rich.console import Console
 from ruamel.yaml import YAML
 
 from stitch_lineage.config import RelationshipsConfig, StitchConfigError, load_config
-from stitch_lineage.io.artifacts import StitchArtifactError, load_manifest
+from stitch_lineage.io import credentials
+from stitch_lineage.io.artifacts import StitchArtifactError, load_catalog, load_manifest
 from stitch_lineage.io.dbt_runner import StitchDbtRunnerError, run_docs_generate
 from stitch_lineage.io.metabase_client import MetabaseAPIError, MetabaseClient
+from stitch_lineage.resolve.dbt import compiled_model_counts
 
 API_KEY_VAR = "STITCH_METABASE_API_KEY"
 URL_VAR = "STITCH_METABASE_URL"
 GITIGNORE_ENTRY = ".stitch/"
 CONFIG_FILENAME = "stitch.yml"
 ENV_EXAMPLE_FILENAME = ".env.example"
-WORKFLOW_TEMPLATE = "stitch-impact.yml"
 
 # dbt's near-universal naming conventions for the models BI actually consumes; the
 # schemas holding them are what `include_schemas` should keep.
@@ -172,9 +174,9 @@ class InitResult:
     config_path: Path
     gitignore_updated: bool
     env_example_path: Path | None
-    workflow_path: Path | None
     checks: list[str]
     healthy: bool
+    credentials: dict[str, str] = field(default_factory=dict, repr=False)
 
 
 def detect_dbt_project(start: Path) -> DbtProject | None:
@@ -286,8 +288,21 @@ def normalize_metabase_url(raw: str) -> str:
     url = raw.strip().rstrip("/")
     if not url:
         raise ValueError("a Metabase URL is required")
-    if not _SCHEME.match(url):
+    if "://" not in url:
         url = f"https://{url}"
+    parts = urlsplit(url)
+    if (
+        not _SCHEME.match(url)
+        or not parts.hostname
+        or parts.username is not None
+        or parts.password is not None
+        or parts.query
+        or parts.fragment
+        or any(char.isspace() for char in url)
+    ):
+        raise ValueError(
+            "enter an http(s) Metabase base URL without credentials, query or fragment"
+        )
     return url
 
 
@@ -504,92 +519,44 @@ def write_env_example(root: Path, variables: Sequence[str] = (API_KEY_VAR,)) -> 
     return path
 
 
-def disarm_workflow_trigger(text: str) -> str:
-    """Comment out a workflow's `on:` block, leaving a manual trigger in its place.
-
-    SPEC.md section 6.0 wants the Action dropped in with its trigger commented out. A
-    workflow with no `on:` at all is a GitHub Actions error, so `workflow_dispatch`
-    stands in until the user un-comments the real trigger.
-    """
-    lines = text.splitlines()
-    out: list[str] = []
-    index = 0
-    while index < len(lines):
-        line = lines[index]
-        if not line.startswith("on:"):
-            out.append(line)
-            index += 1
-            continue
-        out += [
-            "# `stitch init` installed this workflow with its trigger commented out.",
-            "# Un-comment the block below and drop the workflow_dispatch line to arm it.",
-            f"# {line}",
-        ]
-        index += 1
-        while index < len(lines) and (
-            not lines[index].strip() or lines[index].startswith((" ", "\t", "#"))
-        ):
-            out.append(f"# {lines[index]}" if lines[index].strip() else "#")
-            index += 1
-        out += ["on:", "  workflow_dispatch:", ""]
-    return "\n".join(out) + "\n"
-
-
-def _template_dir() -> Path | None:
-    """The repo's action/ templates, present in a source checkout and absent in a wheel."""
-    candidate = Path(__file__).resolve().parent.parent / "action"
-    return candidate if candidate.is_dir() else None
-
-
-def install_workflow_template(root: Path) -> Path | None:
-    """Copy the impact workflow into .github/workflows/, disarmed. None when unavailable."""
-    template_dir = _template_dir()
-    if template_dir is None:
-        return None
-    template = template_dir / WORKFLOW_TEMPLATE
-    if not template.is_file():
-        return None
-    destination = root / ".github" / "workflows" / WORKFLOW_TEMPLATE
-    if destination.exists():
-        return None
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(
-        disarm_workflow_trigger(template.read_text(encoding="utf-8")), encoding="utf-8"
-    )
-    return destination
-
-
 def _default_client(url: str, api_key: str) -> MetabaseLike:
     return MetabaseClient(url, api_key)
 
 
-def _quoting_note(project: DbtProject, facts: ManifestFacts) -> str:
-    """Identifier quoting is dbt's answer, not a question -- SPEC.md section 6.1."""
-    adapter = facts.adapter_type or "your adapter"
-    if project.quoting:
-        settings = ", ".join(f"{key}={value}" for key, value in sorted(project.quoting.items()))
-        return f"identifier quoting from dbt_project.yml ({settings}) -- not configurable"
-    return f"identifier quoting left to {adapter}'s default -- not configurable"
+def _ensure_artifacts(
+    project: DbtProject,
+    prompter: Prompter,
+    docs_runner: Any,
+    *,
+    docs_args: list[str] | None = None,
+    require_catalog: bool = True,
+) -> dict[str, Any]:
+    """Reuse usable artifacts; otherwise guide generation in the existing dbt environment."""
 
+    def read() -> dict[str, Any]:
+        manifest = load_manifest(project.manifest_dir)
+        if require_catalog:
+            load_catalog(project.manifest_dir)
+            compiled, uncompiled = compiled_model_counts(manifest)
+            if uncompiled and not compiled:
+                raise StitchArtifactError("the manifest has no compiled model SQL")
+        return manifest
 
-def _ensure_manifest(project: DbtProject, prompter: Prompter, docs_runner: Any) -> dict[str, Any]:
-    """Load the manifest, offering to produce it when it is not there yet."""
-    manifest_path = project.manifest_dir / "manifest.json"
-    if not manifest_path.is_file():
-        prompter.say(f"no manifest at {manifest_path}")
-        if not prompter.confirm("run 'dbt docs generate' now?", default=True):
-            raise StitchInitError(
-                "stitch init needs target/manifest.json to derive your databases, schemas "
-                "and models -- run 'dbt docs generate', then re-run 'stitch init'"
-            )
-        try:
-            docs_runner(project.root, [])
-        except StitchDbtRunnerError as exc:
-            raise StitchInitError(str(exc)) from exc
     try:
-        return load_manifest(project.manifest_dir)
+        return read()
     except StitchArtifactError as exc:
-        raise StitchInitError(str(exc)) from exc
+        problem = str(exc)
+        prompter.say(problem)
+    prompter.say("dbt will use your existing profile and may ask you to sign in to your warehouse.")
+    if not prompter.confirm("run 'dbt docs generate' now?", default=True):
+        raise StitchInitError(
+            f"{problem} -- run 'dbt docs generate', then re-run 'stitch init' to continue"
+        )
+    try:
+        docs_runner(project.root, docs_args or [])
+        return read()
+    except (StitchDbtRunnerError, StitchArtifactError) as exc:
+        raise StitchInitError(f"{exc} -- re-run 'stitch init' after fixing dbt") from exc
 
 
 def _describe(database: Mapping[str, Any]) -> str:
@@ -601,7 +568,7 @@ def _describe(database: Mapping[str, Any]) -> str:
 def _resolve_database(
     prompter: Prompter, dbt_database: str, databases: Sequence[Mapping[str, Any]]
 ) -> dict[str, Any]:
-    """One keystroke in the common case, a real question when the evidence is ambiguous."""
+    """Automatic in the common case, a real question when the evidence is ambiguous."""
     proposal = propose_database_mapping(dbt_database, databases)
     if proposal.metabase is None:
         raise StitchInitError(
@@ -609,32 +576,17 @@ def _resolve_database(
             "access to your warehouse connection"
         )
     if proposal.confident:
-        question = (
-            f"Metabase '{proposal.metabase_name}' <-> dbt '{dbt_database}' "
-            f"({proposal.reason}) -- confirm?"
+        prompter.say(
+            f"matched Metabase '{proposal.metabase_name}' <-> dbt '{dbt_database}' "
+            f"({proposal.reason})"
         )
-        if prompter.confirm(question, default=True):
-            return proposal.metabase
-    else:
-        prompter.say(f"more than one Metabase database could be dbt '{dbt_database}':")
+        return proposal.metabase
+    prompter.say(f"choose the Metabase database for dbt '{dbt_database}':")
     index = prompter.choose(
         f"which Metabase database is dbt '{dbt_database}'?",
         [_describe(database) for database in proposal.ranked],
     )
     return proposal.ranked[index]
-
-
-def _resolve_include_schemas(
-    prompter: Prompter, facts: ManifestFacts, available: Sequence[str]
-) -> list[str]:
-    proposed = propose_include_schemas(facts, available)
-    if not proposed:
-        return []
-    listed = ", ".join(proposed)
-    if prompter.confirm(f"ingest Metabase schemas {listed}? (your marts live there)", default=True):
-        return proposed
-    answer = prompter.ask("schemas to ingest, comma-separated (empty for all)", default="").strip()
-    return [schema.strip() for schema in answer.split(",") if schema.strip()]
 
 
 def _mini_doctor(
@@ -647,12 +599,13 @@ def _mini_doctor(
     include_schemas: Sequence[str],
     tables: Sequence[tuple[str, str]],
     table_prefix: str,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[list[str], bool]:
     """Reachable, supported, parseable, and counted on both sides (SPEC.md section 6.0)."""
     checks: list[str] = []
     healthy = True
     try:
-        load_config(config_path)
+        load_config(config_path, env=env)
         checks.append(f"ok    {config_path.name} parses")
     except StitchConfigError as exc:
         healthy = False
@@ -690,6 +643,24 @@ def _strip_prefix(table: str, prefix: str) -> str:
     return table[len(prefix) :] if prefix and table.startswith(prefix) else table
 
 
+def _setup_url(project: DbtProject) -> str | None:
+    try:
+        raw = json.loads((project.root / ".stitch" / "setup.json").read_text())
+        if not isinstance(raw, dict) or not isinstance(raw.get("metabase_url"), str):
+            return None
+        return normalize_metabase_url(raw["metabase_url"])
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
+def _remember_url(project: DbtProject, url: str) -> None:
+    # Only the URL goes in this checkpoint. Credentials live in the OS store.
+    append_gitignore(project.root)
+    directory = project.root / ".stitch"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "setup.json").write_text(json.dumps({"metabase_url": url}) + "\n")
+
+
 def run_init(
     *,
     start_dir: Path,
@@ -698,13 +669,13 @@ def run_init(
     docs_runner: Callable[[Path, list[str]], None] = run_docs_generate,
     env: Mapping[str, str] | None = None,
     force: bool = False,
+    configure_only: bool = False,
 ) -> InitResult:
-    """Run the whole wizard and return what it wrote.
+    """Connect and prepare artifacts; the CLI then builds and serves in this session.
 
-    Raises:
-        StitchInitError: no dbt project, no manifest and no permission to build one,
-            an existing stitch.yml the user declined to overwrite, or Metabase
-            unreachable -- always with the next action in the message.
+    Existing configuration is reused byte-for-byte unless --force was requested.
+    A checkpoint keeps the URL across connection failures; validated keys are saved
+    before metadata/build so a later failure does not make the user paste them again.
     """
     env = os.environ if env is None else env
     project = detect_dbt_project(start_dir)
@@ -713,122 +684,190 @@ def run_init(
             f"no dbt_project.yml in {start_dir.resolve()} or any parent directory -- "
             "run 'stitch init' from inside your dbt project"
         )
-    prompter.say(
-        f"dbt project '{project.name}' at {project.root} (artifacts: {project.target_path})"
-    )
-
+    prompter.say(f"found dbt project '{project.name}' at {project.root}")
     config_path = project.config_path
-    if (
-        config_path.is_file()
-        and not force
-        and not prompter.confirm(f"{config_path} already exists -- overwrite it?", default=False)
-    ):
-        raise StitchInitError(f"{config_path} left untouched")
+    existing = None
+    if config_path.is_file() and not force:
+        try:
+            existing = load_config(config_path, env=env)
+        except StitchConfigError as exc:
+            raise StitchInitError(
+                f"{exc} -- fix stitch.yml or use 'stitch init --force' to reconfigure"
+            ) from exc
+        prompter.say("resuming with your existing stitch.yml")
 
-    manifest = _ensure_manifest(project, prompter, docs_runner)
+    artifact_project = (
+        DbtProject(
+            root=(config_path.parent / existing.dbt.project_dir).resolve(),
+            name=project.name,
+            target_path=existing.dbt.target_path,
+            quoting=project.quoting,
+        )
+        if existing
+        else project
+    )
+    manifest = _ensure_artifacts(
+        artifact_project,
+        prompter,
+        docs_runner,
+        docs_args=existing.dbt.docs_args if existing else [],
+        require_catalog=not configure_only,
+    )
     facts = manifest_facts(manifest)
     if not facts.databases:
         raise StitchInitError(
-            f"{project.manifest_dir / 'manifest.json'} has no models -- run 'dbt docs generate' "
-            "on a project with models, then re-run 'stitch init'"
+            "the manifest has no models -- run 'dbt docs generate' on a project with models, "
+            "then re-run 'stitch init'"
         )
-    prompter.say(
-        f"derived from the manifest: {facts.model_count} models, {facts.source_count} sources, "
-        f"database {facts.databases[0]}, schemas {', '.join(facts.schemas)}"
-    )
-    prompter.say(_quoting_note(project, facts))
+    prompter.say(f"found {facts.model_count} models and {facts.source_count} sources")
 
-    url_from_env = env.get(URL_VAR)
-    if url_from_env:
-        url = normalize_metabase_url(url_from_env)
-        config_url = f"${{{URL_VAR}}}"
-        prompter.say(f"using {URL_VAR} from the environment ({url})")
+    session_env: dict[str, str] = {}
+    configured_url = existing.metabase.url if existing else env.get(URL_VAR)
+    if configured_url and "${" not in configured_url:
+        try:
+            url = normalize_metabase_url(configured_url)
+        except ValueError as exc:
+            raise StitchInitError(f"invalid Metabase URL: {exc}") from None
     else:
-        url = _ask_url(prompter)
-        config_url = json.dumps(url)
-
-    api_key = env.get(API_KEY_VAR)
-    if api_key:
-        prompter.say(f"using {API_KEY_VAR} from the environment (never written to stitch.yml)")
-    else:
-        api_key = prompter.secret(f"Metabase API key (stored as ${{{API_KEY_VAR}}}, never here)")
-    if not api_key.strip():
-        raise StitchInitError(
-            "a Metabase API key is required -- create one under Admin settings -> "
-            "Authentication -> API keys"
-        )
-
-    client = client_factory(url, api_key.strip())
-    try:
-        version = client.assert_version()
-        databases = client.list_databases()
-    except MetabaseAPIError as exc:
-        raise StitchInitError(f"{exc} -- check the URL and the API key, then re-run") from exc
-
-    dbt_database = facts.databases[0]
-    chosen = _resolve_database(prompter, dbt_database, databases)
-    db_id = chosen.get("id")
-    try:
-        tables = metabase_tables(client.database_metadata(db_id)) if db_id is not None else []
-    except MetabaseAPIError as exc:
-        raise StitchInitError(str(exc)) from exc
-
-    include_schemas = _resolve_include_schemas(
-        prompter, facts, sorted({schema for schema, _ in tables if schema})
-    )
-    table_prefix = derive_table_prefix(
-        facts.tables_in(dbt_database, include_schemas), [table for _, table in tables]
-    )
-    if table_prefix:
-        prompter.say(
-            f"dbt table names carry a '{table_prefix}' prefix Metabase does not -- "
-            "recording it as table_prefix so binding still matches"
-        )
-
-    config_path.write_text(
-        render_stitch_yml(
-            project_dir=".",
-            target_path=project.target_path,
-            metabase_url=config_url,
-            databases=[(str(chosen.get("name") or ""), dbt_database, table_prefix)],
-            include_schemas=include_schemas,
-        ),
-        encoding="utf-8",
-    )
-    prompter.say(f"wrote {config_path}")
-
+        url = (None if force else _setup_url(project)) or _ask_url(prompter)
+        if configured_url:
+            match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", configured_url)
+            if not match:
+                raise StitchInitError("set the environment variables in metabase.url and retry")
+            session_env[match.group(1)] = url
     gitignore_updated = append_gitignore(project.root)
-    if gitignore_updated:
-        prompter.say(f"added {GITIGNORE_ENTRY} to .gitignore")
-    env_example = write_env_example(project.root)
-    if env_example is not None:
-        prompter.say(f"wrote {env_example} ({API_KEY_VAR}, name only)")
-    workflow = install_workflow_template(project.root)
-    if workflow is not None:
-        prompter.say(f"wrote {workflow} (trigger commented out)")
+    _remember_url(project, url)
+    variable = (existing.metabase._api_key_env if existing else None) or API_KEY_VAR
+    api_key = env.get(variable)
+    from_environment = bool(api_key)
+    if not api_key:
+        try:
+            api_key = credentials.read_api_key(config_path, url, variable)
+        except credentials.CredentialStoreUnavailable:
+            api_key = None
+    if api_key:
+        prompter.say("using your Metabase credentials")
+    else:
+        prompter.say("Create a key in Metabase Admin settings -> Authentication -> API keys.")
+        api_key = prompter.secret("Metabase API key (remembered in your OS credential store)")
 
-    checks, healthy = _mini_doctor(
-        config_path=config_path,
-        facts=facts,
-        version=version,
-        metabase_name=str(chosen.get("name") or ""),
-        dbt_database=dbt_database,
-        include_schemas=include_schemas,
-        tables=tables,
-        table_prefix=table_prefix,
+    # Retry an expired saved key in place. A supplied environment value is explicit
+    # (including in CI), so explain its failure rather than silently replacing it.
+    while True:
+        api_key = api_key.strip()
+        if not api_key:
+            raise StitchInitError("a Metabase API key is required -- re-run 'stitch init'")
+        client = client_factory(url, api_key)
+        try:
+            version = client.assert_version()
+            databases = client.list_databases()
+            break
+        except MetabaseAPIError as exc:
+            if exc.status_code == 401 and not from_environment:
+                prompter.say("Metabase rejected that key. Paste a current key to continue.")
+                api_key = prompter.secret("Metabase API key")
+                continue
+            raise StitchInitError(
+                f"{str(exc).replace(api_key, '[redacted]')} -- check the connection and "
+                "re-run 'stitch init' to continue"
+            ) from None
+    prompter.say("connected to Metabase")
+    if not from_environment:
+        try:
+            credentials.save_api_key(config_path, url, variable, api_key)
+            prompter.say("API key remembered in your OS credential store")
+        except credentials.CredentialStoreUnavailable:
+            prompter.say(
+                f"OS credential storage is unavailable; continuing for this session. "
+                f"Next time, run 'stitch init' to reconnect or set {variable} in your environment."
+            )
+    session_env[variable] = api_key
+
+    mappings = []
+    metadata = []
+    if existing:
+        for mapping in existing.metabase.databases:
+            matches = [db for db in databases if db.get("name") == mapping.metabase_name]
+            if len(matches) != 1:
+                raise StitchInitError(
+                    f"Metabase database '{mapping.metabase_name}' is unavailable or ambiguous -- "
+                    "check the key's permissions or use 'stitch init --force' to reconfigure"
+                )
+            mappings.append((mapping.metabase_name, mapping.dbt_database, mapping.table_prefix))
+            metadata.append(matches[0])
+    else:
+        for database in facts.databases:
+            chosen = _resolve_database(prompter, database, databases)
+            mappings.append((str(chosen.get("name") or ""), database, ""))
+            metadata.append(chosen)
+
+    table_sets = []
+    try:
+        for chosen in metadata:
+            table_sets.append(metabase_tables(client.database_metadata(chosen["id"])))
+    except (MetabaseAPIError, KeyError) as exc:
+        raise StitchInitError(
+            f"could not read Metabase database metadata: {str(exc).replace(api_key, '[redacted]')} "
+            "-- re-run 'stitch init' to continue"
+        ) from None
+    schemas = (
+        existing.metabase.include_schemas
+        if existing
+        else propose_include_schemas(
+            facts, sorted({schema for tables in table_sets for schema, _ in tables})
+        )
     )
+    if not existing:
+        mappings = [
+            (
+                name,
+                database,
+                derive_table_prefix(
+                    facts.tables_in(database, schemas), [table for _, table in tables]
+                ),
+            )
+            for (name, database, _), tables in zip(mappings, table_sets, strict=True)
+        ]
+        prompter.say(f"using schemas: {', '.join(schemas) if schemas else 'all'}")
+        config_path.write_text(
+            render_stitch_yml(
+                project_dir=".",
+                target_path=project.target_path,
+                metabase_url=json.dumps(url),
+                databases=mappings,
+                include_schemas=schemas,
+            ),
+            encoding="utf-8",
+        )
+        prompter.say(f"wrote {config_path}")
+    env_example = write_env_example(project.root, (variable,))
+    checks = []
+    healthy = True
+    for (name, database, prefix), tables in zip(mappings, table_sets, strict=True):
+        mapping_checks, mapping_healthy = _mini_doctor(
+            config_path=config_path,
+            facts=facts,
+            version=version,
+            metabase_name=name,
+            dbt_database=database,
+            include_schemas=schemas,
+            tables=tables,
+            table_prefix=prefix,
+            env={**env, **session_env},
+        )
+        checks.extend(line for line in mapping_checks if line not in checks)
+        healthy = healthy and mapping_healthy
     for check in checks:
         prompter.say(check)
-    if not env.get(API_KEY_VAR):
-        prompter.say(f"export {API_KEY_VAR}=<your key>   # stitch reads the key from the env")
-    prompter.say("next: stitch build")
+    if not healthy:
+        prompter.say("fix the mapping in stitch.yml or run 'stitch init --force' to reconfigure")
     return InitResult(
         config_path=config_path,
         gitignore_updated=gitignore_updated,
         env_example_path=env_example,
-        workflow_path=workflow,
         checks=checks,
         healthy=healthy,
+        credentials=session_env,
     )
 
 

@@ -72,29 +72,53 @@ Either way the browser app ships prebuilt, so installing never needs a node tool
 
 ### Usage
 
-From your dbt project root:
+From inside your dbt project, run:
 
 ```shell
-stitch init                      # write stitch.yml (a wizard, not a scaffolder)
-stitch build                     # resolve dbt + Metabase into .stitch/graph.json
-stitch serve                     # explore it at http://127.0.0.1:8787
+stitch init
 ```
 
-`stitch init` reads `dbt_project.yml` and `target/manifest.json` for your project name, target path,
-databases, schemas and model inventory, and never asks a question dbt already answers. It asks for
-the Metabase URL and an API key, calls Metabase, proposes the database mapping
-(`Metabase "Analytics" ↔ dbt "analytics" — confirm?`) and the `include_schemas` where your marts
-actually live, then writes `stitch.yml`, a `.env.example` line and a `.gitignore` entry, and
-finishes with a mini-doctor and the next command. Four inputs, under two minutes. **The API key is
-never written to disk** — `stitch.yml` gets the `${STITCH_METABASE_API_KEY}` reference, and a
-literal key in the file is a startup error rather than a warning.
+Enter your **Metabase URL and API key**. Stitch finds your dbt project, reuses existing artifacts
+(or offers to generate them using your existing dbt profile), matches the databases and schemas,
+builds column lineage, and opens the app at a column with downstream reports. If there is no traced
+report connection yet, it opens search with coverage diagnostics. No separate `build` or `serve`
+command is needed on the first run. Keep the terminal running while using the app; Ctrl+C stops it.
 
-`stitch build` needs `target/manifest.json` and `target/catalog.json`. Set `dbt.auto_docs: true` and
-it runs `dbt docs generate` for you; otherwise run dbt yourself and pass `--no-docs`:
+Clear database matches are automatic; an ambiguous match gets a picker. Existing environment
+credentials are reused. A key you enter is remembered in your **OS credential store**, scoped to
+this project and Metabase instance. It never goes into `stitch.yml`, `.env`, or any project file.
+Environment variables take precedence for CI. On systems without an available OS credential
+store, setup still completes for the current session; reconnect with `stitch init` next time or
+supply the key through the environment.
+
+If setup is interrupted, rerun **the same command**. Stitch reuses your existing configuration,
+remembered URL and credentials. A failed build does not open the browser. Use `stitch init --force`
+only when you want to replace the configuration.
+
+| Option | Behavior |
+| --- | --- |
+| `stitch init --no-serve` | Connect and build, then exit. |
+| `stitch init --no-open` | Connect, build and serve without opening a browser. |
+| `stitch init --configure-only` | Configure the connection without building or serving. |
+| `stitch init --port 8790` | Use a different local app port. |
+
+The first graph is the baseline for your next build. It is local and gitignored; SHA-keyed
+history still requires a clean Git working tree. Setup reads Metabase and does not apply repairs.
+GitHub Actions are an optional later step; init does not install a workflow.
+
+For subsequent work, the individual commands remain available:
+
+```shell
+stitch build                     # refresh after your dbt artifacts change
+stitch serve                     # reopen the current graph
+```
+
+`stitch build` needs `target/manifest.json` and `target/catalog.json`. Set `dbt.auto_docs: true`
+to run `dbt docs generate` before each build, or run dbt yourself and reuse its artifacts:
 
 ```shell
 dbt docs generate
-stitch build --no-docs           # --docs/--no-docs overrides dbt.auto_docs either way
+stitch build --no-docs
 ```
 
 Every other command reads that one graph file:
@@ -112,9 +136,9 @@ Every other command reads that one graph file:
 | `stitch export` | `--format jsonl` for agents and warehouses, `--format site` for a static build of the app. |
 | `stitch --version` | Print the installed version. |
 
-Everything except `build` and `doctor`'s connectivity checks works without the Metabase environment
-variables set (`mend` is the exception: it needs them to read the cards it plans against). `--json` is
-available on `impact --column`, `search`, `history` and `doctor --dead`, and
+Commands that call Metabase (`build`, connectivity checks, and `mend`) use environment or saved
+credentials. Commands that only read the local graph work offline. `--json` is available on
+`impact --column`, `search`, `history` and `doctor --dead`, and
 `impact --format json` emits the machine-readable diff. Add `.stitch/` to `.gitignore`; the graph is a local artifact.
 
 ## What breaks if I change this column?

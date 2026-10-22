@@ -12,7 +12,6 @@ from stitch_lineage.init_wizard import (
     append_gitignore,
     derive_table_prefix,
     detect_dbt_project,
-    disarm_workflow_trigger,
     manifest_facts,
     normalize_metabase_url,
     propose_database_mapping,
@@ -135,11 +134,12 @@ def make_project(tmp_path: Path, *, with_manifest: bool = True) -> Path:
     (root / "dbt_project.yml").write_text(DBT_PROJECT_YML, encoding="utf-8")
     if with_manifest:
         shutil.copy(DBT_FIXTURES / "manifest.json", root / "target" / "manifest.json")
+        shutil.copy(DBT_FIXTURES / "catalog.json", root / "target" / "catalog.json")
     return root
 
 
 def happy_prompter() -> ScriptedPrompter:
-    """URL, key, mapping confirm, include_schemas confirm -- the four human inputs."""
+    """Only URL and key on the common path."""
     return ScriptedPrompter(
         answers=["https://mb.example.com"], secrets=[API_KEY], confirms=[True, True]
     )
@@ -454,46 +454,15 @@ def test_env_example_appends_to_an_existing_file(tmp_path):
     assert f"{API_KEY_VAR}=" in lines
 
 
-def test_disarm_workflow_trigger_comments_the_trigger_and_keeps_the_job():
-    source = (
-        "name: stitch impact\n"
-        "\n"
-        "on:\n"
-        "  pull_request:\n"
-        '    paths:\n      - "models/**"\n'
-        "\n"
-        "jobs:\n"
-        "  impact:\n"
-        "    runs-on: ubuntu-latest\n"
-    )
-    disarmed = disarm_workflow_trigger(source)
-    assert "# on:\n" in disarmed
-    assert "#   pull_request:" in disarmed
-    assert "on:\n  workflow_dispatch:\n" in disarmed
-    assert "  impact:\n" in disarmed
-
-
-def test_disarm_workflow_trigger_leaves_the_shipped_template_parseable():
-    from ruamel.yaml import YAML
-
-    template = Path(__file__).parent.parent / "action" / "stitch-impact.yml"
-    if not template.is_file():  # pragma: no cover -- absent in a wheel install
-        pytest.skip("action templates ship only in a source checkout")
-    parsed = YAML(typ="safe").load(disarm_workflow_trigger(template.read_text(encoding="utf-8")))
-    assert parsed["on"] == {"workflow_dispatch": None}
-    assert parsed["name"] == "stitch impact"
-    assert "impact" in parsed["jobs"]
-
-
 # --- the wizard end to end ------------------------------------------------------
 
 
-def test_run_init_configures_a_repo_with_four_human_inputs(tmp_path):
+def test_run_init_configures_a_repo_with_only_url_and_key(tmp_path):
     root = make_project(tmp_path)
     prompter = happy_prompter()
     result = init(root, prompter)
 
-    assert prompter.inputs == 4
+    assert prompter.inputs == 2
     assert result.healthy
     cfg = load_config(result.config_path)
     assert cfg.metabase.url == "https://mb.example.com"
@@ -519,7 +488,7 @@ def test_run_init_writes_the_repo_files_and_never_the_key(tmp_path):
     assert API_KEY not in prompter.output()
 
 
-def test_run_init_finishes_with_a_mini_doctor_and_the_next_command(tmp_path):
+def test_run_init_returns_a_validated_connection_for_the_first_build(tmp_path):
     root = make_project(tmp_path)
     prompter = happy_prompter()
     result = init(root, prompter)
@@ -530,7 +499,8 @@ def test_run_init_finishes_with_a_mini_doctor_and_the_next_command(tmp_path):
     assert "version v0.53.2" in joined
     # fct_orders is the one dbt mart Metabase also has; dim_customers is not a dbt model
     assert "1/4 dbt models in marts, dims present in Metabase 'Analytics'" in joined
-    assert "next: stitch build" in prompter.output()
+    assert "next: stitch build" not in prompter.output()
+    assert result.credentials == {API_KEY_VAR: API_KEY}
 
 
 def test_run_init_reports_a_zero_match_mapping_as_a_failure(tmp_path):
@@ -568,9 +538,9 @@ def test_run_init_uses_the_environment_instead_of_asking(tmp_path):
         prompter,
         env={API_KEY_VAR: API_KEY, URL_VAR: "https://mb.example.com/"},
     )
-    assert prompter.inputs == 2
+    assert prompter.inputs == 0
     text = result.config_path.read_text(encoding="utf-8")
-    assert f"${{{URL_VAR}}}" in text
+    assert "https://mb.example.com" in text
     assert f"${{{API_KEY_VAR}}}" in text
 
 
@@ -588,27 +558,13 @@ def test_run_init_asks_a_real_question_when_the_mapping_is_ambiguous(tmp_path):
     assert load_config(result.config_path).metabase.databases[0].metabase_name == "analytics"
 
 
-def test_run_init_falls_back_to_the_picker_when_the_proposal_is_declined(tmp_path):
+def test_run_init_does_not_ask_to_confirm_clear_matches_or_schemas(tmp_path):
     root = make_project(tmp_path)
-    prompter = ScriptedPrompter(
-        answers=["https://mb.example.com"],
-        secrets=[API_KEY],
-        confirms=[False, True],
-        choices=[0],
-    )
-    result = init(root, prompter)
-    assert load_config(result.config_path).metabase.databases[0].metabase_name == "Analytics"
-
-
-def test_run_init_lets_the_user_replace_the_proposed_schemas(tmp_path):
-    root = make_project(tmp_path)
-    prompter = ScriptedPrompter(
-        answers=["https://mb.example.com", " marts , raw "],
-        secrets=[API_KEY],
-        confirms=[True, False],
-    )
-    result = init(root, prompter)
-    assert load_config(result.config_path).metabase.include_schemas == ["marts", "raw"]
+    prompter = happy_prompter()
+    init(root, prompter)
+    assert len(prompter.asked) == 2
+    assert "matched Metabase 'Analytics'" in prompter.output()
+    assert "using schemas: marts, dims" in prompter.output()
 
 
 def test_run_init_offers_to_generate_missing_artifacts(tmp_path):
@@ -618,6 +574,7 @@ def test_run_init_offers_to_generate_missing_artifacts(tmp_path):
     def docs_runner(project_dir: Path, args: list[str]) -> None:
         generated.append(project_dir)
         shutil.copy(DBT_FIXTURES / "manifest.json", project_dir / "target" / "manifest.json")
+        shutil.copy(DBT_FIXTURES / "catalog.json", project_dir / "target" / "catalog.json")
 
     prompter = ScriptedPrompter(
         answers=["https://mb.example.com"], secrets=[API_KEY], confirms=[True, True, True]
@@ -653,7 +610,7 @@ def test_run_init_needs_a_dbt_project(tmp_path):
 def test_run_init_keeps_an_existing_config_unless_told_otherwise(tmp_path):
     root = make_project(tmp_path)
     (root / "stitch.yml").write_text("# hand written\n", encoding="utf-8")
-    with pytest.raises(StitchInitError, match="left untouched"):
+    with pytest.raises(StitchInitError, match="reconfigure"):
         init(root, ScriptedPrompter(confirms=[False]))
     assert (root / "stitch.yml").read_text(encoding="utf-8") == "# hand written\n"
 
@@ -664,7 +621,7 @@ def test_run_init_force_overwrites_without_asking(tmp_path):
     prompter = happy_prompter()
     result = init(root, prompter, force=True)
     assert "hand written" not in result.config_path.read_text(encoding="utf-8")
-    assert prompter.inputs == 4
+    assert prompter.inputs == 2
 
 
 def test_run_init_reports_an_unreachable_metabase_with_the_fix(tmp_path):
@@ -696,7 +653,7 @@ def test_run_init_surfaces_an_unparseable_manifest(tmp_path):
     root = make_project(tmp_path)
     (root / "target" / "manifest.json").write_text("{not json", encoding="utf-8")
     with pytest.raises(StitchInitError, match="not valid JSON"):
-        init(root, ScriptedPrompter())
+        init(root, ScriptedPrompter(confirms=[False]))
 
 
 def test_run_init_config_is_loadable_without_the_api_key_in_the_environment(tmp_path):
@@ -708,3 +665,134 @@ def test_run_init_config_is_loadable_without_the_api_key_in_the_environment(tmp_
     assert cfg.metabase.missing_env == [API_KEY_VAR]
     with pytest.raises(StitchConfigError, match=API_KEY_VAR):
         cfg.metabase.require_env()
+
+
+def test_resume_reuses_key_url_and_preserves_handwritten_config(tmp_path):
+    root = make_project(tmp_path)
+    result = init(root, happy_prompter())
+    path = result.config_path
+    path.write_text(path.read_text() + "\n# my settings\nmend:\n  auto: [repoint]\n")
+    before = path.read_bytes()
+    prompter = ScriptedPrompter()
+    retried = init(root, prompter)
+    assert prompter.inputs == 0
+    assert retried.healthy
+    assert path.read_bytes() == before
+    assert retried.credentials == {API_KEY_VAR: API_KEY}
+
+
+def test_metadata_failure_remembers_connection_for_retry(tmp_path):
+    root = make_project(tmp_path)
+
+    class FailedMetadata(FakeMetabase):
+        def database_metadata(self, db_id):
+            raise MetabaseAPIError("connection interrupted")
+
+    with pytest.raises(StitchInitError, match="re-run 'stitch init'"):
+        init(root, happy_prompter(), client_factory=lambda *args: FailedMetadata())
+    assert not (root / "stitch.yml").exists()
+    prompter = ScriptedPrompter()
+    result = init(root, prompter)
+    assert result.healthy
+    assert prompter.inputs == 0
+
+
+def test_expired_stored_key_is_replaced_in_place(tmp_path):
+    from stitch_lineage.io.credentials import read_api_key
+
+    root = make_project(tmp_path)
+    init(root, happy_prompter())
+
+    def client_factory(url, key):
+        if key == API_KEY:
+            return FakeMetabase(error=MetabaseAPIError("unauthorized", status_code=401))
+        assert key == "replacement-key"
+        return FakeMetabase()
+
+    prompter = ScriptedPrompter(secrets=["replacement-key"])
+    result = init(root, prompter, client_factory=client_factory)
+    assert result.healthy and prompter.inputs == 1
+    assert (
+        read_api_key(result.config_path, "https://mb.example.com", API_KEY_VAR) == "replacement-key"
+    )
+
+
+def test_missing_catalog_is_generated_even_with_existing_manifest(tmp_path):
+    root = make_project(tmp_path)
+    (root / "target/catalog.json").unlink()
+    calls = []
+
+    def generate(project, args):
+        calls.append((project, args))
+        shutil.copy(DBT_FIXTURES / "catalog.json", project / "target/catalog.json")
+
+    result = init(root, happy_prompter(), docs_runner=generate)
+    assert result.healthy
+    assert calls == [(root, [])]
+
+
+def test_resume_honours_existing_artifact_path_and_dbt_arguments(tmp_path):
+    root = make_project(tmp_path)
+    result = init(root, happy_prompter())
+    text = result.config_path.read_text().replace(
+        'target_path: "target/"', 'target_path: "compiled/"'
+    )
+    text = text.replace("docs_args: []", "docs_args: [--target, prod]")
+    result.config_path.write_text(text)
+    calls = []
+
+    def generate(project, args):
+        calls.append((project, args))
+        shutil.copytree(project / "target", project / "compiled")
+
+    prompter = ScriptedPrompter()
+    resumed = init(root, prompter, docs_runner=generate)
+    assert resumed.healthy
+    assert calls == [(root, ["--target", "prod"])]
+    assert prompter.inputs == 1  # artifact generation, not connection setup
+
+
+def test_first_setup_maps_every_dbt_database(tmp_path):
+    root = make_project(tmp_path)
+    raw = manifest()
+    raw["nodes"]["model.demo.stg_payments"]["database"] = "other"
+    (root / "target/manifest.json").write_text(json.dumps(raw))
+    databases = [{"id": 2, "name": "Analytics"}, {"id": 3, "name": "Other"}]
+    result = init(
+        root, happy_prompter(), client_factory=lambda *args: FakeMetabase(databases=databases)
+    )
+    cfg = load_config(result.config_path)
+    assert {m.dbt_database for m in cfg.metabase.databases} == {"analytics", "other"}
+
+
+def test_force_can_replace_the_remembered_url(tmp_path):
+    root = make_project(tmp_path)
+    init(root, happy_prompter())
+    prompter = ScriptedPrompter(answers=["https://new.example.com"], secrets=[API_KEY])
+    result = init(root, prompter, force=True)
+    assert load_config(result.config_path).metabase.url == "https://new.example.com"
+
+
+@pytest.mark.parametrize(
+    "url", ["ftp://example.com", "https://u:p@example.com", "https://mb/?key=x"]
+)
+def test_url_checkpoint_never_accepts_credentials_or_query_tokens(url):
+    with pytest.raises(ValueError):
+        normalize_metabase_url(url)
+
+
+@pytest.mark.parametrize("checkpoint", [{"metabase_url": 7}, ["invalid"], None])
+def test_invalid_checkpoint_falls_back_to_the_url_prompt(tmp_path, checkpoint):
+    root = make_project(tmp_path)
+    (root / ".stitch").mkdir()
+    (root / ".stitch/setup.json").write_text(json.dumps(checkpoint))
+    prompter = happy_prompter()
+    result = init(root, prompter)
+    assert result.healthy
+    assert prompter.inputs == 2
+
+
+def test_invalid_environment_url_has_an_actionable_error(tmp_path):
+    root = make_project(tmp_path)
+    with pytest.raises(StitchInitError, match="invalid Metabase URL"):
+        init(root, ScriptedPrompter(), env={URL_VAR: "https://user:secret@example.com"})

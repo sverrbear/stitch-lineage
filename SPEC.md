@@ -13,6 +13,7 @@
 - **Amended 2026-08-11** (distribution): **the "PyPI deliberately skipped" decision is reversed.** stitch publishes to PyPI as `stitch-lineage`, and `pip install stitch-lineage` is the primary install. The original reasoning — that installing from a ref you chose keeps you in control of when the tool changes — argues for pinning, not against a registry: a tagged release is just as pinnable and far easier to install, and git-install remains documented for riding `main`. Releases are tag-triggered: pushing a `v*` tag runs `.github/workflows/publish.yml`, which refuses to build unless the tag matches the version in `pyproject.toml`, refuses to publish a wheel that does not contain the built frontend (`app/frontend/dist/`), and uploads through PyPI Trusted Publishing (OIDC, `environment: pypi`) with no API token stored anywhere. Nothing else in the spec changes: distribution is a delivery channel, and local-first is unaffected.
 - **Amended 2026-08-12** (badges, #187): the node badge answers **who manages this table**, not which system it lives in — §9's "System badges" becomes "Manager badges". dbt-produced nodes (models, seeds, snapshots) take the dbt mark; dbt `source`s, which land in Snowflake by something outside this repo, keep the Snowflake mark; columns take their table's manager; the Metabase side is unchanged. One mark for the whole warehouse was a distinction nobody could act on — the actionable fact is whether `dbt run` builds the thing you are about to change. Nothing else moves: the graph, the resolvers and the node types are untouched, this is what the app *says* about them.
 - **Amended 2026-10-22** (product focus, #242): remove the ERD canvas and relationship suggestions, including their CLI/API, layout engine and dismissal store. Keep column lineage, impact, `mend`, and unused-downstream analysis (`doctor --dead`). Description editing and existing staged changes retain a standalone review/apply page. Retire ERD saved views and additional relationship drawing shapes from the roadmap.
+- **Amended 2026-10-22** (onboarding, #244): `stitch init` connects, builds and opens the app; OS-stored credentials and existing configuration support retries. Environment credentials remain available for CI.
 
 ---
 
@@ -143,24 +144,43 @@ Every edge carries `confidence` and `evidence` (manifest path, MBQL fragment, pa
 
 ## 6. Configuration
 
-### 6.0 `stitch init` — a wizard, not a scaffolder
+### 6.0 `stitch init` — connect, build, open (#244)
 
-Setup friction is a product feature. `init` derives everything derivable and asks only for what it cannot know:
+The first-run command ends in a working app over the user's own graph. The common path asks for
+only the Metabase URL and API key; configured values are reused.
 
-1. Detect `dbt_project.yml` → project name, `target/` path. No manifest yet → offer to run `dbt docs generate`.
-2. From the manifest: quoting/casing policy, databases and schemas models land in, model inventory. **Never ask a question the manifest answers.**
-3. Ask the two unknowables: Metabase URL, API key. Key is env-only from the first second — init writes the `${STITCH_METABASE_API_KEY}` reference into config and a line into `.env.example`, never the value.
-4. Immediately call Metabase, list its databases, and **propose the database mapping** by name-similarity against the manifest ("Metabase *Analytics* ↔ dbt *ANALYTICS* — confirm? [Y/n]"). Ambiguity → a real question; the common case → one keystroke.
-5. Propose `include_schemas` from where marts actually live; write `stitch.yml`; append `.stitch/` to `.gitignore` — the whole directory, since v0.5 made all of it local; drop the GitHub Action into `.github/workflows/` with its real trigger commented out and `workflow_dispatch` standing in (a workflow with no `on:` block is an Actions error, not a disarmed workflow).
-6. Finish with a mini-doctor (Metabase reachable, version ≥ 49, manifest parses, model counts on both sides) and print the next command.
+1. Detect `dbt_project.yml`, derive the project and artifact path, and reuse usable artifacts.
+   Missing/unreadable artifacts or a fully uncompiled manifest trigger an offer to run
+   `dbt docs generate` with the existing project/profile and configured `docs_args`. Explain that
+   warehouse login may be required. Configuration-only mode requires the manifest, not the catalog.
+2. Resolve credentials from the environment first, then the OS credential store, then a hidden
+   prompt. Config parsing itself stays offline; only network commands recover a saved key.
+   Keys entered in init are validated and saved in an OS store, scoped by resolved config path,
+   Metabase URL and environment-variable name. Project files keep only the environment reference.
+   The supported stores are macOS Keychain, Windows Credential Locker, Secret Service and KWallet
+   through `keyring`; third-party plaintext fallbacks are not used. If storage is unavailable,
+   finish in the current session and explain how to reconnect or supply environment credentials.
+3. Match every model database in the manifest. Confident unique matches and inferred schemas
+   are automatic; ambiguity gets a picker. Existing `stitch.yml` is reused without rewriting
+   custom settings. `--force` explicitly replaces it. Record the URL in `.stitch/setup.json`
+   so a connection failure does not discard it; no credential enters that checkpoint.
+4. Write the derived configuration and a name-only `.env.example` entry; ignore `.stitch/`.
+   Check connectivity and model matches. Do not install a GitHub Action during onboarding.
+5. Run the existing full build pipeline, reusing artifacts already checked/generated. The first
+   graph is the baseline for the next build; normal SHA-history rules are unchanged. On failure,
+   leave configuration and saved credentials ready for another `stitch init`.
+6. Start the existing localhost app and open a real column feeding an active Metabase card.
+   Choose deterministically by nearest reverse data-flow path, excluding relationship edges,
+   with the same 20-hop bound as impact. If no such column exists, open search/coverage instead.
+   Ctrl+C ends the local server. Init never applies a repair or writes to Metabase.
 
-The Action drop is best-effort: `action/` lives in the repo, not in the wheel (`packages = ["stitch_lineage"]`), so a pip-installed `init` skips that step and says so rather than pretending. Open question, not decided here: promote `action/` to package data, or leave the templates a source-checkout convenience and let pip users copy them from the repo.
-
-Target: repo → configured in under two minutes with four human inputs (URL, key, one mapping confirm, one schemas confirm) — arming the Action is a later manual step, not one of the four. Every derived value is written into `stitch.yml` explicitly rather than defaulted invisibly, so the config file remains the full, inspectable truth.
+`--configure-only` retains configuration-only setup; `--no-serve` builds and exits; `--no-open`
+serves without opening a browser; `--port` selects the local port. The standalone build, serve,
+impact, doctor and mend commands keep their existing responsibilities.
 
 ### 6.1 `stitch.yml`
 
-`stitch.yml` at the dbt project root. Committed. No secrets — the API key is env-only.
+`stitch.yml` at the dbt project root. Committed. No secrets — API-key references resolve from the environment or, for network commands, the OS credential store.
 
 ```yaml
 dbt:

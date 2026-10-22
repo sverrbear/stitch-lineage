@@ -2,10 +2,11 @@
 
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, ValidationError, field_validator
 from ruamel.yaml import YAML
 
 _ENV_REF = re.compile(r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}")
@@ -37,7 +38,8 @@ class MetabaseDatabaseMapping(BaseModel):
 
 class MetabaseConfig(BaseModel):
     url: str
-    api_key: str
+    api_key: str = Field(repr=False)
+    _api_key_env: str | None = PrivateAttr(default=None)
     min_version: str = "0.49"
     databases: list[MetabaseDatabaseMapping]
     include_schemas: list[str] = Field(default_factory=list)
@@ -174,6 +176,7 @@ class ServeConfig(BaseModel):
 
 
 class StitchConfig(BaseModel):
+    _config_path: Path | None = PrivateAttr(default=None)
     dbt: DbtConfig = Field(default_factory=DbtConfig)
     metabase: MetabaseConfig
     relationships: RelationshipsConfig = Field(default_factory=RelationshipsConfig)
@@ -183,7 +186,7 @@ class StitchConfig(BaseModel):
     mend: MendConfig = Field(default_factory=MendConfig)
 
 
-def load_config(path: Path) -> StitchConfig:
+def load_config(path: Path, *, env: Mapping[str, str] | None = None) -> StitchConfig:
     """Parse and validate stitch.yml, interpolating ${ENV_VAR} references.
 
     Hard rule: metabase.api_key and mend.slack_webhook must be whole-value env references
@@ -243,17 +246,20 @@ def load_config(path: Path) -> StitchConfig:
     missing: list[str] = []
     mend_missing: list[str] = []
     lazy = {"metabase": missing, "mend": mend_missing}
-    interpolated = {key: _interpolate_env(value, lazy.get(key)) for key, value in raw.items()}
+    env = os.environ if env is None else env
+    interpolated = {key: _interpolate_env(value, lazy.get(key), env) for key, value in raw.items()}
     try:
         cfg = StitchConfig.model_validate(interpolated)
     except ValidationError as exc:
         raise StitchConfigError(f"invalid stitch.yml: {exc}") from exc
     cfg.metabase.missing_env = missing
+    cfg.metabase._api_key_env = _ENV_REF.fullmatch(api_key).group("name")
+    cfg._config_path = path.resolve()
     cfg.mend.missing_env = mend_missing
     return cfg
 
 
-def _interpolate_env(value: Any, missing: list[str] | None = None) -> Any:
+def _interpolate_env(value: Any, missing: list[str] | None, env: Mapping[str, str]) -> Any:
     """Substitute ${ENV_VAR} references; strict when missing is None, tolerant otherwise.
 
     Tolerant mode records unset variable names in `missing` and leaves the raw
@@ -263,18 +269,18 @@ def _interpolate_env(value: Any, missing: list[str] | None = None) -> Any:
 
         def _sub(match: re.Match[str]) -> str:
             name = match.group("name")
-            if name not in os.environ:
+            if name not in env:
                 if missing is None:
                     raise StitchConfigError(
                         f"environment variable {name} is referenced in stitch.yml but not set"
                     )
                 missing.append(name)
                 return match.group(0)
-            return os.environ[name]
+            return env[name]
 
         return _ENV_REF.sub(_sub, value)
     if isinstance(value, dict):
-        return {key: _interpolate_env(item, missing) for key, item in value.items()}
+        return {key: _interpolate_env(item, missing, env) for key, item in value.items()}
     if isinstance(value, list):
-        return [_interpolate_env(item, missing) for item in value]
+        return [_interpolate_env(item, missing, env) for item in value]
     return value

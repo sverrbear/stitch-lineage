@@ -135,7 +135,7 @@ def test_init_runs_the_wizard(tmp_path, monkeypatch):
     (tmp_path / "dbt_project.yml").write_text("name: demo\n", encoding="utf-8")
     result = runner.invoke(app, ["init"], input="n\n")
     assert result.exit_code == 1
-    assert "no manifest at" in plain(result.output)
+    assert "manifest.json not found" in plain(result.output)
     assert "dbt docs generate" in plain(result.output)
 
 
@@ -269,7 +269,8 @@ def test_build_missing_env_message_names_the_fix(tmp_path, monkeypatch, wide_con
         "error: environment variable STITCH_METABASE_API_KEY is referenced in stitch.yml "
         "but not set",
         "  stitch build needs it to call the Metabase API.",
-        "  fix: set it in your environment (create a key in Metabase: "
+        "  fix: run 'stitch init' to reconnect, or set it in your environment "
+        "(create a key in Metabase: "
         "Admin settings -> Authentication -> API keys),",
         "  or run 'stitch build --no-metabase' for a dbt-only graph.",
     ]
