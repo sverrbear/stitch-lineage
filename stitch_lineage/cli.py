@@ -2217,6 +2217,7 @@ def _run_serve(
     import uvicorn
 
     from stitch_lineage.app.server import create_app
+    from stitch_lineage.mend_runtime import MendRuntime
 
     config = _resolve_config(config)
     graph_path = _graph_path_or_fail(_graph_path(config))
@@ -2236,6 +2237,7 @@ def _run_serve(
             staged_path=staged,
             descriptions_path=descriptions,
             apply_context=context,
+            mend=MendRuntime(config, graph_path) if config.is_file() else None,
             strip_model_prefixes=_strip_model_prefixes(config),
             table_prefixes=_table_prefixes(config),
             bind_host=host,

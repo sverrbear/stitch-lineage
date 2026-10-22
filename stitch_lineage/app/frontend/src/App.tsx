@@ -10,6 +10,7 @@ import { copy } from './copy'
 
 // The React Flow canvases are the heavy chunk; keep search/detail first-load light.
 const StagedPage = lazy(() => import('./pages/StagedPage').then((m) => ({ default: m.StagedPage })))
+const MendPage = lazy(() => import('./pages/MendPage').then((m) => ({ default: m.MendPage })))
 
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
@@ -74,6 +75,7 @@ function Shell() {
           </main>
         )}
         {route.page === 'staged' && <StagedPage />}
+        {route.page === 'mend' && <MendPage />}
       </Suspense>
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
       {origin === 'dev-fixture' && <div className="dev-banner">{copy.app.devFixtureBanner}</div>}

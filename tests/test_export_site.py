@@ -44,6 +44,7 @@ def test_marker_is_replaced_by_parseable_globals(tmp_path, graph_path, sample_gr
         "strip_model_prefixes": [],
         "table_prefixes": [],
         "staging_enabled": False,
+        "mend_enabled": False,
     }
 
 

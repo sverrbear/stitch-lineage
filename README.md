@@ -127,7 +127,7 @@ Every other command reads that one graph file:
 | ------- | ----------- |
 | `stitch build` | Resolve dbt + Metabase into `graph.json`. `--no-metabase` does the dbt side only; `--check` exits 1 on drift against a committed graph. |
 | `stitch impact` | What the last build changed, and what it hits. `--column <model.column>` for a point query, `--base <ref>` to diff a git ref. |
-| `stitch mend` | Repair the Metabase cards a column change broke. `--plan` classifies and writes `.stitch/mend_plan.json`; `--apply` executes it. The only command that writes to Metabase. |
+| `stitch mend` | Repair the Metabase cards a column change broke. `--plan` classifies and writes `.stitch/mend_plan.json`; `--apply` executes it. Metabase repairs are also available through Mend in the local app. |
 | `stitch serve` | The local lineage and impact app on `127.0.0.1:8787` (`--port`, `--host`, `--no-open`). |
 | `stitch search <term>` | Find models, columns, Metabase fields, cards and dashboards. |
 | `stitch apply` | Write staged descriptions and existing staged relationships into model YAML (`--dry-run` shows the diff). |
@@ -136,7 +136,7 @@ Every other command reads that one graph file:
 | `stitch export` | `--format jsonl` for agents and warehouses, `--format site` for a static build of the app. |
 | `stitch --version` | Print the installed version. |
 
-Commands that call Metabase (`build`, connectivity checks, and `mend`) use environment or saved
+Metabase operations (`build`, connectivity checks, and CLI/browser Mend) use environment or saved
 credentials. Commands that only read the local graph work offline. `--json` is available on
 `impact --column`, `search`, `history` and `doctor --dead`, and
 `impact --format json` emits the machine-readable diff. Add `.stitch/` to `.gitignore`; the graph is a local artifact.
@@ -257,6 +257,36 @@ plan, Slack notice, apply, summary, in one job — is
 [`action/stitch-mend.yml`](https://github.com/sverrbear/stitch-lineage/blob/main/action/stitch-mend.yml), which documents a human-gated variant alongside.
 
 ## The app
+
+**Mend** in the top navigation brings repair into the local app. It compares the current
+`.stitch/graph.json` with `graph.prev.json`; your first build establishes the baseline for
+the next schema change. Refresh dbt artifacts, sync Metabase, and run `stitch build` after
+the change. Each build replaces the previous snapshot, so do not rebuild simply to dismiss
+a missing-baseline message. The app does not run the warehouse or monitor changes in the background.
+
+Declare a removed column's replacement from the current graph, then **Review repairs**.
+Planning reads Metabase without changing it and shows each affected report, query diff,
+and dashboard filter edit. Only declared reference updates are selected by default, even
+if `mend.auto` permits more. Clause removal and archiving require separate choices for
+each review and remain unavailable when the project policy disables them. Native SQL,
+protected collections, unreadable reports, and replacements not yet synced stay visible
+for manual review.
+
+After reviewing, explicitly approve the listed repairs. Approval applies only the server-held
+preview, expires after 15 minutes, and is consumed once. A new review, server restart, or changed
+graph/configuration requires another review. Current report queries, write permissions, protected
+collections, and dashboard wiring are checked before their writes; there is no browser force
+override. Results distinguish query execution, archiving, skipped/stale reports, failed writes,
+successful rollback attempts and rollback failures. A query running does not prove unchanged
+business meaning, and a dashboard failure is reported even if the card query was updated.
+Failed/partial results retain the exact original query and dashboard wiring for manual recovery.
+Save that recovery record before another completed apply or server restart replaces it.
+Static exports remain read-only and contain no Mend credentials or live repair preview.
+
+For a reproducible synthetic review, install the development dependencies and run
+`python scripts/demo_mend.py`. Open its localhost URL; `/api/demo` exposes write counters.
+`--fail-query` and `--fail-query --fail-rollback` demonstrate both failure paths without a
+real Metabase connection.
 
 `stitch serve` opens a local browser app over the same file. Search with `/` and `⌘K`, then inspect
 one object through **Summary** and **Lineage** under the same name. Switching views keeps the

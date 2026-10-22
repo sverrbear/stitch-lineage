@@ -24,6 +24,10 @@ export function Header({ onOpenPalette }: { onOpenPalette: () => void }) {
         <a className={route.page === 'home' ? 'current' : undefined} aria-current={route.page === 'home' ? 'page' : undefined} href="#/">
           {copy.header.home}
         </a>
+        <a className={route.page === 'mend' ? 'current' : undefined}
+          aria-current={route.page === 'mend' ? 'page' : undefined} href="#/mend">
+          {copy.mend.title}
+        </a>
         {meta.staging_enabled && (
           <a className={route.page === 'staged' ? 'current' : undefined}
             aria-current={route.page === 'staged' ? 'page' : undefined} href={stagedHref()}>

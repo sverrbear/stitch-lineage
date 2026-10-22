@@ -71,6 +71,7 @@ export interface StitchGraph {
 
 /** GET /api/meta body; also inlined as window.__STITCH_META__ in static export. */
 export interface StitchMeta {
+  mend_enabled?: boolean
   metabase_url: string | null
   generated_at: string | null
   schema_version: number
