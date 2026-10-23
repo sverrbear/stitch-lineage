@@ -164,6 +164,8 @@ source_modules = [
     "stitch_lineage.export",
     "stitch_lineage.app",
     "stitch_lineage.mend",
+    "stitch_lineage.mend_runtime",
+    "stitch_lineage.mend_review",
     "stitch_lineage.io.artifacts",
     "stitch_lineage.io.dbt_runner",
     "stitch_lineage.io.credentials",

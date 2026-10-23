@@ -15,6 +15,7 @@
 - **Amended 2026-10-22** (product focus, #242): remove the ERD canvas and relationship suggestions, including their CLI/API, layout engine and dismissal store. Keep column lineage, impact, `mend`, and unused-downstream analysis (`doctor --dead`). Description editing and existing staged changes retain a standalone review/apply page. Retire ERD saved views and additional relationship drawing shapes from the roadmap.
 - **Amended 2026-10-22** (Mend defaults, #246): only declared rename repoints are enabled by default. Strip and archive require explicit config; apply re-checks current action and collection policy for saved plans. Execution validation does not prove business meaning, and rollback is attempted rather than guaranteed.
 - **Amended 2026-10-22** (onboarding, #244): `stitch init` connects, builds and opens the app; OS-stored credentials and existing configuration support retries. Environment credentials remain available for CI.
+- **Amended 2026-10-22** (browser Mend, #247): local snapshot comparison, declared renames, query/dashboard review, explicit one-use approval and per-report recovery results are available in the browser. Browser defaults remain repoint-only regardless of a permissive CLI policy (§14.8).
 
 ---
 
@@ -597,3 +598,37 @@ Two additions to §4, both of them the existing rules holding rather than bendin
 - **Semantic correctness is not execution success.** Even a declared rename can point at a column whose meaning changed. Strip and archive require explicit opt-in, and clause removal can silently change the answer. Inspect the plan and the resulting report; a successful query is not evidence that its numbers are correct.
 - **Partial writes and failed rollback.** Card and dashboard writes are not transactional. Query failures trigger rollback attempts, which can fail. Dashboard failures leave the repaired card and any successful dashboard updates in place. Outcomes report these cases for manual recovery; reversal is never guaranteed.
 - **Revisions API drift.** Same posture as the standing Metabase-API risk (§13): version matrix, untrusted response shapes, raw payloads retained. If an instance will not serve revisions, mend says so in `doctor --write-access` and attempts to restore the captured query instead.
+
+### 14.8 Local browser review (#247)
+
+The local app's Mend page compares `graph.prev.json` with `graph.json`, names both build
+times, and distinguishes missing baseline from a comparison with no removed columns.
+It does not rebuild artifacts, sync Metabase, or continuously monitor changes. A declared
+rename selects an actual current graph column. Planning checks its field against live
+Metabase metadata; missing, inactive or renamed fields remain manual.
+
+The browser starts with repoint only, constrained by current `mend.auto`. Strip and archive
+need explicit per-review opt-ins and explain changed results/hidden reports. Plans show
+affected reports including protected, unreadable and unsupported ones; executable repairs
+show query before/after and dashboard parameter edits. Approval follows the actionable
+reports, with manual work visible separately. Query execution is not semantic validation.
+
+The CLI injects a Mend runtime through a protocol; `app/` never imports planning resolution
+or the Metabase client. The runtime reuses the same planner/apply engine and credential
+restoration. One server-held preview is active at a time, expires after 15 minutes, and
+binds graph/configuration bytes and resolved config inputs to an opaque identifier. Any
+new planning attempt invalidates the older preview. Changes to form inputs invalidate the
+visible preview immediately. Apply accepts that identifier and explicit confirmation only;
+clients cannot supply rewritten queries or force flags. A nonblocking lock refuses overlapping
+planning/apply requests, and approval is consumed before applying so retries cannot repeat it.
+Server restarts require replanning. The last completed result can be recovered by preview ID
+after a lost response; this is process-local, not a persistent audit service.
+Failed/partial outcomes retain the reviewed original/attempted queries and dashboard mappings
+for manual recovery until another completed apply or restart replaces the result.
+
+Apply verifies the snapshot/config fingerprint, current collection restrictions, exact
+reviewed card queries, timestamps, write access, and existing dashboard conflict guards.
+The result retains per-card stale/skipped/failed/manual outcomes, distinguishes successful
+rollback from rollback failure, and treats dashboard partial failures as failures. Static
+exports advertise Mend disabled; their client also refuses all Mend requests even if hosted
+beside an API. Existing same-origin and loopback Host protections cover the routes.

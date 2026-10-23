@@ -55,6 +55,7 @@ def test_api_meta_shape(client, sample_graph):
         "table_prefixes": [],
         "staging_enabled": False,
         "apply_enabled": False,
+        "mend_enabled": False,
     }
 
 
