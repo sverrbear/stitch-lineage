@@ -29,8 +29,12 @@ needs **no SPA fallback route** — serving `dist/` statically is enough.
 
 ## Development
 
+Use Node 24.22.1 or a newer 24.x release. From the repository root, `nvm install`
+and `nvm use` select the patched version in `.nvmrc`; CI uses the same file.
+The frontend rejects unsupported Node versions during dependency installation.
+
 ```bash
-npm install
+npm ci
 node scripts/make-dev-graph.mjs /path/to/dbt-repo/.stitch/graph.json  # optional
 npm run dev            # http://localhost:5173, proxies /api -> http://localhost:8000
 ```
@@ -53,8 +57,9 @@ npm test               # vitest over the pure TS modules (src/lib/*.test.ts)
 the built assets, so installing never requires a node toolchain. Rebuild `dist/`
 whenever `src/` changes.
 
-CI runs `npm ci`, typecheck, tests, and the production build on Node 24 in the
-required `test` job for every pull request. It also rejects changes left in
+CI runs `npm ci`, `npm audit`, typecheck, tests, and the production build using the
+Node version in the root `.nvmrc`, in the required `test` job for every pull request.
+It also rejects changes left in
 `dist/` by the build, including new assets. If that check fails, run `npm ci` and
 `npm run build` here, then commit all changes under `dist/` (including removed
 assets) with the source change.

@@ -17,6 +17,12 @@ jobs:
           cache-dependency-path: pyproject.toml
       - name: Install
         run: pip install -e ".[dev]"
+      - name: Audit Python dependencies
+        run: |
+          python -m pip freeze --exclude-editable > "$RUNNER_TEMP/stitch-requirements.txt"
+          python -m venv "$RUNNER_TEMP/stitch-pip-audit"
+          "$RUNNER_TEMP/stitch-pip-audit/bin/pip" install pip-audit==2.10.1
+          "$RUNNER_TEMP/stitch-pip-audit/bin/pip-audit" --strict --no-deps --disable-pip -r "$RUNNER_TEMP/stitch-requirements.txt"
       - name: Lint
         run: ruff check .
       - name: Format
@@ -28,12 +34,15 @@ jobs:
       # Keep the frontend in the required `test` job, including source-only PRs.
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: stitch_lineage/app/frontend/package-lock.json
       - name: Install frontend
         working-directory: stitch_lineage/app/frontend
         run: npm ci
+      - name: Audit frontend dependencies
+        working-directory: stitch_lineage/app/frontend
+        run: npm audit
       - name: Frontend typecheck
         working-directory: stitch_lineage/app/frontend
         run: npm run typecheck
