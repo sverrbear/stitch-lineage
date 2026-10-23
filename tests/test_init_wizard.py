@@ -354,6 +354,7 @@ def test_rendered_config_validates_against_todays_config_module(tmp_path):
     assert cfg.dbt.target_path == "target/"
     assert cfg.output.dir == ".stitch/"
     assert cfg.relationships.write_to == RelationshipsConfig().write_to == "relationships_test"
+    assert cfg.mend.auto == ["repoint"]
 
 
 def test_rendered_config_writes_every_derived_value_explicitly():
@@ -667,11 +668,12 @@ def test_run_init_config_is_loadable_without_the_api_key_in_the_environment(tmp_
         cfg.metabase.require_env()
 
 
-def test_resume_reuses_key_url_and_preserves_handwritten_config(tmp_path):
+@pytest.mark.parametrize("auto", ["[repoint]", "[repoint, strip, archive]", "[]"])
+def test_resume_reuses_key_url_and_preserves_handwritten_config(tmp_path, auto):
     root = make_project(tmp_path)
     result = init(root, happy_prompter())
     path = result.config_path
-    path.write_text(path.read_text() + "\n# my settings\nmend:\n  auto: [repoint]\n")
+    path.write_text(path.read_text() + f"\n# my settings\nmend:\n  auto: {auto}\n")
     before = path.read_bytes()
     prompter = ScriptedPrompter()
     retried = init(root, prompter)

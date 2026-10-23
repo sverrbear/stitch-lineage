@@ -93,6 +93,31 @@ def test_destructive_opt_in_is_explicit_and_config_limited(setup):
     assert denied.status_code == 422
 
 
+def test_browser_apply_passes_current_project_policy_to_the_shared_engine(setup, monkeypatch):
+    from stitch_lineage import mend_runtime
+    from stitch_lineage.mend.models import MendAction
+
+    client, fake, *_ = setup
+    review = preview(client)
+    assert review["plan"]["auto"] == ["repoint"]
+    engine = mend_runtime.apply_plan
+    received = {}
+
+    def capture(plan, writer, **policy):
+        received.update(policy)
+        return engine(plan, writer, **policy)
+
+    monkeypatch.setattr(mend_runtime, "apply_plan", capture)
+    response = apply(client, review)
+    assert response.status_code == 200
+    assert received == {
+        "auto": [MendAction.REPOINT, MendAction.STRIP, MendAction.ARCHIVE],
+        "notify_only_collections": ["*Personal*"],
+    }
+    # Current config permits more actions, but only the reviewed repoint may write.
+    assert [card_id for card_id, _ in fake.writes] == [401]
+
+
 @pytest.mark.parametrize("mode", ["missing", "renamed", "inactive"])
 def test_target_must_still_exist_in_live_metabase_metadata(setup, mode):
     client, fake, *_ = setup

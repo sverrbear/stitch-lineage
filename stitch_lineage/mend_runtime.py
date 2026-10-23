@@ -288,7 +288,12 @@ class MendRuntime:
                 raise MendReviewError("Snapshots or configuration changed. Review repairs again.")
             client = self._connected(cfg)
             guarded = _ReviewedWriter(client, preview.plan, cfg.mend.notify_only_collections)
-            outcome = apply_plan(preview.plan, guarded)
+            outcome = apply_plan(
+                preview.plan,
+                guarded,
+                auto=[MendAction(action) for action in cfg.mend.auto],
+                notify_only_collections=cfg.mend.notify_only_collections,
+            )
             # The wrapper turns stronger browser guards into precise per-card outcomes.
             outcome.cards = [guarded.refusals.get(c.card_id, c) for c in outcome.cards]
             failed = {card.card_id for card in outcome.failures}

@@ -75,11 +75,10 @@ class MendConfig(BaseModel):
 
     `auto` is the real safety dial: an action named here is applied without a human gate,
     and an action removed from it downgrades to `notify` -- the card is listed in the notice
-    and written to by nobody. All three are on by default, because a repoint executes a
-    rename a human already made deliberately in a reviewed PR and declared explicitly, and
-    an archive is reversible. `strip` is the one worth thinking about: a card with a dead
-    filter removed still runs and shows different numbers under the same title, which
-    re-execution validation cannot catch.
+    and written to by nobody. Only `repoint` is on by default: it follows an explicitly
+    declared rename. `strip` and `archive` require opt-in. A card with a dead filter removed
+    can run and show different numbers under the same title, which re-execution validation
+    cannot catch. An explicit empty list disables every write.
 
     `notify_only_collections` are glob patterns matched against collection names and full
     paths (personal collections match "*Personal*" whatever they are called). Cards there
@@ -87,7 +86,7 @@ class MendConfig(BaseModel):
     """
 
     slack_webhook: str | None = None
-    auto: list[str] = Field(default_factory=lambda: ["repoint", "strip", "archive"])
+    auto: list[str] = Field(default_factory=lambda: ["repoint"])
     notify_only_collections: list[str] = Field(default_factory=lambda: ["*Personal*"])
     missing_env: list[str] = Field(default_factory=list, exclude=True, repr=False)
 
