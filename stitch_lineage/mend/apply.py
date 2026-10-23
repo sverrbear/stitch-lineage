@@ -1,21 +1,24 @@
-"""Applying a mend plan, one reversible write at a time (SPEC.md section 14).
+"""Applying a mend plan with policy checks and rollback attempts (SPEC.md section 14).
 
 The safety of this feature is not an approval button -- it is the order of operations in
 this file, per card:
 
-  1. **Staleness guard.** Re-read the card. If its `updated_at` moved since the plan was
+  1. **Current policy.** Saved plans cannot grant actions or collection access that the
+     current configuration does not allow.
+  2. **Staleness guard.** Re-read the card. If its `updated_at` moved since the plan was
      built, a human edited it while we were deciding; their edit outranks ours and the card
      is skipped as `stale`. Same principle as `stitch apply`'s dirty-file refusal.
-  2. **Snapshot.** Record the revision id to come back to.
-  3. **Write.** One PUT, carrying only what changed.
-  4. **Validate.** Re-execute the card. Metabase reports a broken query inside a 202 body as
-     readily as by status code, so both are read.
-  5. **Revert on failure.** Through the revisions API, or by restoring the `before` query
-     the plan captured when the instance will not serve revisions.
+  3. **Snapshot.** Record the revision id to come back to, when available.
+  4. **Write.** One PUT, carrying only what changed.
+  5. **Validate query rewrites.** Re-execute the card. Metabase reports a broken query inside
+     a 202 body as readily as by status code, so both are read.
+  6. **Attempt revert on failure.** Through the revisions API, or by restoring the `before`
+     query the plan captured. Failed rollback is reported and requires manual recovery.
 
 What validation cannot catch is a `strip` that removed a clause the card needed to mean
 what it said -- it runs, and quietly answers a different question. That is why strip is the
-action teams can dial out of `mend.auto`, and why the summary names every strip first.
+action teams must opt into, and why the summary names every strip first. Archives are not
+query-validated. Dashboard writes can partially fail without rolling back the card.
 """
 
 from collections.abc import Callable, Sequence
@@ -24,6 +27,7 @@ from typing import Any, Protocol
 from stitch_lineage.io.metabase_client import MetabaseAPIError
 from stitch_lineage.mend.models import CardOutcome, CardPlan, MendAction, MendOutcome, MendPlan
 from stitch_lineage.mend.render import format_diff
+from stitch_lineage.resolve.metabase import collection_ids_matching
 
 _OK_STATUSES = frozenset({"completed", "ok", "success"})
 
@@ -37,6 +41,8 @@ class CardWriter(Protocol):
     """
 
     def get_card(self, card_id: int) -> dict[str, Any]: ...
+
+    def list_collections(self) -> list[dict[str, Any]]: ...
 
     def update_card(self, card_id: int, changes: dict[str, Any]) -> dict[str, Any]: ...
 
@@ -78,6 +84,8 @@ def apply_plan(
     plan: MendPlan,
     client: CardWriter,
     *,
+    auto: Sequence[MendAction],
+    notify_only_collections: Sequence[str],
     force: bool = False,
     log: Log | None = None,
     on_progress: Callable[[int, int], None] | None = None,
@@ -87,8 +95,13 @@ def apply_plan(
     The plan's order is upstream-first, so a card sourcing another is repaired after the
     card it reads and validation is never asked to pass through an unrepaired query.
 
-    `force` overrides the staleness guard. It exists for the operator who knows the drift
-    is theirs; it is not something CI should pass.
+    `auto` and `notify_only_collections` must come from the current configuration, never
+    the saved plan. Previously notified cards stay notified even if policy is relaxed;
+    re-plan to authorize a new repair. Collection restrictions use the current listing
+    and the card's freshly read collection id, not its saved display name.
+
+    `force` overrides only the staleness guard, never the policy checks. It exists for the
+    operator who knows the drift is theirs; it is not something CI should pass.
 
     on_progress, when given, is called as on_progress(done, total) after each card, the
     same shape the resolvers use. It counts every entry in the plan rather than only the
@@ -96,6 +109,21 @@ def apply_plan(
     """
     emit: Log = log or (lambda _line: None)
     outcome = MendOutcome(forced=force)
+    collection_error = None
+    excluded_collections: set[Any] = set()
+    known_collections: set[Any] | None = None
+    if notify_only_collections and any(card.writes and card.action in auto for card in plan.cards):
+        try:
+            collections = client.list_collections()
+        except MetabaseAPIError as exc:
+            collection_error = f"could not check current notify-only collections: {exc}"
+        else:
+            excluded_collections = collection_ids_matching(
+                collections, list(notify_only_collections)
+            )
+            known_collections = {
+                collection.get("id") for collection in collections if isinstance(collection, dict)
+            }
     total = len(plan.cards)
     for done, card in enumerate(plan.cards, start=1):
         if not card.writes:
@@ -108,14 +136,51 @@ def apply_plan(
                     detail=card.reason,
                 )
             )
+        elif card.action not in auto:
+            outcome.cards.append(
+                CardOutcome(
+                    card_id=card.card_id,
+                    name=card.name,
+                    action=card.action,
+                    status="notify",
+                    detail=f"'{card.action.value}' is not in current mend.auto -- no write",
+                )
+            )
+        elif collection_error:
+            outcome.cards.append(
+                CardOutcome(
+                    card_id=card.card_id,
+                    name=card.name,
+                    action=card.action,
+                    status="failed",
+                    detail=collection_error,
+                )
+            )
         else:
-            outcome.cards.append(_apply_card(card, client, force=force, emit=emit))
+            outcome.cards.append(
+                _apply_card(
+                    card,
+                    client,
+                    force=force,
+                    emit=emit,
+                    excluded_collections=excluded_collections,
+                    known_collections=known_collections,
+                )
+            )
         if on_progress is not None:
             on_progress(done, total)
     return outcome
 
 
-def _apply_card(card: CardPlan, client: CardWriter, *, force: bool, emit: Log) -> CardOutcome:
+def _apply_card(
+    card: CardPlan,
+    client: CardWriter,
+    *,
+    force: bool,
+    emit: Log,
+    excluded_collections: set[Any],
+    known_collections: set[Any] | None,
+) -> CardOutcome:
     def result(status: str, detail: str | None = None, **extra: Any) -> CardOutcome:
         return CardOutcome(
             card_id=card.card_id,
@@ -130,6 +195,20 @@ def _apply_card(card: CardPlan, client: CardWriter, *, force: bool, emit: Log) -
         current = client.get_card(card.card_id)
     except MetabaseAPIError as exc:
         return result("failed", f"could not re-read the card before writing: {exc}")
+
+    collection_id = current.get("collection_id")
+    if known_collections is not None and (
+        "collection_id" not in current
+        or (
+            collection_id not in (None, "root")
+            and (type(collection_id) is not int or collection_id not in known_collections)
+        )
+    ):
+        return result(
+            "failed", "current collection is unavailable -- cannot check notify-only policy"
+        )
+    if known_collections is not None and collection_id in excluded_collections:
+        return result("notify", "current collection is notify-only -- no write")
 
     if current.get("can_write") is False:
         return result("skipped", "the API key does not have write access to this card")
