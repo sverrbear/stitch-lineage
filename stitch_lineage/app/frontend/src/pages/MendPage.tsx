@@ -4,7 +4,7 @@ import { copy } from '../copy'
 import { useStitch } from '../data'
 import {
   applyMend, columnOptions, loadMend, mendResult, MendRequestError, outcomeLabel, previewMend, selectedRenames, snapshotTime,
-  type MendAction, type MendCard, type MendContext, type MendPreview, type MendResult,
+  type MendAction, type MendCard, type MendContext, type MendExplanation, type MendPreview, type MendResult,
 } from '../lib/mend'
 
 const text = copy.mend
@@ -15,7 +15,7 @@ function ReportLink({ id, url }: { id: number; url: string | null }) {
   return <a href={`${url.replace(/\/$/, '')}/question/${id}`} target="_blank" rel="noreferrer">{text.openReport}</a>
 }
 
-export function MendReport({ card, diff, url }: { card: MendCard; diff?: string; url: string | null }) {
+export function MendReport({ card, diff, review, url }: { card: MendCard; diff?: string; review?: MendExplanation; url: string | null }) {
   return <article className={`mend-report mend-action-${card.action}`}>
     <header className="mend-report-head">
       <div><span className="mend-action">{text.actions[card.action]}</span><h3>{card.name}</h3></div>
@@ -25,17 +25,38 @@ export function MendReport({ card, diff, url }: { card: MendCard; diff?: string;
     {card.dead_refs.filter((ref) => ref.rename_to).map((ref) =>
       <p className="mend-rename" key={ref.column}><code>{ref.column}</code><span>→</span><code>{ref.rename_to}</code></p>)}
     <p>{card.reason}</p>
+    {review && review.changes.length > 0 && <section className="mend-changes" aria-label={text.changes}>
+      <h4>{text.changes}</h4>
+      {review.changes.map((change, i) => <div className="mend-change" key={`${change.label}-${i}`}>
+        <h5>{change.label}</h5>
+        <div className="mend-change-pair">
+          <div><span>{text.before}</span><pre>{change.before}</pre></div>
+          <div><span>{text.after}</span><pre>{change.after}</pre></div>
+        </div>
+        {!change.plain && <p className="muted">{text.customExpression}</p>}
+      </div>)}
+    </section>}
     {card.action === 'strip' && <p className="mend-warning">{text.stripWarning}</p>}
     {card.action === 'archive' && <p className="mend-warning">{text.archiveWarning}</p>}
     {card.removed_clauses.length > 0 && <ul>{card.removed_clauses.map((clause) => <li key={clause}>{clause}</li>)}</ul>}
-    {card.dashcards.map((edit) => <section key={`${edit.dashboard_id}-${edit.dashcard_id}`} className="mend-dashboard">
+    {card.dashcards.map((edit) => {
+      const named = review?.dashboards.find((item) => item.dashboard_id === edit.dashboard_id && item.dashcard_id === edit.dashcard_id)
+      return <section key={`${edit.dashboard_id}-${edit.dashcard_id}`} className="mend-dashboard">
       <p>{text.dashboardEdit(edit.dashboard_name)}</p>
       <details><summary>{text.dashboardDiff}</summary><div className="mend-json-pair">
+        <div><h4>{text.before}</h4><pre>{JSON.stringify(named?.before ?? edit.before, null, 2)}</pre></div>
+        <div><h4>{text.after}</h4><pre>{JSON.stringify(named?.after ?? edit.after, null, 2)}</pre></div>
+      </div>
+      {named && <details><summary>{text.rawDashboard}</summary><div className="mend-json-pair">
         <div><h4>{text.before}</h4><pre>{JSON.stringify(edit.before, null, 2)}</pre></div>
         <div><h4>{text.after}</h4><pre>{JSON.stringify(edit.after, null, 2)}</pre></div>
-      </div></details>
-    </section>)}
-    {diff ? <details><summary>{text.queryDiff}</summary>
+      </div></details>}
+      </details>
+    </section>})}
+    {review && <details><summary>{text.namedDiff}</summary><p className="muted">{text.namedDiffNote}</p>
+      <DiffView files={[{ path: card.name, diff: review.query_diff }]} />
+    </details>}
+    {diff ? <details><summary>{review ? text.rawDiff : text.queryDiff}</summary>
       <DiffView files={[{ path: card.name, diff }]} />
     </details> : card.before && <details><summary>{text.queryBefore}</summary><pre>{JSON.stringify(card.before, null, 2)}</pre></details>}
   </article>
@@ -201,7 +222,7 @@ export function MendPage() {
         {preview.plan.unresolved_renames.map((warning) => <p className="mend-warning" key={warning}>{warning}</p>)}
         {preview.plan.cards.length === 0 && <p>{text.nothing}</p>}
         {preview.writing_count > 0 && <section><h3 className="mend-group-title">{text.ready(preview.writing_count)}</h3>
-          {preview.plan.cards.filter((c) => c.action !== 'notify').map((card) => <MendReport key={card.card_id} card={card} diff={preview.diffs[String(card.card_id)]} url={meta.metabase_url} />)}
+          {preview.plan.cards.filter((c) => c.action !== 'notify').map((card) => <MendReport key={card.card_id} card={card} diff={preview.diffs[String(card.card_id)]} review={preview.reviews?.[String(card.card_id)]} url={meta.metabase_url} />)}
         </section>}
         {preview.writing_count > 0 && <section className="mend-approval">
           <p>{text.validationNote}</p>

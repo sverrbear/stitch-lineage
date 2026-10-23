@@ -189,6 +189,7 @@ source_modules = [
     "stitch_lineage.mend.models",
     "stitch_lineage.mend.plan",
     "stitch_lineage.mend.render",
+    "stitch_lineage.mend.explain",
     "stitch_lineage.mend.rewrite",
 ]
 forbidden_modules = [

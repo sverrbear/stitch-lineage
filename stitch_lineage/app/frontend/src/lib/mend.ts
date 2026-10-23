@@ -25,6 +25,12 @@ export interface MendPreview {
   preview_id: string; expires_at: string; writing_count: number
   plan: { cards: MendCard[]; unresolved_renames: string[] }
   diffs: Record<string, string>
+  reviews?: Record<string, MendExplanation>
+}
+export interface MendExplanation {
+  changes: { label: string; before: string; after: string; plain: boolean }[]
+  query_diff: string
+  dashboards: { dashboard_id: number; dashcard_id: number; before: unknown[]; after: unknown[] }[]
 }
 export interface MendCardOutcome {
   card_id: number; name: string; action: MendAction

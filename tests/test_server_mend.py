@@ -53,6 +53,14 @@ def test_rename_review_approval_result_and_no_writes_before_approval(setup):
     assert cards[401]["action"] == "repoint"
     assert cards[401]["dashcards"][0]["after"] != cards[401]["dashcards"][0]["before"]
     assert "201" in review["diffs"]["401"]
+    explanation = review["reviews"]["401"]
+    assert explanation["changes"][0]["before"] == "Sum of fct_orders.amount"
+    assert explanation["changes"][0]["after"] == "Sum of fct_orders.amount_usd"
+    assert explanation["changes"][1]["label"] == "Dashboard filter · Order operations"
+    assert explanation["changes"][1]["after"] == "fct_orders.amount_usd"
+    assert "fct_orders.amount_usd [field 201]" in explanation["query_diff"]
+    # Only the raw plan is approved and applied; display labels never enter a PUT.
+    assert cards[401]["after"]["query"]["aggregation"][0][1][1] == 201
     for cid in [402, 403, 404, 405, 406, 407, 408, 409]:
         assert cards[cid]["action"] == "notify"
     assert "notify-only" in cards[405]["reason"]
@@ -73,6 +81,7 @@ def test_rename_review_approval_result_and_no_writes_before_approval(setup):
     assert result.status_code == 200
     assert result.json()["outcome"]["cards"][0]["status"] == "applied"
     assert [c for c, _ in fake.writes] == [401]
+    assert fake.writes[0][1]["dataset_query"] == cards[401]["after"]
     assert len(fake.dashboard_writes) == 1
     assert apply(client, review).status_code == 409
     assert len(fake.writes) == 1
