@@ -21,6 +21,7 @@ from stitch_lineage.io.credentials import restore_api_key
 from stitch_lineage.io.graph_store import previous_graph_path, read_graph
 from stitch_lineage.io.metabase_client import MetabaseAPIError, MetabaseClient
 from stitch_lineage.mend.apply import apply_plan
+from stitch_lineage.mend.explain import explain_plan
 from stitch_lineage.mend.models import CardOutcome, CardPlan, MendAction, MendPlan
 from stitch_lineage.mend.plan import affected_card_ids, build_plan
 from stitch_lineage.mend.render import format_diff
@@ -244,6 +245,7 @@ class MendRuntime:
                 "expires_at": (datetime.now(UTC) + timedelta(seconds=self.ttl)).isoformat(),
                 "plan": plan.model_dump(mode="json"),
                 "writing_count": len(plan.writing),
+                "reviews": explain_plan(plan, baseline, current),
                 "diffs": {
                     str(card.card_id): format_diff(card.before, card.after, card.name)
                     for card in plan.cards

@@ -245,6 +245,18 @@ def _clauses(dataset_query: dict[str, Any]) -> list[_Clause]:
     return []
 
 
+def query_clause_values(dataset_query: dict[str, Any]) -> dict[str, list[Any]]:
+    """Read-only clause values for review, using exactly the rewrite engine's walk.
+
+    Keep repeated labels together (for example conditions from multiple joins), so
+    removing a clause cannot accidentally pair it with a different join's condition.
+    """
+    values: dict[str, list[Any]] = {}
+    for clause in _clauses(dataset_query):
+        values.setdefault(clause.label, []).append(clause.value)
+    return values
+
+
 # --------------------------------------------------------------------------------------
 # predicates over MBQL nodes
 # --------------------------------------------------------------------------------------

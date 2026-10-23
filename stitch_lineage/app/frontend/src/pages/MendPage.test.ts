@@ -2,13 +2,35 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { MendPage, MendReport, MendResults } from './MendPage'
-import type { MendCard, MendResult } from '../lib/mend'
+import type { MendCard, MendExplanation, MendResult } from '../lib/mend'
 
 vi.mock('../data', () => ({ useStitch: () => ({ origin: 'inline', meta: { mend_enabled: true } }) }))
 
 const card: MendCard = { card_id: 1, name: 'Monthly revenue', action: 'repoint', reason: 'Declared rename', collection: 'Finance', dashboards: ['Revenue'], repointed: [], removed_clauses: [], before: { field: 1 }, after: { field: 2 }, dead_refs: [{ column: 'orders.amount', rename_to: 'orders.amount_usd' }], dashcards: [{ dashboard_id: 3, dashboard_name: 'Revenue', dashcard_id: 4, before: [{ field: 1 }], after: [{ field: 2 }] }] }
 
 describe('Mend review content', () => {
+  it('leads with readable calculation changes and keeps the named and exact diffs separate', () => {
+    const review: MendExplanation = {
+      changes: [{ label: 'Calculation', before: 'Sum of orders.amount', after: 'Sum of orders.amount_usd', plain: true }],
+      query_diff: '- orders.amount [field 1]\n+ orders.amount_usd [field 2]',
+      dashboards: [{ dashboard_id: 3, dashcard_id: 4, before: [{ field: 'orders.amount [field 1]' }], after: [{ field: 'orders.amount_usd [field 2]' }] }],
+    }
+    const html = renderToStaticMarkup(createElement(MendReport, { card, review, diff: '- field: 1\n+ field: 2', url: null }))
+    expect(html).toContain('Sum of orders.amount_usd')
+    expect(html.indexOf('What changes')).toBeLessThan(html.indexOf('Query diff with field names'))
+    expect(html).toContain('orders.amount_usd [field 2]')
+    expect(html).toContain('Exact query diff')
+    expect(html).toContain('Exact dashboard filter wiring')
+    expect(html).toContain('- field: 1')
+    expect(card.after).toEqual({ field: 2 })
+  })
+  it('labels unsupported expression summaries and renders report content as text', () => {
+    const review: MendExplanation = { changes: [{ label: 'Custom calculation', before: '<img src=x onerror=alert(1)>', after: 'unknown-operation', plain: false }], query_diff: '', dashboards: [] }
+    const html = renderToStaticMarkup(createElement(MendReport, { card, review, url: null }))
+    expect(html).toContain('cannot be simplified safely')
+    expect(html).toContain('&lt;img')
+    expect(html).not.toContain('<img')
+  })
   it('shows plain-language rename and dashboard changes before the expandable query diff', () => {
     const html = renderToStaticMarkup(createElement(MendReport, { card, diff: '- field: 1\n+ field: 2', url: 'https://metabase.example.test' }))
     expect(html).toContain('orders.amount_usd')
