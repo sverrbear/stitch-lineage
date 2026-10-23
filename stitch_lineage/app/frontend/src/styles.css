@@ -2486,6 +2486,14 @@ kbd {
 .mend-report p { font-size: 13px; line-height: 1.65; }
 .mend-rename { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 .mend-rename code { overflow-wrap: anywhere; }
+.mend-changes { margin: 16px 0; padding: 16px; border: 1px solid var(--border); border-radius: 8px; }
+.mend-changes h4 { margin: 0 0 14px; font-size: 13px; }
+.mend-change + .mend-change { margin-top: 16px; }
+.mend-change h5 { margin: 0 0 8px; font-size: 12px; color: var(--text-muted); }
+.mend-change-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.mend-change-pair > div { min-width: 0; }
+.mend-change-pair span { font-size: 11px; color: var(--text-muted); }
+.mend-report .mend-change-pair pre { margin: 6px 0 0; padding: 0; background: none; font: inherit; font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .mend-report details { font-size: 12px; margin-top: 12px; }
 .mend-report pre { overflow: auto; max-height: 420px; padding: 12px; background: var(--bg); font-size: 11px; }
 .mend-json-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -2501,7 +2509,7 @@ kbd {
 @media (max-width: 700px) {
   .mend-snapshots { flex-wrap: wrap; gap: 14px; }
   .mend-snapshots > button { margin-left: 0; }
-  .mend-mapping, .mend-json-pair { grid-template-columns: 1fr; gap: 4px; }
+  .mend-mapping, .mend-json-pair, .mend-change-pair { grid-template-columns: 1fr; gap: 12px; }
   .mend-mapping-head { display: none; }
   .mend-report-head { flex-wrap: wrap; }
   .mend-report { padding: 14px; }
