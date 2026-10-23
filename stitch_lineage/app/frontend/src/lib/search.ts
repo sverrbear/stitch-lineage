@@ -5,12 +5,12 @@
 
 import Fuse from 'fuse.js'
 import type { GraphNode, NodeType } from '../types'
-import { type GraphIndex, idTail } from './graph'
-import { displayName, nodeContext } from './present'
+import { type GraphIndex, idTail, modelIdOfColumn } from './graph'
+import { displayModelName, displayName, nodeContext } from './present'
 
 export interface SearchHit {
   node: GraphNode
-  /** 5 exact, 4 prefix, 3 word-boundary, 2 substring in any field, 1 fuzzy. */
+  /** 6 exact qualified column, 5 exact name, 4 prefix, 3 word-boundary, 2 substring, 1 fuzzy. */
   tier: number
   score: number
   matchedField: string
@@ -24,6 +24,7 @@ interface SearchDoc {
   node: GraphNode
   name: string
   tail: string
+  qualified: string[]
   description: string
   extras: Array<[string, string]>
 }
@@ -71,6 +72,20 @@ function startsWord(text: string, query: string): boolean {
   return i === 0
 }
 
+function qualifiedNames(index: GraphIndex, node: GraphNode): string[] {
+  if (node.node_type !== 'column') return []
+  const ownerId = modelIdOfColumn(node.node_id)
+  if (!ownerId) return []
+  const owner = index.nodesById.get(ownerId)
+  const names = new Set([ownerId, idTail(ownerId), displayModelName(idTail(ownerId))])
+  if (owner) {
+    names.add(owner.name)
+    names.add(displayName(owner))
+  }
+  return [node.node_id, ...[...names].map((name) => `${name}.${node.name}`)]
+    .map((name) => name.toLowerCase())
+}
+
 export class GraphSearch {
   private docs: SearchDoc[]
   private fuse: Fuse<SearchDoc>
@@ -86,6 +101,7 @@ export class GraphSearch {
       name: node.name.toLowerCase(),
       display: displayName(node).toLowerCase(),
       tail: idTail(node.node_id).toLowerCase(),
+      qualified: qualifiedNames(index, node),
       description: (node.description ?? '').toLowerCase(),
       extras: extrasOf(node),
     }))
@@ -136,10 +152,14 @@ export class GraphSearch {
 
   private matchDoc(doc: SearchDoc, needle: string): SearchHit | null {
     const base = { node: doc.node, context: nodeContext(this.index, doc.node) }
+    if (doc.qualified.includes(needle)) {
+      return { ...base, tier: 6, score: 6, matchedField: 'name' }
+    }
     if ((doc.name === needle || doc.display === needle) || doc.tail === needle) {
       return { ...base, tier: 5, score: 5, matchedField: 'name' }
     }
-    if ((doc.name.startsWith(needle) || doc.display.startsWith(needle)) || doc.tail.startsWith(needle)) {
+    if ((doc.name.startsWith(needle) || doc.display.startsWith(needle)) || doc.tail.startsWith(needle)
+      || doc.qualified.some((name) => name.startsWith(needle))) {
       return { ...base, tier: 4, score: 4, matchedField: 'name' }
     }
     if (startsWord(doc.name, needle)) {
@@ -164,7 +184,7 @@ export interface HitGroup {
   hits: SearchHit[]
 }
 
-/** Group ranked hits by node type, preserving rank order inside each group. */
+/** Keep familiar type groups, but put an explicitly requested column first. */
 export function groupHits(hits: SearchHit[]): HitGroup[] {
   const byType = new Map<NodeType, SearchHit[]>()
   for (const hit of hits) {
@@ -177,5 +197,5 @@ export function groupHits(hits: SearchHit[]): HitGroup[] {
     const groupHits = byType.get(type)
     if (groupHits) groups.push({ type, label: NODE_TYPE_LABEL[type], hits: groupHits })
   }
-  return groups
+  return groups.sort((a, b) => Number(b.hits[0].tier === 6) - Number(a.hits[0].tier === 6))
 }

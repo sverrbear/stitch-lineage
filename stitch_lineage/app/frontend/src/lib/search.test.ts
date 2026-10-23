@@ -1,10 +1,70 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { buildIndex } from './graph'
 import { fixtureGraph } from './fixture'
 import { GraphSearch, groupHits } from './search'
+import { setStripModelPrefixes } from './present'
 
 const index = buildIndex(fixtureGraph())
 const search = new GraphSearch(index)
+
+afterEach(() => setStripModelPrefixes([]))
+
+describe('qualified column search', () => {
+  it.each([
+    'fct_revenue.net_revenue',
+    ' FCT_REVENUE.NET_REVENUE ',
+    'model.demo.fct_revenue.net_revenue',
+    'model.demo.fct_revenue::net_revenue',
+  ])('finds the exact column before fuzzy model matches for %s', (query) => {
+    const hits = search.search(query)
+    expect(hits[0].node.node_id).toBe('model.demo.fct_revenue::net_revenue')
+    expect(hits[0].tier).toBe(6)
+    // This is the order used by both Home and the keyboard command palette.
+    expect(groupHits(hits).flatMap((group) => group.hits)[0]).toBe(hits[0])
+  })
+
+  it('supports typing the column after a model name', () => {
+    const hits = search.search('fct_revenue.net_')
+    expect(hits[0].node.node_id).toBe('model.demo.fct_revenue::net_revenue')
+    expect(hits[0].tier).toBe(4)
+  })
+
+  it('moves the exact column group ahead of an actual fuzzy model result', () => {
+    const graph = fixtureGraph()
+    graph.nodes.push(
+      { node_id: 'model.demo.viz_customer_profiles', node_type: 'model', name: 'viz_customer_profiles', properties: {} },
+      { node_id: 'model.demo.viz_customer_profiles::region', node_type: 'column', name: 'region', properties: {} },
+    )
+    const hits = new GraphSearch(buildIndex(graph)).search('viz_customer_profiles.region')
+    expect(hits.some((hit) => hit.node.node_type === 'model' && hit.tier === 1)).toBe(true)
+    expect(groupHits(hits)[0].hits[0].node.node_id).toBe('model.demo.viz_customer_profiles::region')
+  })
+
+  it('accepts canonical and displayed model names when a prefix is hidden', () => {
+    setStripModelPrefixes(['fct_'])
+    const prefixed = new GraphSearch(index)
+    for (const query of ['fct_revenue.net_revenue', 'revenue.net_revenue']) {
+      expect(prefixed.search(query)[0].node.node_id).toBe('model.demo.fct_revenue::net_revenue')
+      expect(prefixed.search(query)[0].tier).toBe(6)
+    }
+  })
+
+  it('retains ambiguous matches from different packages and allows full qualification', () => {
+    const graph = fixtureGraph()
+    graph.nodes.push({ node_id: 'model.other.fct_revenue::net_revenue', node_type: 'column', name: 'net_revenue', properties: {} })
+    const ambiguous = new GraphSearch(buildIndex(graph))
+    expect(ambiguous.search('fct_revenue.net_revenue').filter((hit) => hit.tier === 6).map((hit) => hit.node.node_id)).toEqual([
+      'model.demo.fct_revenue::net_revenue', 'model.other.fct_revenue::net_revenue',
+    ])
+    // The second column has no parent model node: its ID still supplies the owner.
+    expect(ambiguous.search('model.other.fct_revenue::net_revenue')[0].node.node_id).toBe('model.other.fct_revenue::net_revenue')
+  })
+
+  it('finds source columns without inventing matches for nonexistent columns', () => {
+    expect(search.search('events.amount')[0].node.node_id).toBe('source.demo.app.events::amount')
+    expect(search.search('fct_revenue.missing').some((hit) => hit.tier === 6)).toBe(false)
+  })
+})
 
 describe('GraphSearch ranking', () => {
   it('ranks exact name above prefix above word-boundary', () => {
