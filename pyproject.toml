@@ -40,22 +40,36 @@ classifiers = [
 ]
 dependencies = [
     "typer>=0.12",
-    "pydantic>=2",
-    "requests>=2.31",
+    "pydantic>=2.9.0",
+    "requests>=2.33.0",
     "ruamel.yaml>=0.18",
     # 25.26 is the floor for qualify(allow_partial_qualification=...) -- what lets a native
     # card whose SQL outran the Metabase metadata sync resolve partly instead of not at all
     # (resolve/native_sql.py)
     "sqlglot>=25.26",
     "rich>=13",
-    "fastapi>=0.110",
+    "fastapi>=0.161.1",
+    # Security floor for FastAPI's server, including StaticFiles and request parsing.
+    "starlette>=1.3.1",
     "uvicorn>=0.29",
     "keyring>=25,<26",
+    # Transitive security floors: upgrades must replace vulnerable already-installed
+    # HTTP/TLS, rendering and credential helpers, not only resolve safely in fresh envs.
+    "anyio>=4.14.2",
+    "certifi>=2026.10.19",
+    "cryptography>=50.0.0; sys_platform == 'linux'",
+    "h11>=0.16.0",
+    "idna>=3.15",
+    "jaraco.context>=6.1.2",
+    "opentelemetry-api>=1.45.1",
+    "pygments>=2.20.0",
+    "urllib3>=2.8.0",
+    "zipp>=3.19.1; python_version < '3.12'",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8",
+    "pytest>=9.0.3",
     "import-linter>=2",
     "ruff>=0.5",
     "responses>=0.25",
@@ -82,6 +96,7 @@ packages = ["stitch_lineage"]
 artifacts = ["stitch_lineage/app/frontend/dist/**"]
 exclude = [
     "stitch_lineage/app/frontend/.gitignore",
+    "stitch_lineage/app/frontend/.npmrc",
     "stitch_lineage/app/frontend/src",
     "stitch_lineage/app/frontend/scripts",
     "stitch_lineage/app/frontend/dev-public",
