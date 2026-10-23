@@ -15,6 +15,7 @@ export type Route =
   | { page: 'not-found' }
   | ObjectRoute
   | { page: 'staged' }
+  | { page: 'mend' }
   | { page: 'coverage'; kind: CoverageListKind }
 
 const COVERAGE_KINDS: CoverageListKind[] = [
@@ -34,6 +35,7 @@ export function parseHash(hash: string): Route {
     return { page: 'not-found' }
   }
   if (segments[0] === 'staged') return { page: 'staged' }
+  if (segments[0] === 'mend') return { page: 'mend' }
   // Retired object relationship bookmarks retain their selected object.
   if (segments[0] === 'node' && segments[1]) return { page: 'node', nodeId: segments[1] }
   if (segments[0] === 'lineage' && segments[1]) {

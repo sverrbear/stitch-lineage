@@ -45,6 +45,7 @@ def export_site(
         "table_prefixes": list(table_prefixes or []),
         # a hosted export has no server to stage against: the SPA hides editing entirely
         "staging_enabled": False,
+        "mend_enabled": False,
     }
     inlined = index.replace(
         _MARKER,

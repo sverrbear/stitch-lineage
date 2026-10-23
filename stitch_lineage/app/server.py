@@ -1,5 +1,4 @@
-"""FastAPI app behind `stitch serve`: the built SPA, the read-only graph API, staging,
-and apply.
+"""FastAPI app behind `stitch serve`: SPA, graph API, staging, apply, and Mend review.
 
 The SPA fetches the relative paths `api/graph` and `api/meta` and routes on the hash
 fragment, so serving dist/ statically needs no SPA fallback route.
@@ -11,17 +10,21 @@ happen only through the apply endpoints (issue #72), which run the same engine
 module never touches `write/` itself. Both surfaces register only when `stitch serve` passes
 the paths and the apply context; the static export has no server at all, so it stays
 read-only by construction.
+
+Mend is a separate injected runtime/protocol: the app carries request/response data only,
+and cannot import the Metabase client or planner. Its routes share the browser guards.
 """
 
 from datetime import UTC, datetime
 from ipaddress import ip_address
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from stitch_lineage import apply as apply_service
 from stitch_lineage.app import StitchAppError, frontend_dist
@@ -41,6 +44,7 @@ from stitch_lineage.io.staged_store import (
     replace_staged,
     upsert_description,
 )
+from stitch_lineage.mend_review import MendReview, MendReviewError
 
 __all__ = ["StitchAppError", "create_app", "frontend_dist"]
 
@@ -131,6 +135,20 @@ class StagedDescriptionRequest(BaseModel):
     entity: str
     column: str | None = None
     new_description: str
+
+
+class MendPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    renames: dict[str, str] = Field(default_factory=dict, max_length=500)
+    actions: list[Literal["repoint", "strip", "archive"]] = Field(
+        default_factory=lambda: ["repoint"], max_length=3
+    )
+
+
+class MendApplyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    preview_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    confirmed: Literal[True]
 
 
 def _load_graph(graph_path: Path) -> Graph:
@@ -273,6 +291,7 @@ def create_app(
     staged_path: Path | None = None,
     descriptions_path: Path | None = None,
     apply_context: apply_service.ApplyContext | None = None,
+    mend: MendReview | None = None,
     strip_model_prefixes: list[str] | None = None,
     table_prefixes: list[str] | None = None,
     bind_host: str | None = None,
@@ -327,8 +346,33 @@ def create_app(
                 "table_prefixes": list(table_prefixes or []),
                 "staging_enabled": staged_path is not None,
                 "apply_enabled": apply_context is not None,
+                "mend_enabled": mend is not None,
             }
         )
+
+    if mend is not None:
+
+        def mend_response(operation, *args) -> JSONResponse:
+            try:
+                return JSONResponse(operation(*args))
+            except MendReviewError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+        @api.get("/api/mend")
+        def api_mend_context() -> JSONResponse:
+            return mend_response(mend.context)
+
+        @api.post("/api/mend/preview")
+        def api_mend_preview(payload: MendPreviewRequest) -> JSONResponse:
+            return mend_response(mend.preview, payload.renames, payload.actions)
+
+        @api.post("/api/mend/apply")
+        def api_mend_apply(payload: MendApplyRequest) -> JSONResponse:
+            return mend_response(mend.apply, payload.preview_id)
+
+        @api.get("/api/mend/results/{preview_id}")
+        def api_mend_result(preview_id: str) -> JSONResponse:
+            return mend_response(mend.result, preview_id)
 
     if staged_path is not None:
 
