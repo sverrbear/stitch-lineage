@@ -25,6 +25,7 @@ from stitch_lineage.mend.explain import explain_plan
 from stitch_lineage.mend.models import CardOutcome, CardPlan, MendAction, MendPlan
 from stitch_lineage.mend.plan import affected_card_ids, build_plan
 from stitch_lineage.mend.render import format_diff
+from stitch_lineage.mend.suggest import suggest_renames
 from stitch_lineage.mend_review import MendReviewError
 from stitch_lineage.payloads import MetabasePayload
 from stitch_lineage.resolve.metabase import collection_ids_matching
@@ -116,6 +117,7 @@ class MendRuntime:
                 "baseline": None,
                 "removed": [],
                 "replacements": [],
+                "suggestions": [],
                 "allowed_actions": [],
                 "type_changes": 0,
             }
@@ -144,6 +146,7 @@ class MendRuntime:
                 key=lambda n: n["label"],
             ),
             "allowed_actions": cfg.mend.auto,
+            "suggestions": [item.model_dump() for item in suggest_renames(baseline, current)],
             "type_changes": len(diff.type_changed),
         }
 

@@ -46,6 +46,10 @@ def test_rename_review_approval_result_and_no_writes_before_approval(setup):
     assert context["baseline"]["file"] == "graph.prev.json"
     assert context["current"]["generated_at"].startswith("2026-08-11")
     assert len(context["removed"]) == 2
+    hints = {item["column"]: item for item in context["suggestions"]}
+    assert hints[scenario.AMOUNT]["candidates"][0]["id"] == scenario.AMOUNT_USD
+    assert hints[scenario.PROMO]["candidates"] == []
+    assert fake.fetches == 0  # Hints come from the snapshots, never a network request.
     review = preview(client)
     assert review["writing_count"] == 1
     cards = {c["card_id"]: c for c in review["plan"]["cards"]}
@@ -86,6 +90,33 @@ def test_rename_review_approval_result_and_no_writes_before_approval(setup):
     assert apply(client, review).status_code == 409
     assert len(fake.writes) == 1
     assert client.get(f"/api/mend/results/{review['preview_id']}").json() == result.json()
+
+
+def test_suggestions_do_not_declare_a_rename_or_enable_an_implicit_repair(setup):
+    client, fake, *_ = setup
+    context = client.get("/api/mend").json()
+    assert context["suggestions"][0]["candidates"]
+    review = preview(client, renames={})
+    assert review["writing_count"] == 0
+    assert all(card["action"] == "notify" for card in review["plan"]["cards"])
+    assert apply(client, review).status_code == 200
+    assert fake.writes == fake.dashboard_writes == fake.queries_run == []
+
+
+def test_reloading_snapshots_recomputes_hints_and_rejects_a_removed_candidate(setup):
+    from stitch_lineage.io.graph_store import read_graph, write_graph
+
+    client, fake, _, graph, *_ = setup
+    context = client.get("/api/mend").json()
+    candidate = context["suggestions"][0]["candidates"][0]["id"]
+    current = read_graph(graph)
+    current.nodes = [node for node in current.nodes if node.node_id != candidate]
+    write_graph(current, graph)
+    assert all(not group["candidates"] for group in client.get("/api/mend").json()["suggestions"])
+    response = client.post("/api/mend/preview", json={"renames": {scenario.AMOUNT: candidate}})
+    assert response.status_code == 422
+    assert fake.fetches == 0
+    assert fake.writes == []
 
 
 def test_destructive_opt_in_is_explicit_and_config_limited(setup):
@@ -130,6 +161,8 @@ def test_browser_apply_passes_current_project_policy_to_the_shared_engine(setup,
 @pytest.mark.parametrize("mode", ["missing", "renamed", "inactive"])
 def test_target_must_still_exist_in_live_metabase_metadata(setup, mode):
     client, fake, *_ = setup
+    # A snapshot hint is still only a hint; selecting it must pass fresh live checks.
+    candidate = client.get("/api/mend").json()["suggestions"][0]["candidates"][0]["id"]
     fields = fake.payload.database_metadata[1]["tables"][0]["fields"]
     if mode == "missing":
         fields.pop(0)
@@ -137,7 +170,7 @@ def test_target_must_still_exist_in_live_metabase_metadata(setup, mode):
         fields[0]["name"] = "another_column"
     else:
         fields[0]["active"] = False
-    review = preview(client)
+    review = preview(client, renames={scenario.AMOUNT: candidate})
     assert review["writing_count"] == 0
     assert review["plan"]["unresolved_renames"]
     assert fake.writes == []

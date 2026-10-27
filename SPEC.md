@@ -16,6 +16,7 @@
 - **Amended 2026-10-22** (Mend defaults, #246): only declared rename repoints are enabled by default. Strip and archive require explicit config; apply re-checks current action and collection policy for saved plans. Execution validation does not prove business meaning, and rollback is attempted rather than guaranteed.
 - **Amended 2026-10-22** (onboarding, #244): `stitch init` connects, builds and opens the app; OS-stored credentials and existing configuration support retries. Environment credentials remain available for CI.
 - **Amended 2026-10-22** (browser Mend, #247): local snapshot comparison, declared renames, query/dashboard review, explicit one-use approval and per-report recovery results are available in the browser. Browser defaults remain repoint-only regardless of a permissive CLI policy (§14.8).
+- **Amended 2026-10-27** (assisted renames, #33): browser Mend offers conservative snapshot-based replacement suggestions with evidence and visible ambiguity. Choosing a suggestion explicitly declares that mapping for the next review; suggestions never change the impact diff or authorize writes (§14.8).
 
 ---
 
@@ -531,7 +532,7 @@ One post-deploy job. No artifact handoff, no environment gate, no runner held pe
 
 ### 14.1 The plan — one action per card
 
-Input is the impact diff plus an optional **declared** rename map (`--rename fct_orders.amount=fct_orders.amount_usd`, repeatable). No inference: that is #33, and it can feed this map later. Declared-only is what keeps the plan deterministic and the blame legible.
+Input is the impact diff plus an optional **declared** rename map (`--rename fct_orders.amount=fct_orders.amount_usd`, repeatable). Browser suggestions (#33) feed this map only after the user chooses a candidate. The planner never treats an inferred match as a declared rename. Declared-only is what keeps the plan deterministic and the blame legible.
 
 | Action | When | Write |
 |---|---|---|
@@ -589,7 +590,7 @@ Two additions to §4, both of them the existing rules holding rather than bendin
 ### 14.6 Out of scope
 
 - Rewriting **native SQL card text**. Resolution is not rewriting; SQL surgery via sqlglot is its own feature. A native card that references a dead column is reported, never edited.
-- Rename **inference** (#33 can feed the map later).
+- Automatic rename declarations. User-confirmed suggestions (#33) can feed the declared map; inference alone never authorizes a repair.
 - Any hosted approval service, or a Slack app with a callback endpoint (§12.2).
 - Changing what a card *means* beyond removing references to columns that no longer exist.
 
@@ -606,6 +607,22 @@ times, and distinguishes missing baseline from a comparison with no removed colu
 It does not rebuild artifacts, sync Metabase, or continuously monitor changes. A declared
 rename selects an actual current graph column. Planning checks its field against live
 Metabase metadata; missing, inactive or renamed fields remain manual.
+
+Replacement suggestions (#33) are pure, deterministic comparisons of those snapshots:
+only added columns in the same dbt relation, with compatible non-inferred types and an
+exact field binding not marked retired in the current snapshot, qualify. A candidate also needs
+concrete name similarity or identical exact upstream columns; weak and missing evidence
+produce no suggestion. Evidence names its snapshot provenance, not a live check or proof
+of equivalent business meaning. Multiple plausible replacements and targets shared by
+several removals are visibly ambiguous; at most three candidates are shown, with the
+total retained. These hints do not modify removed/added impact facts or preselect any
+mapping. Choosing one only fills that removed column's declared mapping and invalidates
+any existing review; the normal live metadata check and explicit approval still follow.
+Existing choices survive snapshot reload for columns still removed; vanished targets
+remain visibly invalid until corrected. Context and suggestion rendering make no Metabase
+requests and no writes. Snapshot field bindings do not prove current field activity; the
+existing live preview checks remain authoritative. CLI declarations and the planner's policy
+remain unchanged.
 
 The browser starts with repoint only, constrained by current `mend.auto`. Strip and archive
 need explicit per-review opt-ins and explain changed results/hidden reports. Plans show
