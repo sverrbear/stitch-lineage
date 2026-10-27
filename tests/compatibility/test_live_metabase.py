@@ -49,6 +49,15 @@ def test_fetch_resolve_nested_native_and_archived(live_metabase):
     native = mb.card("Compatibility SQL", mb.native("SELECT amount FROM public.compat_orders"))
     archived = mb.card("Compatibility archived", mb.query())
     mb.client.update_card(archived["id"], {"archived": True})
+    archived_dashboard = mb.request(
+        "POST",
+        "/api/dashboard",
+        {
+            "name": "Compatibility archived dashboard",
+            "collection_id": mb.collection,
+        },
+    )
+    mb.request("PUT", f"/api/dashboard/{archived_dashboard['id']}", {"archived": True})
     mb.client.cache_dir = mb.artifacts / "payloads"
     payload = mb.client.fetch_all(["Stitch synthetic warehouse"])
     resolution = resolve_metabase(payload, [])
@@ -61,6 +70,7 @@ def test_fetch_resolve_nested_native_and_archived(live_metabase):
             for e in resolution.edges
         )
     assert next(c for c in payload.cards if c["id"] == archived["id"])["archived"]
+    assert next(d for d in payload.dashboards if d["id"] == archived_dashboard["id"])["archived"]
     live_query = mb.client.get_card(base["id"])["dataset_query"]
     shape = "stages" if "stages" in live_query else "legacy"
     assert shape == ("stages" if mb.version == "v0.64.1" else "legacy")
@@ -125,6 +135,13 @@ def test_mend_repoint_and_dashboard_filter(live_metabase):
     assert sorted(row[0] for row in result["data"]["rows"]) == [100, 200]
     actual = mb.client.get_dashboard(dashboard["id"])["dashcards"][0]["parameter_mappings"]
     assert actual == after_mappings
+    filtered = mb.request(
+        "POST",
+        (f"/api/dashboard/{dashboard['id']}/dashcard/{dashcard['id']}/card/{card['id']}/query"),
+        {"parameters": [{"id": "amount-filter", "type": "number/=", "value": [100]}]},
+    )
+    assert query_error(filtered) is None
+    assert filtered["data"]["rows"] == [[100]]
     payload = mb.client.fetch_all(["Stitch synthetic warehouse"])
     assert any(
         e.edge_type == EdgeType.APPEARS_ON and e.from_ == mb_card_node_id(card["id"])

@@ -139,10 +139,13 @@ class DisposableMetabase:
                 ("network", "rm", self.name),
             ):
                 try:
-                    docker(*args, check=False, timeout=30)
+                    docker(*args, timeout=30)
                 except Exception as exc:
                     errors.append(str(exc))
             self.session.close()
+            for name in ("client", "reader"):
+                if hasattr(self, name):
+                    getattr(self, name)._session.close()
         if errors:
             message = f"Compatibility cleanup for {self.name}: {'; '.join(errors)}"
             if exc_type is None:
@@ -228,6 +231,8 @@ class DisposableMetabase:
         permissions["groups"][str(everyone)][str(self.collection)] = "read"
         self.request("PUT", "/api/collection/graph", permissions)
         self.evidence = {"version": self.client.assert_version(), "images": {}}
+        if self.evidence["version"] != self.version:
+            raise RuntimeError("The observed Metabase version does not match its pinned image tag")
         for image in (f"metabase/metabase:{self.version}", WAREHOUSE_IMAGE):
             self.evidence["images"][image] = json.loads(
                 docker("image", "inspect", image, "--format", "{{json .RepoDigests}}")

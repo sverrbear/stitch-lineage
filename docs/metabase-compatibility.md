@@ -50,14 +50,15 @@ after inspecting them, rather than pruning unrelated Docker resources.
 ## Contracts exercised
 
 - API-key authentication, version detection, database metadata, active and archived
-  listing responses, and raw payload caching.
+  card/dashboard listing responses, and raw payload caching.
 - Exact field lineage from a query-builder card, a saved question that reads that
   card, and native PostgreSQL SQL; all three execute against the real warehouse.
 - The release's returned legacy or staged query representation, used unchanged as
   input to Stitch's resolver and Mend rewriter.
 - A declared `amount` → `amount_usd` repoint using Stitch's rewriter and apply
   engine, followed by real query execution and assertions on returned values.
-- A dashboard parameter mapping repaired with the card, plus dashboard lineage.
+- A dashboard parameter mapping repaired with the card, real filtered dashboard
+  execution returning the expected row, and dashboard lineage.
 - An API key with read-only collection access: `can_write=false`, Mend skips the
   write, a direct server write is rejected, and the saved card remains untouched.
 - A concurrent edit rejected by Mend's timestamp guard.
@@ -82,6 +83,25 @@ Use the matching successful workflow run as compatibility evidence for a commit.
 A configured matrix alone is not passing evidence. At release preparation, check
 all three lanes for the release commit, in addition to normal tests and fresh
 installation checks. This suite does not establish support for untested versions.
+
+### Initial measured results (2026-10-27)
+
+All five live contract tests passed on each release, including filtered dashboard
+execution and recovery through the real revision API:
+
+| Version | Passed | Observed query shape | Local run time |
+| --- | --- | --- | --- |
+| `v0.49.25.2` | 5 / 5 | Legacy MBQL | 350.28 s |
+| `v0.56.25.1` | 5 / 5 | Legacy MBQL | 82.68 s |
+| `v0.64.1` | 5 / 5 | Staged MBQL 5 | 109.38 s |
+
+These runs used Docker Desktop on an ARM64 Mac; v49's AMD64 image ran under
+emulation. Timing includes startup and teardown and is not a performance target.
+The v49 archived-dashboard endpoint returned `404` with `error_code: archived`;
+Stitch retained its listing summary and left unavailable membership unresolved.
+The v56 and v64 endpoints returned archived dashboard details. No production code
+change was required for these tested contracts. Future compatibility claims should
+use the workflow evidence for that commit, rather than this dated snapshot.
 
 ## Updating the matrix
 
