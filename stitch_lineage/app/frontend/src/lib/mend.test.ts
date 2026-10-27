@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { applyMend, columnOptions, loadMend, MendRequestError, outcomeLabel, previewMend, selectedRenames, snapshotTime, type MendCardOutcome } from './mend'
+import { applyMend, chooseRenameSuggestion, columnOptions, loadMend, MendRequestError, outcomeLabel, previewMend, reconcileRenameDrafts, selectedRenames, snapshotTime, type MendCardOutcome } from './mend'
 
 afterEach(() => { vi.unstubAllGlobals() })
 
@@ -26,6 +26,25 @@ describe('browser Mend targets', () => {
     expect(snapshotTime('2026-08-11T00:00:00Z')).toContain('2026')
     expect(snapshotTime(null)).toBe('Build time unavailable')
     expect(snapshotTime('invalid')).toBe('Build time unavailable')
+  })
+  it('chooses only the clicked current candidate and preserves other explicit mappings', () => {
+    const drafts = { first: 'orders.region', second: 'manual choice' }
+    const chosen = chooseRenameSuggestion(drafts, 'first', columns[1].id, columns)
+    expect(chosen).toEqual({ first: columns[1].id, second: 'manual choice' })
+    expect(drafts).toEqual({ first: 'orders.region', second: 'manual choice' })
+    expect(selectedRenames({ first: chosen.first }, columns).renames).toEqual({ first: columns[1].id })
+    expect(chooseRenameSuggestion(drafts, 'first', 'gone-after-reload', columns)).toBe(drafts)
+    expect(selectedRenames({}, columns).renames).toEqual({})
+  })
+  it('preserves target identity on reload when the same display label now belongs to a different column', () => {
+    const previous = [{ id: 'model.original::amount', label: 'orders.amount' }]
+    const fresh = { removed: [{ id: 'old', label: 'orders.old_amount' }], replacements: [{ id: 'model.other::amount', label: 'orders.amount' }] }
+    const drafts = reconcileRenameDrafts({ old: 'orders.amount', gone: 'old target' }, previous, fresh)
+    expect(drafts).toEqual({ old: 'model.original::amount' })
+    expect(selectedRenames(drafts, fresh.replacements)).toEqual({ renames: {}, invalid: true })
+    expect(reconcileRenameDrafts({ old: 'unfinished manual text' }, previous, fresh)).toEqual({ old: 'unfinished manual text' })
+    const renamedLabel = { ...fresh, replacements: [{ id: 'model.original::amount', label: 'new_orders.amount' }] }
+    expect(reconcileRenameDrafts({ old: 'orders.amount' }, previous, renamedLabel)).toEqual({ old: 'new_orders.amount' })
   })
 })
 

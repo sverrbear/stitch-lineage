@@ -3,12 +3,33 @@ import { DiffView } from '../components/DiffView'
 import { copy } from '../copy'
 import { useStitch } from '../data'
 import {
-  applyMend, columnOptions, loadMend, mendResult, MendRequestError, outcomeLabel, previewMend, selectedRenames, snapshotTime,
-  type MendAction, type MendCard, type MendContext, type MendExplanation, type MendPreview, type MendResult,
+  applyMend, chooseRenameSuggestion, columnOptions, loadMend, mendResult, MendRequestError, outcomeLabel, previewMend, reconcileRenameDrafts, selectedRenames, snapshotTime,
+  type MendAction, type MendCard, type MendContext, type MendExplanation, type MendPreview, type MendRenameSuggestion, type MendResult,
 } from '../lib/mend'
 
 const text = copy.mend
 const message = (error: unknown) => error instanceof Error ? error.message : String(error)
+
+export function MendRenameSuggestions({ suggestion, oldLabel, selected, onSelect }: {
+  suggestion: MendRenameSuggestion; oldLabel: string; selected?: string; onSelect: (id: string) => void
+}) {
+  if (suggestion.candidates.length === 0) return <p className="muted mend-no-suggestion">{text.noSuggestion}</p>
+  return <section className="mend-suggestions" aria-label={text.renameSuggestions}>
+    <h3>{text.renameSuggestions}</h3>
+    {suggestion.ambiguous && <p className="mend-warning">{text.ambiguousSuggestion}</p>}
+    {suggestion.candidates.map((candidate) => <article className="mend-suggestion" key={candidate.id}>
+      <div className="mend-suggestion-head"><code>{candidate.label}</code>
+        <button className="button" type="button" disabled={selected === candidate.id}
+          aria-label={text.useSuggestionFor(oldLabel, candidate.label)} onClick={() => onSelect(candidate.id)}>
+          {selected === candidate.id ? text.selectedSuggestion : text.useSuggestion}
+        </button>
+      </div>
+      <ul>{candidate.evidence.map((evidence) => <li key={evidence}>{evidence}</li>)}</ul>
+      {candidate.also_suggested_for.length > 0 && <p className="mend-warning">{text.sharedSuggestion(candidate.also_suggested_for)}</p>}
+    </article>)}
+    {suggestion.total_candidates > suggestion.candidates.length && <p className="muted">{text.hiddenSuggestions(suggestion.total_candidates - suggestion.candidates.length)}</p>}
+  </section>
+}
 
 function ReportLink({ id, url }: { id: number; url: string | null }) {
   if (!url || !/^https?:\/\//i.test(url)) return null
@@ -134,7 +155,14 @@ export function MendPage() {
   const reload = async () => {
     if (inFlight.current) return
     inFlight.current = true; invalidate(); setLoading(true)
-    try { setContext(await loadMend()); setDrafts({}); setExtra([]); setNotice(null) }
+    try {
+      const fresh = await loadMend()
+      setContext(fresh)
+      // Preserve deliberate choices for still-removed columns, including invalid text
+      // so a disappeared target is shown for correction instead of silently forgotten.
+      setDrafts((current) => reconcileRenameDrafts(current, context?.replacements ?? [], fresh))
+      setExtra([]); setNotice(null)
+    }
     catch (err) { setError(message(err)) }
     finally { setLoading(false); inFlight.current = false }
   }
@@ -185,11 +213,13 @@ export function MendPage() {
           : <form onSubmit={(event) => { event.preventDefault(); void review() }}>
             <fieldset disabled={busy} className="mend-fields">
               {context.type_changes > 0 && <p className="mend-warning">{text.typeChanges(context.type_changes)}</p>}
+              {context.suggestions?.some((group) => group.candidates.length > 0) && <p className="muted">{text.suggestionNote}</p>}
               <div className="mend-mapping-head"><span>{text.changed}</span><span>{text.replacement}</span></div>
               {context.removed.map((old, i) => {
                 const value = drafts[old.id] ?? ''
                 const target = context.replacements.find((n) => n.id === selected.renames[old.id])
                 const suggestions = options.filter((n) => `${n.label} ${n.id}`.toLowerCase().includes(value.toLowerCase())).slice(0, 80)
+                const renameSuggestion = context.suggestions?.find((group) => group.column === old.id)
                 return <div className="mend-mapping" key={old.id}>
                   <code>{old.label}</code>
                   <div><input aria-label={text.replacementFor(old.label)} list={`replacement-${i}`} value={value}
@@ -197,6 +227,8 @@ export function MendPage() {
                     onChange={(event) => { invalidate(); setDrafts({ ...drafts, [old.id]: event.target.value }) }} />
                     <datalist id={`replacement-${i}`}>{suggestions.map((n) => <option key={n.id} value={n.value}>{n.label} · {n.id}</option>)}</datalist>
                     {target && !target.bound && <p className="mend-warning">{text.unsynced}</p>}
+                    {renameSuggestion && <MendRenameSuggestions suggestion={renameSuggestion} oldLabel={old.label} selected={target?.id}
+                      onSelect={(id) => { invalidate(); setDrafts((current) => chooseRenameSuggestion(current, old.id, id, context.replacements)) }} />}
                   </div>
                 </div>
               })}

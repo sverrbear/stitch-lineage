@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import { MendPage, MendReport, MendResults } from './MendPage'
+import { MendPage, MendRenameSuggestions, MendReport, MendResults } from './MendPage'
 import type { MendCard, MendExplanation, MendResult } from '../lib/mend'
 
 vi.mock('../data', () => ({ useStitch: () => ({ origin: 'inline', meta: { mend_enabled: true } }) }))
@@ -9,6 +9,35 @@ vi.mock('../data', () => ({ useStitch: () => ({ origin: 'inline', meta: { mend_e
 const card: MendCard = { card_id: 1, name: 'Monthly revenue', action: 'repoint', reason: 'Declared rename', collection: 'Finance', dashboards: ['Revenue'], repointed: [], removed_clauses: [], before: { field: 1 }, after: { field: 2 }, dead_refs: [{ column: 'orders.amount', rename_to: 'orders.amount_usd' }], dashcards: [{ dashboard_id: 3, dashboard_name: 'Revenue', dashcard_id: 4, before: [{ field: 1 }], after: [{ field: 2 }] }] }
 
 describe('Mend review content', () => {
+  it('shows snapshot evidence and ambiguous alternatives without selecting anything', () => {
+    const onSelect = vi.fn()
+    const suggestion = { column: 'old', ambiguous: true, total_candidates: 2, candidates: [
+      { id: 'new-a', label: 'orders.amount_usd', evidence: ['Shared name words: amount', 'Exact Metabase field binding in the current snapshot'], also_suggested_for: ['orders.amount_old'] },
+      { id: 'new-b', label: 'orders.amount_eur', evidence: ['Compatible snapshot types: NUMBER → NUMBER'], also_suggested_for: [] },
+    ] }
+    const html = renderToStaticMarkup(createElement(MendRenameSuggestions, { suggestion, oldLabel: 'orders.amount', onSelect }))
+    expect(html).toContain('Ambiguous match')
+    expect(html).toContain('Shared name words: amount')
+    expect(html).toContain('in the current snapshot')
+    expect(html).toContain('Also suggested for orders.amount_old')
+    expect(html).toContain('orders.amount_eur')
+    expect(html).toContain('type="button"')
+    expect(html).not.toContain('Selected for review')
+    expect(onSelect).not.toHaveBeenCalled()
+    const selected = renderToStaticMarkup(createElement(MendRenameSuggestions, { suggestion, oldLabel: 'orders.amount', selected: 'new-b', onSelect }))
+    expect(selected).toContain('Selected for review')
+    expect(selected).toContain('disabled=""')
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+  it('explains abstention and truncated alternatives', () => {
+    const empty = { column: 'old', candidates: [], ambiguous: false, total_candidates: 0 }
+    expect(renderToStaticMarkup(createElement(MendRenameSuggestions, { suggestion: empty, oldLabel: 'old', onSelect: vi.fn() }))).toContain('No strong suggestion')
+    const crowded = { ...empty, ambiguous: true, total_candidates: 4, candidates: [{ id: 'new', label: '<script>', evidence: ['<img>'], also_suggested_for: [] }] }
+    const html = renderToStaticMarkup(createElement(MendRenameSuggestions, { suggestion: crowded, oldLabel: 'old', onSelect: vi.fn() }))
+    expect(html).toContain('3 additional candidates')
+    expect(html).not.toContain('<script>')
+    expect(html).not.toContain('<img>')
+  })
   it('leads with readable calculation changes and keeps the named and exact diffs separate', () => {
     const review: MendExplanation = {
       changes: [{ label: 'Calculation', before: 'Sum of orders.amount', after: 'Sum of orders.amount_usd', plain: true }],

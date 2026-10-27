@@ -3,12 +3,19 @@ import { errorMessage } from './staging'
 
 export type MendAction = 'repoint' | 'strip' | 'archive' | 'notify'
 export interface MendColumn { id: string; label: string; bound?: boolean }
+export interface MendRenameSuggestion {
+  column: string
+  candidates: { id: string; label: string; evidence: string[]; also_suggested_for: string[] }[]
+  ambiguous: boolean
+  total_candidates: number
+}
 export interface MendContext {
   state: 'ready' | 'missing-baseline' | 'no-removed-columns'
   current: { file: string; generated_at: string | null }
   baseline: { file: string; generated_at: string | null } | null
   removed: MendColumn[]
   replacements: MendColumn[]
+  suggestions: MendRenameSuggestion[]
   allowed_actions: MendAction[]
   type_changes: number
 }
@@ -96,4 +103,21 @@ export function selectedRenames(drafts: Record<string, string>, columns: MendCol
     else renames[old] = matches[0].id
   }
   return { renames, invalid }
+}
+
+/** A click selects one exact current target; rendering hints never changes the drafts. */
+export function chooseRenameSuggestion(drafts: Record<string, string>, old: string, target: string, columns: MendColumn[]): Record<string, string> {
+  const option = columnOptions(columns).find((column) => column.id === target)
+  return option ? { ...drafts, [old]: option.value } : drafts
+}
+
+/** A reload may change labels, but must never silently change the chosen target ID. */
+export function reconcileRenameDrafts(drafts: Record<string, string>, previous: MendColumn[], fresh: Pick<MendContext, 'removed' | 'replacements'>): Record<string, string> {
+  const currentOptions = columnOptions(fresh.replacements)
+  return Object.fromEntries(Object.entries(drafts)
+    .filter(([old]) => fresh.removed.some((column) => column.id === old))
+    .map(([old, value]) => {
+      const target = selectedRenames({ [old]: value }, previous).renames[old]
+      return [old, target ? currentOptions.find((column) => column.id === target)?.value ?? target : value]
+    }))
 }
