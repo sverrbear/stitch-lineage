@@ -312,10 +312,18 @@ Failed/partial results retain the exact original query and dashboard wiring for 
 Save that recovery record before another completed apply or server restart replaces it.
 Static exports remain read-only and contain no Mend credentials or live repair preview.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/sverrbear/stitch-lineage/main/assets/mend.png" alt="Mend review of a synthetic revenue report: the calculation and dashboard filter change from amount to amount_usd, followed by explicit approval" width="100%">
+</p>
+<p align="center">
+  <sub>Review the calculation and dashboard filter before approving a repair. Synthetic demo project.</sub>
+</p>
+
 For a reproducible synthetic review, install the development dependencies and run
 `python scripts/demo_mend.py`. Open its localhost URL; `/api/demo` exposes write counters.
 `--fail-query` and `--fail-query --fail-rollback` demonstrate both failure paths without a
-real Metabase connection.
+real Metabase connection. [Screenshot reproduction](https://github.com/sverrbear/stitch-lineage/blob/main/assets/demo/README.md)
+documents both public demos.
 
 `stitch serve` opens a local browser app over the same file. Search with `/` and `⌘K`, then inspect
 one object through **Summary** and **Lineage** under the same name. Switching views keeps the
