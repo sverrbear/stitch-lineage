@@ -1,0 +1,58 @@
+name: Metabase compatibility
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "37 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: metabase-compatibility-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  metabase-compatibility:
+    name: Metabase ${{ matrix.metabase }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep in sync with tests/compatibility/live_metabase.py and the tracker.
+        metabase: [v0.49.25.2, v0.56.25.1, v0.64.1]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install Stitch and test dependencies
+        run: pip install -e ".[dev]"
+      - name: Pull pinned synthetic fixture images
+        env:
+          METABASE_VERSION: ${{ matrix.metabase }}
+        run: |
+          docker pull "metabase/metabase:$METABASE_VERSION"
+          docker pull postgres:16.11-alpine
+      - name: Exercise the real Metabase API
+        env:
+          METABASE_VERSION: ${{ matrix.metabase }}
+        run: |
+          pytest tests/compatibility -v \
+            --metabase-version "$METABASE_VERSION" \
+            --metabase-artifacts "$RUNNER_TEMP/metabase-compatibility" \
+            --junitxml="$RUNNER_TEMP/metabase-compatibility/junit.xml"
+      - name: Retain synthetic payloads and failure evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metabase-${{ matrix.metabase }}
+          path: ${{ runner.temp }}/metabase-compatibility/
+          retention-days: 7
+          if-no-files-found: warn
