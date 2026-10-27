@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stitch-lineage"
-version = "0.4.0"
+version = "0.5.0"
 description = "dbt <-> Metabase column impact, repair, and downstream usage"
 readme = "README.md"
 license = "MIT"
